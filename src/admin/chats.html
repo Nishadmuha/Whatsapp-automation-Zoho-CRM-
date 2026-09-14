@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chats · Voltronix</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/admin/leads.css">
+  <link rel="stylesheet" href="/admin/chats.css">
+  <script src="/admin/chats.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/admin/leads">VOLTRONIX <span>Internal workspace</span></a><nav aria-label="Workspace"><a href="/admin/leads">Leads</a><a href="/admin/chats" aria-current="page">Chats</a><button id="lock" class="subtle" type="button" hidden>Sign out</button></nav></header>
+  <main>
+    <div class="heading"><div><p class="eyebrow">WHATSAPP CONVERSATIONS</p><h1>Chats</h1><p class="muted">Messages, lead details and conversation status in one place.</p></div><span class="notice">Zoho sync is disconnected</span></div>
+    <section id="login-panel" class="login card" aria-labelledby="login-title">
+      <span class="eyebrow">PRIVATE ACCESS</span><h2 id="login-title">Open your chats workspace</h2>
+      <p>Sign in with your administrator username and password.</p>
+      <form id="login-form"><label for="username">Username</label><input id="username" name="username" type="text" required maxlength="100" autocomplete="username" spellcheck="false" autocapitalize="off"><label for="password">Password</label><input id="password" name="password" type="password" required maxlength="256" autocomplete="current-password"><button id="login-submit" type="submit">Sign in</button></form>
+    </section>
+    <p id="feedback" role="status" aria-live="polite"></p>
+    <section id="workspace" class="chat-layout" hidden aria-label="Chat history">
+      <aside class="card conversation-panel" aria-labelledby="conversations-title">
+        <div class="section-heading"><h2 id="conversations-title">Conversations</h2><button id="refresh" class="secondary" type="button">Refresh</button></div>
+        <form id="filters" class="chat-search"><label for="search">Search name or phone</label><div><input id="search" name="search" type="search" maxlength="200" placeholder="Name or phone"><button type="submit" class="secondary">Search</button></div></form>
+        <div id="conversation-list"></div><p id="empty" class="empty" hidden>No conversations found.</p>
+        <div class="chat-pagination"><p id="page-label">No conversations loaded</p><div><button id="previous" class="secondary" type="button" disabled>Previous</button><button id="next" class="secondary" type="button" disabled>Next</button></div></div>
+      </aside>
+      <section class="card history-panel" aria-labelledby="conversation-title">
+        <div class="history-heading"><h2 id="conversation-title">Select a conversation</h2><p id="conversation-meta" class="muted">Choose a name or phone on the left to see its message history.</p></div>
+        <div id="linked-leads" class="linked-leads" hidden></div>
+        <div id="message-history" class="message-history" aria-live="polite"></div>
+        <div id="message-pagination" class="chat-pagination" hidden><p id="message-page-label"></p><div><button id="older" class="secondary" type="button" disabled>Earlier messages</button><button id="newer" class="secondary" type="button" disabled>Later messages</button></div></div>
+        <form id="reply-form" class="chat-reply-bar" hidden aria-label="Send WhatsApp reply">
+          <input id="reply-text" name="reply-text" type="text" placeholder="Type a message to reply on WhatsApp…" maxlength="4096" autocomplete="off" required>
+          <button id="reply-submit" type="submit">Send</button>
+        </form>
+      </section>
+    </section>
+  </main>
+  <dialog id="media-zoom-dialog" class="media-zoom-dialog" aria-labelledby="zoom-title">
+    <div class="zoom-header">
+      <h3 id="zoom-title">Image preview</h3>
+      <button id="close-zoom" class="secondary" type="button">Close</button>
+    </div>
+    <div class="zoom-body">
+      <img id="zoom-image" src="" alt="Full size preview">
+    </div>
+  </dialog>
+  <footer>Voltronix · Internal workspace</footer>
+</body>
+</html>

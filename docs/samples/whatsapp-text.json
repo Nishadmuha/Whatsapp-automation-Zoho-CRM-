@@ -1,0 +1,35 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "100000000001",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "971500000002",
+              "phone_number_id": "100000000002"
+            },
+            "contacts": [
+              {
+                "profile": { "name": "Local Test Sender" },
+                "wa_id": "971500000001"
+              }
+            ],
+            "messages": [
+              {
+                "from": "971500000001",
+                "id": "wamid.local-webhook-sample-001",
+                "timestamp": "1789084800",
+                "type": "text",
+                "text": { "body": "Local webhook test: AC maintenance requested." }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

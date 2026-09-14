@@ -1,0 +1,267 @@
+'use strict';
+
+const { createLeadService } = require('./leadService');
+const { validateReplyOutput } = require('../ai/conversation');
+const { createReplyDispatcher } = require('../whatsapp/replyDispatcher');
+const {
+  buildZohoLeadUrl,
+  formatBossFinalSuccessMessage,
+  formatBossZohoFailureMessage,
+} = require('./bossConversation');
+
+const SAFE_CODES = new Set([
+  'AI_INPUT_INVALID', 'AI_CONFIGURATION_ERROR', 'AI_AUTHENTICATION_ERROR', 'AI_RATE_LIMIT',
+  'AI_TIMEOUT', 'AI_UNAVAILABLE', 'AI_MALFORMED_RESPONSE', 'AI_REQUEST_FAILED',
+  'LEAD_VALIDATION_FAILED', 'LEAD_WORKFLOW_PERSISTENCE_FAILED', 'MESSAGE_NOT_AUTHORIZED',
+]);
+const RETRYABLE_CODES = new Set(['AI_RATE_LIMIT', 'AI_TIMEOUT', 'AI_UNAVAILABLE', 'LEAD_WORKFLOW_PERSISTENCE_FAILED']);
+const FAILURE_REPLIES = Object.freeze({
+  extraction: 'I could not extract the lead details. Please resend the available information.',
+  schema: 'I could not validate the extracted lead details. Please resend the available information.',
+  validation: 'I could not validate the lead details. Please resend the available information.',
+  persistence: 'I could not complete saving this lead. Please try again later.',
+});
+const failure = code => Object.assign(new Error('Lead processing could not be completed safely.'), { code });
+
+async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, force = false }) {
+  const lead = await store.getLead(leadId);
+  if (!lead) return { success: false, error: 'Lead not found' };
+  if (!force && (lead.zoho_status === 'saved' || lead.zoho_lead_id)) {
+    logger?.info?.({ event: 'zoho_already_saved', lead_id: leadId });
+    const zohoUrl = lead.zoho_url || lead.zohoUrl || buildZohoLeadUrl(lead.zoho_lead_id);
+    if (messageId) {
+      const successReply = formatBossFinalSuccessMessage({
+        contact: lead.contact_name || lead.contactName,
+        company: lead.company_name || lead.companyName,
+        phone: lead.phone,
+        email: lead.email,
+        zohoLeadId: lead.zoho_lead_id,
+        zohoUrl,
+      });
+      await store.updateReplyText(messageId, successReply);
+    }
+    return { success: true, zohoLeadId: lead.zoho_lead_id, zohoUrl };
+  }
+  if (!force && lead.zoho_status === 'creating') {
+    logger?.info?.({ event: 'zoho_sync_in_progress', lead_id: leadId });
+    return { success: false, error: 'Sync in progress' };
+  }
+
+  let zohoClient = zoho;
+  if (!zohoClient && (process.env.ZOHO_CLIENT_ID || config?.zohoClientId)) {
+    if (process.env.NODE_ENV !== 'test' || config?.enableZohoInTest || config?.zohoClientId) {
+      try {
+        const { createZohoLeadService } = require('../zoho/zohoLeadService');
+        zohoClient = createZohoLeadService({ env: process.env, logger });
+      } catch { zohoClient = null; }
+    }
+  }
+
+  if (!zohoClient) {
+    logger?.info?.({ event: 'zoho_sync_skipped_not_configured', lead_id: leadId });
+    if (process.env.NODE_ENV !== 'test' && messageId) {
+      const leadTitle = lead.contact_name || lead.contactName || lead.company_name || lead.companyName || 'Customer';
+      const failureReply = formatBossZohoFailureMessage({
+        leadName: leadTitle,
+        leadId,
+        status: 'Pending',
+      });
+      await store.updateReplyText(messageId, failureReply);
+    }
+    return { success: false, error: 'Zoho not configured' };
+  }
+
+  await store.updateLeadZohoStatus(leadId, { zohoStatus: 'creating' });
+
+  try {
+    const extraNotes = [
+      lead.project_name ? `Project: ${lead.project_name}` : null,
+      lead.quantity ? `Qty: ${lead.quantity}` : null,
+      lead.deadline ? `Timeline: ${lead.deadline}` : null,
+      lead.trn_no ? `TRN: ${lead.trn_no}` : null,
+      lead.notes,
+    ].filter(Boolean).join(' | ');
+
+    const leadData = {
+      name: lead.contact_name || lead.contactName || lead.company_name || lead.companyName || 'Customer',
+      company: lead.company_name || lead.companyName || lead.contact_name || lead.contactName || 'Individual',
+      phone: lead.phone,
+      email: lead.email,
+      location: lead.project_location || lead.projectLocation || lead.address,
+      service: lead.product_or_service || lead.productOrService,
+      requirement: lead.requirement,
+      notes: extraNotes || lead.notes || undefined,
+    };
+
+    let writeResult;
+    if (lead.zoho_lead_id) {
+      writeResult = await zohoClient.updateLead(lead.zoho_lead_id, leadData, lead.original_message || lead.originalMessage);
+    } else {
+      let existing = null;
+      if (lead.phone) {
+        existing = await zohoClient.searchLeadByPhone(lead.phone).catch(() => null);
+      }
+      if (!existing && lead.email) {
+        existing = await zohoClient.searchLeadByEmail(lead.email).catch(() => null);
+      }
+
+      if (existing?.id) {
+        writeResult = await zohoClient.updateLead(existing.id, leadData, lead.original_message || lead.originalMessage);
+      } else {
+        writeResult = await zohoClient.createLead(leadData, lead.original_message || lead.originalMessage);
+      }
+    }
+
+    const zohoLeadId = writeResult?.id || (writeResult && typeof writeResult === 'object' && writeResult.id) || lead.zoho_lead_id;
+    if (!zohoLeadId) {
+      throw new Error('Zoho API did not return a valid Lead ID');
+    }
+
+    const zohoUrl = buildZohoLeadUrl(zohoLeadId);
+    const nowIso = new Date().toISOString();
+
+    await store.updateLeadZohoStatus(leadId, {
+      zohoStatus: 'saved',
+      zohoLeadId,
+      zohoUrl,
+      zohoSyncedAt: nowIso,
+    });
+
+    logger?.info?.({ event: 'zoho_sync_success', lead_id: leadId, zoho_lead_id: zohoLeadId, zoho_url: zohoUrl });
+
+    if (messageId) {
+      const successReply = formatBossFinalSuccessMessage({
+        contact: lead.contact_name || lead.contactName,
+        company: lead.company_name || lead.companyName,
+        phone: lead.phone,
+        email: lead.email,
+        zohoLeadId,
+        zohoUrl,
+      });
+      await store.updateReplyText(messageId, successReply);
+    }
+    return { success: true, zohoLeadId, zohoUrl };
+  } catch (error) {
+    const errorCode = error?.code || 'ZOHO_SYNC_FAILED';
+    await store.updateLeadZohoStatus(leadId, {
+      zohoStatus: 'failed',
+      errorCode,
+      errorStage: 'zoho',
+    });
+    logger?.error?.({ event: 'zoho_sync_failed', lead_id: leadId, error: error?.message, code: errorCode });
+    if (messageId) {
+      const leadTitle = lead.contact_name || lead.contactName || lead.company_name || lead.companyName || 'Customer';
+      const failureReply = formatBossZohoFailureMessage({
+        leadName: leadTitle,
+        leadId,
+        status: 'Failed/Pending',
+      });
+      await store.updateReplyText(messageId, failureReply);
+    }
+    return { success: false, error: error?.message || errorCode };
+  }
+}
+
+function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGate, zoho }) {
+  const service = createLeadService({ store, ai, config, resolveMessageContent: async (job, { assertLease }) => {
+    const { resolveLeadMessageContent } = require('./leadMedia');
+    return resolveLeadMessageContent({ message: job, whatsapp, ai, assertActive: assertLease });
+  } });
+  const active = () => config.enabled && config.aiProvider === 'openai';
+  const authorized = job => job.authenticated === true
+    && job.processing_flow === 'boss_lead' && config.bossSenders?.has(job.sender_phone) === true
+    && (!config.allowedSenders.size || config.allowedSenders.has(job.sender_phone));
+  function log(level, event, id, details = {}) {
+    try { logger?.[level]?.({ event, message_id: id, ...details }); } catch { /* Persistence remains authoritative. */ }
+  }
+
+  async function processIncomingWhatsAppMessage(job) {
+    if (!active()) return;
+    const id = job.message_id || job.whatsapp_message_id;
+    if (triggerGate && !triggerGate.beginProcessing(id)) {
+      log('info', 'ai_trigger_ignored', id, { reason: 'inactive_or_already_processed' });
+      return;
+    }
+    let token = job.lease_token;
+    let leaseLost = false;
+    let renewal;
+    async function renewLease() {
+      try {
+        if (!(await store.heartbeatLeadExtraction(id, token, config.leaseMs))) leaseLost = true;
+      } catch { leaseLost = true; }
+    }
+    async function assertLease() {
+      if (!active() || leaseLost || (triggerGate && !triggerGate.allows(id))) throw failure('LEASE_LOST');
+      if (!authorized(job)) throw failure('MESSAGE_NOT_AUTHORIZED');
+      await renewLease();
+      if (leaseLost || !active() || (triggerGate && !triggerGate.allows(id))) throw failure('LEASE_LOST');
+      if (!authorized(job)) throw failure('MESSAGE_NOT_AUTHORIZED');
+    }
+    try {
+      if (!authorized(job)) throw failure('MESSAGE_NOT_AUTHORIZED');
+      try { token = await store.beginLeadExtractionProcessing(id, token, config.leaseMs); }
+      catch { throw Object.assign(failure('LEAD_WORKFLOW_PERSISTENCE_FAILED'), { retryable: true }); }
+      if (!token) throw failure('LEASE_LOST');
+      // Keep the caller's claim unchanged so replaying that same object cannot
+      // inherit this invocation's exclusive execution token.
+      job = { ...job, lease_token: token };
+      await assertLease();
+      renewal = setInterval(() => { void renewLease(); }, Math.max(1, Math.floor(config.leaseMs / 3)));
+      renewal.unref();
+      log('info', 'boss_lead_processing_started', id, { attempt: job.attempts });
+      const { result, validation, state, kind, leadId } = await service.saveIncomingLead(job, { assertLease, maxAttempts: triggerGate ? 1 : config.maxAttempts });
+      log('info', state === 'completed' ? 'boss_lead_saved' : 'boss_conversation_processed', id, {
+        is_lead: result.is_lead, session_state: state, message_kind: kind,
+        validation_status: result.is_lead ? validation.valid ? 'valid' : 'incomplete' : 'invalid',
+      });
+      if (state === 'completed' && kind === 'confirmation' && leadId) {
+        await handleZohoSync({ leadId, store, zoho, config, logger, messageId: id });
+      }
+    } catch (error) {
+      if (error?.code === 'LEASE_LOST' || leaseLost || !active() || (triggerGate && !triggerGate.allows(id))) {
+        log('warn', 'boss_lead_workflow_lease_lost', id);
+        return;
+      }
+      const code = !authorized(job) ? 'MESSAGE_NOT_AUTHORIZED'
+        : SAFE_CODES.has(error?.code) ? error.code : 'AI_REQUEST_FAILED';
+      const stage = code === 'MESSAGE_NOT_AUTHORIZED' ? 'validation'
+        : code === 'AI_MALFORMED_RESPONSE' ? 'schema'
+          : code === 'LEAD_WORKFLOW_PERSISTENCE_FAILED' ? 'persistence'
+            : code === 'LEAD_VALIDATION_FAILED' ? 'validation' : 'extraction';
+      const retry = !triggerGate && RETRYABLE_CODES.has(code) && error?.retryable === true && job.attempts < config.maxAttempts;
+      const nextAttemptAt = retry
+        ? new Date(Date.now() + Math.min(300000, 5000 * 2 ** (Math.max(1, job.attempts) - 1))).toISOString() : null;
+      try {
+        const persisted = await store.failLeadWorkflow(id, token, {
+          code, stage, nextAttemptAt,
+          replyText: !retry && authorized(job) && active() ? FAILURE_REPLIES[stage] : null,
+        });
+        log('error', persisted ? 'boss_lead_workflow_failed' : 'boss_lead_failure_persistence_failed', id,
+          { code, stage, retry_scheduled: persisted && retry });
+      } catch {
+        // A live lease remains recoverable when the database returns. No
+        // confirmation can be sent without an atomic durable outbox write.
+        log('error', 'boss_lead_failure_persistence_failed', id, { code, stage });
+      }
+    } finally {
+      clearInterval(renewal);
+    }
+  }
+
+  const dispatcher = createReplyDispatcher({
+    store, whatsapp, config, logger, triggerGate, processingFlow: 'boss_lead',
+    canSendReply(reply) {
+      if (!active() || !authorized(reply)) return false;
+      try { return validateReplyOutput(reply.text) === reply.text; } catch { return false; }
+    },
+  });
+  return {
+    processIncomingWhatsAppMessage,
+    async processNextReply() {
+      if (!active()) return false;
+      return dispatcher.processNextReply();
+    },
+  };
+}
+
+module.exports = { createBossLeadWorkflow, handleZohoSync };

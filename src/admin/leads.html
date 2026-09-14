@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Leads · Voltronix</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/admin/leads.css">
+  <script src="/admin/leads.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/admin/leads">VOLTRONIX <span>Internal workspace</span></a><a class="subtle" href="/admin/chats">Chats</a><button id="lock" class="subtle" type="button" hidden>Sign out</button></header>
+  <main>
+    <div class="heading"><div><p class="eyebrow">WHATSAPP ENQUIRIES</p><h1>Lead overview</h1><p class="muted">Review enquiries, validation and internal processing status.</p></div><span class="notice">Zoho sync is disconnected</span></div>
+    <section id="login-panel" class="login card" aria-labelledby="login-title">
+      <span class="eyebrow">PRIVATE ACCESS</span><h2 id="login-title">Open your leads workspace</h2>
+      <p>Sign in with your administrator username and password.</p>
+      <form id="login-form"><label for="username">Username</label><input id="username" name="username" type="text" required maxlength="100" autocomplete="username" spellcheck="false" autocapitalize="off"><label for="password">Password</label><input id="password" name="password" type="password" required maxlength="256" autocomplete="current-password"><button id="login-submit" type="submit">Sign in</button></form>
+    </section>
+    <p id="feedback" role="status" aria-live="polite"></p>
+    <section id="workspace" hidden aria-label="Lead dashboard">
+      <div class="stats">
+        <article class="card"><p>Total leads</p><strong id="stat-total">—</strong></article>
+        <article class="card"><p>Valid leads</p><strong id="stat-valid">—</strong></article>
+        <article class="card"><p>Incomplete leads</p><strong id="stat-incomplete">—</strong></article>
+        <article class="card"><p>Zoho pending</p><strong id="stat-zoho_pending">—</strong></article>
+      </div>
+      <section class="card leads-card" aria-labelledby="table-title">
+        <div class="section-heading"><h2 id="table-title">All leads</h2><button id="refresh" class="secondary" type="button">Refresh</button></div>
+        <form id="filters" class="filters">
+          <div class="search"><label for="search">Search leads</label><input id="search" name="search" type="search" maxlength="200" placeholder="Company, contact, phone, email or details"></div>
+          <div><label for="validation">Validation</label><select id="validation" name="validation_status"><option value="">All statuses</option value="valid">Valid</option><option value="incomplete">Incomplete</option><option value="invalid">Invalid</option><option value="pending">Pending</option></select></div>
+          <div><label for="extraction">Extraction</label><select id="extraction" name="extraction_status"><option value="">All statuses</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="processing">Processing</option><option value="pending">Pending</option></select></div>
+          <div><label for="zoho">Zoho</label><select id="zoho" name="zoho_status"><option value="">All statuses</option><option value="not_started">Not started</option><option value="pending">Pending</option><option value="existing_found">Existing found</option><option value="creating">Creating</option><option value="updating">Updating</option><option value="saved">Saved</option><option value="failed">Failed</option></select></div>
+          <button type="submit">Apply</button>
+        </form>
+        <div class="table-scroll"><table><caption class="sr-only">Leads, newest first. Select a lead to view full details or View chat to open its conversation.</caption><thead><tr><th scope="col">Lead</th><th scope="col">Contact</th><th scope="col">Phone</th><th scope="col">Requirement</th><th scope="col">Project location</th><th scope="col">Extraction</th><th scope="col">Validation</th><th scope="col">Zoho</th><th scope="col">Created</th><th scope="col">Conversation</th></tr></thead><tbody id="lead-rows"></tbody></table></div>
+        <p id="empty" class="empty" hidden>No leads match these filters.</p>
+        <div class="pagination"><p id="page-label">No leads loaded</p><div><label class="sr-only" for="page-size">Leads per page</label><select id="page-size"><option value="20">20 per page</option><option value="50">50 per page</option><option value="100">100 per page</option></select><button id="previous" type="button" class="secondary" disabled>Previous</button><button id="next" type="button" class="secondary" disabled>Next</button></div></div>
+      </section>
+    </section>
+  </main>
+  <dialog id="detail" aria-labelledby="detail-title"><div class="detail-heading"><div><p class="eyebrow">LEAD DETAILS</p><h2 id="detail-title">Lead details</h2></div><button id="close-detail" class="secondary" type="button">Close</button></div><div id="detail-content"></div></dialog>
+  <footer>Voltronix · Internal lead review</footer>
+</body>
+</html>

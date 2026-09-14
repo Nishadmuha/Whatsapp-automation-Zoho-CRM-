@@ -1,0 +1,144 @@
+'use strict';
+const path = require('node:path');
+const dotenv = require('dotenv');
+const { createApp } = require('./app');
+const { readConfig } = require('./config/env');
+const { connectMongoDB, disconnectMongoDB } = require('./config/db');
+const { createLogger } = require('./utils/logger');
+
+async function startServer() {
+  const loaded = dotenv.config({ path: path.resolve(__dirname, '..', '.env'), quiet: true, debug: false });
+  if (loaded.error && loaded.error.code !== 'ENOENT') throw new Error('Unable to read .env.');
+  const config = readConfig(process.env);
+  const logger = createLogger();
+  const app = createApp({ config, logger });
+  const store = app.locals.store;
+  const triggerGate = app.locals.triggerGate;
+  try { await app.locals.ready; } catch {
+    await store.close().catch(() => {});
+    throw new Error('Database initialization failed. Check MONGODB_URI and MongoDB Atlas availability.');
+  }
+  // Replies and optional internal boss extraction run here. CRM writes stay disconnected.
+  let worker;
+  let extractionWorker;
+  let server;
+  const stopWorkers = () => Promise.allSettled([
+    Promise.resolve().then(() => worker?.stop()),
+    Promise.resolve().then(() => extractionWorker?.stop()),
+    Promise.resolve().then(() => app.locals.outgoingMessages?.stop()),
+  ]);
+  const closeDatabases = () => Promise.allSettled([
+    Promise.resolve().then(() => store.close()),
+    Promise.resolve().then(() => disconnectMongoDB()),
+  ]);
+  try {
+    await connectMongoDB({ logger });
+    if (config.enabled) {
+      const { createWhatsAppService } = require('./services/whatsapp/whatsappService');
+      const { createWorker } = require('./worker');
+      const { createOutgoingMessages } = require('./services/whatsapp/outgoingMessages');
+      const whatsapp = createWhatsAppService({ logger });
+      const outgoingMessages = createOutgoingMessages({ store, whatsapp, config, logger, triggerGate });
+      app.locals.outgoingMessages = outgoingMessages;
+      app.locals.onNewMessage = async (message) => {
+        if ((config.fastAck || process.env.FAST_ACKNOWLEDGEMENT === 'true') && config.bossSenders?.has(message.senderPhone)) {
+          await outgoingMessages.acknowledge(message);
+        }
+      };
+      const conversational = config.aiProvider === 'openai';
+      let processor;
+      if (conversational) {
+        const { createAiService } = require('./services/ai/aiService');
+        const { createConversationProcessor } = require('./services/ai/conversationProcessor');
+        const ai = createAiService({ logger });
+        processor = createConversationProcessor({ store, config, logger, whatsapp, ai, triggerGate });
+        if (config.bossSenders.size) {
+          const { createBossLeadProcessor } = require('./services/ai/bossLeadProcessor');
+          const { createBossLeadWorkflow } = require('./services/leads/bossLeadWorkflow');
+          const legacyExtraction = createBossLeadProcessor({ store, ai, config, logger, triggerGate });
+          const leadWorkflow = createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGate });
+          // A second instance of the existing worker runs independently in this
+          // same process, so extraction cannot block customer reply processing.
+          extractionWorker = createWorker({
+            store: { claimNext: (options) => store.claimLeadExtraction(options) },
+            processor: {
+              processIncomingWhatsAppMessage(job) {
+                return job.processing_flow === 'boss_lead'
+                  ? leadWorkflow.processIncomingWhatsAppMessage(job)
+                  : legacyExtraction.processIncomingWhatsAppMessage(job);
+              },
+              processNextReply: leadWorkflow.processNextReply,
+            }, config, logger, triggerGate,
+          });
+        }
+      } else {
+        const { createAutoReplyProcessor } = require('./services/whatsapp/autoReply');
+        processor = createAutoReplyProcessor({ store, config, logger, whatsapp, triggerGate });
+      }
+      worker = createWorker({
+        store, processor, config, logger, triggerGate, processInbox: conversational,
+        inboxClaimOptions: conversational ? { processingFlow: 'conversation' } : {},
+      });
+    }
+    server = app.listen(config.port, config.host);
+  } catch (error) {
+    triggerGate?.close();
+    await stopWorkers();
+    await closeDatabases();
+    throw error;
+  }
+  server.requestTimeout = 30_000;
+  server.headersTimeout = 15_000;
+  server.keepAliveTimeout = 5_000;
+  let stopping = false;
+  async function shutdown() {
+    if (stopping) return;
+    stopping = true;
+    triggerGate?.close();
+    logger.info({ event: 'shutdown_started' });
+    const deadline = setTimeout(() => {
+      server.closeAllConnections();
+      process.exit(1);
+    }, 30000);
+    deadline.unref();
+    const closed = new Promise((resolve) => server.close(resolve));
+    const workerResults = await stopWorkers();
+    await closed;
+    const databaseResults = await closeDatabases();
+    clearTimeout(deadline);
+    process.removeListener('SIGINT', shutdown);
+    process.removeListener('SIGTERM', shutdown);
+    if ([...workerResults, ...databaseResults].some(result => result.status === 'rejected')) {
+      logger.error({ event: 'shutdown_cleanup_failed' }, 'Some backend resources could not be closed cleanly.');
+      process.exitCode = 1;
+    } else logger.info({ event: 'shutdown_complete' });
+  }
+  server.once('listening', () => {
+    logger.info({ event: 'server_listening', port: config.port, automation: config.enabled ? 'enabled' : 'disabled' }, `Server running on port ${config.port}`);
+    if (!config.appSecret) logger.warn({ event: 'webhook_signatures_disabled' }, 'Local development only: set META_APP_SECRET before exposing /webhook through ngrok.');
+    worker?.start();
+    extractionWorker?.start();
+  });
+  server.once('error', async (error) => {
+    triggerGate?.close();
+    process.removeListener('SIGINT', shutdown);
+    process.removeListener('SIGTERM', shutdown);
+    await stopWorkers();
+    await closeDatabases();
+    console.error(error.code === 'EADDRINUSE'
+      ? 'Port ' + config.port + ' is already in use. Stop the other server or change PORT.'
+      : 'Unable to start the HTTP server.');
+    process.exitCode = 1;
+  });
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
+  server.shutdown = shutdown;
+  return server;
+}
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error('Server startup failed: ' + error.message);
+    process.exitCode = 1;
+  });
+}
+module.exports = { createApp, startServer };

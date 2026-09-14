@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+.DS_Store
+Thumbs.db
+data/
+.local-postgres/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.pem
+*.key
