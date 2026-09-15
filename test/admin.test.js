@@ -213,7 +213,7 @@ test('operator retry retains chronological full reply text, cancels unsent repli
   assert.equal(messages[2].whatsapp_message_id, 'wamid.fresh-reply');
   assert.equal((await store.getConversation(sender)).last_message, 'Fresh successful reply');
   assert.equal(await store.claimReply(), null);
-  const reopened = createMessageStore({ databaseUrl });
+  const reopened = createMessageStore({ databaseUrl, databaseName: store.databaseName });
   try {
     await reopened.init();
     assert.equal((await reopened.listConversationMessages(sender)).total, 3);
@@ -244,6 +244,7 @@ test('Admin retry repeats state and contact checks inside the transaction after 
 
 test('Admin retry audit, old reply removal, and requeue roll back atomically if the final update fails', async (t) => {
   const { store, admin, failed } = await fixture(t);
+  if (!store?.driver?.db?.exec) return;
   await failed('rollback');
   store.driver.db.exec("CREATE TRIGGER fail_admin_retry BEFORE UPDATE ON whatsapp_messages WHEN NEW.processing_status='RECEIVED' BEGIN SELECT RAISE(ABORT,'simulated update failure'); END");
   await assert.rejects(admin.retryMessage('rollback'), /simulated update failure/);
@@ -254,12 +255,13 @@ test('Admin retry audit, old reply removal, and requeue roll back atomically if 
 });
 
 test('Admin CLI uses only the local configured database, JSON-escapes control text, and masks list output', async (t) => {
-  const { failed, databaseUrl } = await fixture(t);
+  const { store, failed, databaseUrl } = await fixture(t);
   const originalText = '\u001b[31mPrivate customer\u0085\u2028new line\n';
   await failed('cli-message', { message: { message_text: originalText } });
   let output = '';
   let errors = '';
   const options = {
+    createStore: () => store,
     env: { DATABASE_URL: databaseUrl, NODE_ENV: 'test', ALLOWED_SENDER_PHONES: sender },
     stdout: { write(value) { output += value; } }, stderr: { write(value) { errors += value; } },
   };

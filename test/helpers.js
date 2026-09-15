@@ -4,6 +4,7 @@ const { randomBytes } = require('node:crypto');
 const { after } = require('node:test');
 const mongoose = require('mongoose');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), quiet: true });
+process.env.NODE_ENV = 'test';
 const { createMessageStore } = require('../src/database');
 
 if (typeof after === 'function') {
@@ -36,7 +37,15 @@ async function temporaryStore(t) {
     }
     await store.close();
   });
-  return { store, databaseUrl: process.env.MONGODB_URI };
+  let dbUri = process.env.MONGODB_URI;
+  try {
+    const urlObj = new URL(process.env.MONGODB_URI);
+    urlObj.pathname = '/' + testDbName;
+    dbUri = urlObj.toString();
+  } catch {
+    // fallback if not a standard URL
+  }
+  return { store, databaseUrl: dbUri };
 }
 
 function testEnv(overrides = {}) {

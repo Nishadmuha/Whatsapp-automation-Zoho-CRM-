@@ -23,7 +23,7 @@ const FAILURE_REPLIES = Object.freeze({
 });
 const failure = code => Object.assign(new Error('Lead processing could not be completed safely.'), { code });
 
-async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, force = false }) {
+async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, force = false, whatsapp = null }) {
   const lead = await store.getLead(leadId);
   if (!lead) return { success: false, error: 'Lead not found' };
   if (!force && (lead.zoho_status === 'saved' || lead.zoho_lead_id)) {
@@ -37,6 +37,7 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
         email: lead.email,
         zohoLeadId: lead.zoho_lead_id,
         zohoUrl,
+        attachments: lead.attachments || [],
       });
       await store.updateReplyText(messageId, successReply);
     }
@@ -120,6 +121,54 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
     const zohoUrl = buildZohoLeadUrl(zohoLeadId);
     const nowIso = new Date().toISOString();
 
+    // Upload any original image/voice attachments to the created/updated Zoho lead
+    let attachments = Array.isArray(lead.attachments) ? [...lead.attachments] : [];
+    if (typeof store.getLeadAttachments === 'function' && attachments.length === 0) {
+      try {
+        attachments = await store.getLeadAttachments(leadId);
+      } catch { /* best effort */ }
+    }
+
+    if (attachments.length > 0 && typeof zohoClient.uploadLeadAttachment === 'function') {
+      for (const att of attachments) {
+        if (att.zohoUploadStatus === 'uploaded' && att.zohoAttachmentId) continue;
+        try {
+          let buffer = null;
+          if (att.storageReference && typeof store.getMediaFile === 'function') {
+            buffer = await store.getMediaFile(att.storageReference);
+          }
+          if (!buffer && att.mediaId && whatsapp?.downloadMedia) {
+            const downloaded = await whatsapp.downloadMedia(att.mediaId).catch(() => null);
+            buffer = downloaded?.buffer || null;
+          }
+          if (buffer) {
+            const filename = att.filename || `attachment_${att.mediaId || Date.now()}`;
+            const uploadRes = await zohoClient.uploadLeadAttachment(zohoLeadId, {
+              buffer,
+              filename,
+              mimeType: att.mimeType || att.mime_type || 'application/octet-stream',
+            });
+            att.zohoAttachmentId = uploadRes?.id || 'attached';
+            att.zohoUploadStatus = 'uploaded';
+            att.zohoError = null;
+          } else {
+            att.zohoUploadStatus = 'failed';
+            att.zohoError = 'Media file buffer not found';
+          }
+        } catch (uploadErr) {
+          logger?.warn?.({ event: 'zoho_attachment_upload_failed', lead_id: leadId, error: uploadErr?.message });
+          att.zohoUploadStatus = 'failed';
+          att.zohoError = uploadErr?.message || 'Attachment upload failed';
+        }
+      }
+
+      if (typeof store.updateLeadAttachments === 'function') {
+        try {
+          await store.updateLeadAttachments(leadId, attachments);
+        } catch { /* best effort */ }
+      }
+    }
+
     await store.updateLeadZohoStatus(leadId, {
       zohoStatus: 'saved',
       zohoLeadId,
@@ -137,10 +186,11 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
         email: lead.email,
         zohoLeadId,
         zohoUrl,
+        attachments,
       });
       await store.updateReplyText(messageId, successReply);
     }
-    return { success: true, zohoLeadId, zohoUrl };
+    return { success: true, zohoLeadId, zohoUrl, attachments };
   } catch (error) {
     const errorCode = error?.code || 'ZOHO_SYNC_FAILED';
     await store.updateLeadZohoStatus(leadId, {
@@ -215,7 +265,7 @@ function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGa
         validation_status: result.is_lead ? validation.valid ? 'valid' : 'incomplete' : 'invalid',
       });
       if (state === 'completed' && kind === 'confirmation' && leadId) {
-        await handleZohoSync({ leadId, store, zoho, config, logger, messageId: id });
+        await handleZohoSync({ leadId, store, zoho, config, logger, messageId: id, whatsapp });
       }
     } catch (error) {
       if (error?.code === 'LEASE_LOST' || leaseLost || !active() || (triggerGate && !triggerGate.allows(id))) {

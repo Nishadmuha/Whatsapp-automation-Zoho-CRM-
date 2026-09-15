@@ -21,15 +21,22 @@ const LeadMessageSchema = new mongoose.Schema({
 
 const LeadAttachmentSchema = new mongoose.Schema({
   id: { type: String },
-  messageId: { type: String },
+  mediaId: { type: String },
   whatsappMediaId: { type: String },
   type: { type: String }, // 'image', 'audio', 'document'
   mimeType: { type: String },
   filename: { type: String },
+  source: { type: String, default: 'whatsapp' },
+  whatsappMessageId: { type: String },
+  storageUrl: { type: String },
+  storageReference: { type: String },
   storagePath: { type: String },
   transcription: { type: String },
   extractedText: { type: String },
   sizeBytes: { type: Number },
+  zohoAttachmentId: { type: String, default: null },
+  zohoUploadStatus: { type: String, enum: ['pending', 'uploading', 'uploaded', 'failed'], default: 'pending' },
+  zohoError: { type: String, default: null },
   createdAt: { type: Date, default: Date.now },
 }, { _id: false });
 
@@ -69,7 +76,13 @@ const LeadSchema = new mongoose.Schema({
     default: 'not_started',
   },
   zohoLeadId: { type: String, default: null },
+  zohoLeadUrl: { type: String, default: null },
   zohoError: { type: String, default: null },
+  attachmentStatus: {
+    type: String,
+    enum: ['none', 'pending', 'uploaded', 'failed'],
+    default: 'none',
+  },
   messages: [LeadMessageSchema],
   attachments: [LeadAttachmentSchema],
 }, {

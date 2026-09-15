@@ -20,8 +20,15 @@ function identifier(value, name, limit = 512) {
 
 function decode(row) {
   if (!row) return null;
-  return { ...row, ...Object.fromEntries(['created_at', 'sent_at', 'received_at'].filter(key => row[key] != null)
-    .map(key => [key, new Date(row[key]).toISOString()])) };
+  return {
+    ...row,
+    lead_id: row.lead_id ?? null,
+    provider_message_id: row.provider_message_id ?? null,
+    error_code: row.error_code ?? null,
+    sent_at: row.sent_at ?? null,
+    ...Object.fromEntries(['created_at', 'sent_at', 'received_at'].filter(key => row[key] != null)
+      .map(key => [key, new Date(row[key]).toISOString()]))
+  };
 }
 
 function createOutgoingRepository({ store }) {
@@ -73,7 +80,7 @@ function createOutgoingRepository({ store }) {
       const row = (yield sql('SELECT * FROM crm_outgoing WHERE request_key=?', requestKey)).rows[0];
       // A reused key cannot send a different message or reveal another chat's record.
       if (!row || row.sender_phone !== senderPhone || row.kind !== kind || row.text !== text
-        || (kind === 'manual' && row.lead_id !== leadId)) {
+        || (kind === 'manual' && (row.lead_id ?? null) !== (leadId ?? null))) {
         throw outgoingError('OUTGOING_CONFLICT', 'This request key already belongs to a different message.');
       }
       return { row: decode(row), inserted: inserted.rowCount === 1 };

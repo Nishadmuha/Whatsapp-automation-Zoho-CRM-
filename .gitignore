@@ -13,3 +13,4 @@ data/
 *.sqlite-wal
 *.pem
 *.key
+scratch/

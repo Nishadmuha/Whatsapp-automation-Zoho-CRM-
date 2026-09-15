@@ -36,9 +36,9 @@ async function run(argv, { env = process.env, stdout = process.stdout, stderr = 
     if (command === 'list' && (limit < 1 || limit > 100)) {
       throw new MessagesAdminError('ADMIN_INPUT', 'The list limit must be an integer from 1 to 100.');
     }
-    const databaseUrl = env.DATABASE_URL?.trim() || 'file:./data/messages.sqlite';
-    if (env.NODE_ENV === 'production' && !/^postgres(?:ql)?:\/\//.test(databaseUrl)) {
-      throw new MessagesAdminError('ADMIN_CONFIG', 'Production message administration requires a PostgreSQL DATABASE_URL.');
+    const mongoUri = (env.MONGODB_URI || env.DATABASE_URL || '').trim();
+    if (env.NODE_ENV === 'production' && (!mongoUri || !mongoUri.startsWith('mongodb'))) {
+      throw new MessagesAdminError('ADMIN_CONFIG', 'Production message administration requires a MongoDB MONGODB_URI.');
     }
     if (env.NODE_ENV === 'production' && env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
       throw new MessagesAdminError('ADMIN_CONFIG', 'TLS certificate verification must be enabled in production.');
@@ -48,7 +48,7 @@ async function run(argv, { env = process.env, stdout = process.stdout, stderr = 
       throw new MessagesAdminError('ADMIN_CONFIG', 'ALLOWED_SENDER_PHONES must contain international phone numbers.');
     }
     const config = { allowedSenders: new Set(senders.map((sender) => `+${sender.replace(/^\+/, '')}`)) };
-    store = createStore({ databaseUrl, logger: { error() {} } });
+    store = createStore({ mongoUri, databaseUrl: mongoUri, logger: { error() {} } });
     await store.init();
     const admin = createMessagesAdmin({ store, config });
     const result = command === 'list' ? await admin.listMessages(limit)

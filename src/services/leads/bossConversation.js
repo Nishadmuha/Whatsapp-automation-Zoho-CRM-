@@ -66,7 +66,7 @@ function buildZohoLeadUrl(zohoLeadId, env = process.env) {
   return `https://${domain}/crm/tab/Leads/${zohoLeadId}`;
 }
 
-function formatBossFinalSuccessMessage({ contact, company, phone, email, zohoLeadId, zohoUrl }) {
+function formatBossFinalSuccessMessage({ contact, company, phone, email, zohoLeadId, zohoUrl, attachments = [] }) {
   const contactVal = (contact || '').trim() || (company || '').trim() || 'Customer';
   const companyVal = (company || '').trim() || (contact || '').trim() || 'Individual';
   const phoneVal = (phone || '').trim() || 'N/A';
@@ -74,15 +74,40 @@ function formatBossFinalSuccessMessage({ contact, company, phone, email, zohoLea
 
   const lines = [
     '✅ Lead Saved Successfully',
-    `👤 Contact: ${contactVal}`,
-    `🏢 Company: ${companyVal}`,
-    `📞 Phone: ${phoneVal}`,
-    `📧 Email: ${emailVal}`,
+    '',
+    'Zoho CRM:',
+    `Lead ID: ${zohoLeadId}`,
     `🆔 Zoho Lead ID: ${zohoLeadId}`,
+    '',
+    'Open Lead:',
+    `${zohoUrl}`,
     `🔗 Zoho Lead: ${zohoUrl}`,
-    '✅ Saved to MongoDB',
-    '✅ Synced to Zoho CRM'
   ];
+
+  if (contactVal !== 'Customer' || companyVal !== 'Individual') {
+    lines.push(`👤 Contact: ${contactVal}`, `🏢 Company: ${companyVal}`);
+  }
+  if (phoneVal !== 'N/A') lines.push(`📞 Phone: ${phoneVal}`);
+  if (emailVal !== 'N/A') lines.push(`📧 Email: ${emailVal}`);
+
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    const images = attachments.filter(a => a.type === 'image' || a.mime_type?.startsWith('image/') || a.mimeType?.startsWith('image/')).length;
+    const voice = attachments.filter(a => a.type === 'audio' || a.mime_type?.startsWith('audio/') || a.mimeType?.startsWith('audio/')).length;
+    const docs = attachments.filter(a => !['image', 'audio'].includes(a.type) && !a.mime_type?.startsWith('image/') && !a.mime_type?.startsWith('audio/') && !a.mimeType?.startsWith('image/') && !a.mimeType?.startsWith('audio/')).length;
+
+    const attachmentLines = [];
+    if (images > 0) attachmentLines.push(`${images} image${images > 1 ? 's' : ''} attached ✅`);
+    if (voice > 0) attachmentLines.push(`${voice} voice message${voice > 1 ? 's' : ''} attached ✅`);
+    if (docs > 0) attachmentLines.push(`${docs} document${docs > 1 ? 's' : ''} attached ✅`);
+
+    if (attachmentLines.length > 0) {
+      lines.push('', 'Attachments:', ...attachmentLines);
+    }
+  }
+
+  lines.push('', 'Zoho Sync:', 'Saved successfully ✅');
+  lines.push('✅ Saved to MongoDB');
+  lines.push('✅ Synced to Zoho CRM');
   return lines.join('\n');
 }
 

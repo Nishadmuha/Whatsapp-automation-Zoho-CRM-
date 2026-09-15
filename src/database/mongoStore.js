@@ -53,6 +53,18 @@ function validateReplyText(value) {
   if (!value.trim()) throw new TypeError('Invalid reply text.');
 }
 
+function validateMessageIds(ids) {
+  if (ids === null) return;
+  if (!Array.isArray(ids) || ids.length > 1000) throw new TypeError('Invalid messageIds.');
+  const seen = new Set();
+  for (const id of ids) {
+    if (typeof id !== 'string' || !id || id.length > 512 || seen.has(id)) {
+      throw new TypeError('Invalid messageId.');
+    }
+    seen.add(id);
+  }
+}
+
 function mediaText(value, name) {
   if (value === undefined || value === '') return value;
   return string(value, name, 64000, true);
@@ -131,6 +143,16 @@ function decode(doc) {
   if ('crm_write_started' in result) result.crm_write_started = Boolean(result.crm_write_started);
   if ('authenticated' in result) result.authenticated = Boolean(result.authenticated);
   if ('uncertain' in result) result.uncertain = Boolean(result.uncertain);
+  if (result.whatsapp_message_id !== undefined) {
+    result.extracted_text = result.extracted_text ?? null;
+    result.transcription = result.transcription ?? null;
+  }
+  if (result.request_key !== undefined) {
+    result.lead_id = result.lead_id ?? null;
+    result.provider_message_id = result.provider_message_id ?? null;
+    result.error_code = result.error_code ?? null;
+    result.sent_at = result.sent_at ?? null;
+  }
   return result;
 }
 
@@ -178,6 +200,14 @@ function parseSqlWhere(whereStr, params) {
     } else if (/IS\s+NOT\s+NULL/i.test(trimmed)) {
       const col = trimmed.replace(/\s+IS\s+NOT\s+NULL/i, '').trim();
       filter[col] = { $ne: null };
+    } else if (/\s+IN\s*\(/i.test(trimmed)) {
+      const match = trimmed.match(/^([a-zA-Z0-9_]+)\s+IN\s*\(([\s\S]+?)\)$/i);
+      if (match) {
+        const colName = match[1].trim();
+        const itemsStr = match[2].trim();
+        const items = itemsStr.split(',').map(s => s.trim().replace(/^'|'$/g, ''));
+        filter[colName] = { $in: items };
+      }
     } else {
       const eqIdx = trimmed.indexOf('=');
       if (eqIdx !== -1) {
@@ -266,19 +296,24 @@ async function executeMongoSql(store, sqlText, params = []) {
     return { rows, rowCount: rows.length };
   }
 
-  const updateMatch = trimmed.match(/^UPDATE\s+([a-zA-Z0-9_]+)\s+SET\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]+?))?$/i);
+  const updateMatch = trimmed.match(/^UPDATE\s+([a-zA-Z0-9_]+)\s+SET\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]+?))?(?:\s+RETURNING\s+([\s\S]+?))?$/i);
   if (updateMatch) {
-    const [, table, setStr, whereStr] = updateMatch;
+    const [, table, setStr, whereStr, returningStr] = updateMatch;
     const col = store.col(table);
     const setDoc = parseSqlSet(setStr, p);
     const filter = parseSqlWhere(whereStr, p);
+    if (returningStr) {
+      const updated = await col.findOneAndUpdate(filter, { $set: setDoc }, { returnDocument: 'after' });
+      const row = updated ? decode(updated) : null;
+      return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
+    }
     const res = await col.updateMany(filter, { $set: setDoc });
     return { rows: [], rowCount: res.matchedCount };
   }
 
-  const insertMatch = trimmed.match(/^INSERT\s+INTO\s+([a-zA-Z0-9_]+)\s*\(([\s\S]+?)\)\s*VALUES\s*\(([\s\S]+?)\)$/i);
+  const insertMatch = trimmed.match(/^INSERT\s+INTO\s+([a-zA-Z0-9_]+)\s*\(([\s\S]+?)\)\s*VALUES\s*\(([\s\S]+?)\)(?:\s+ON\s+CONFLICT\s*(?:\(([\s\S]+?)\))?[\s\S]*?)?$/i);
   if (insertMatch) {
-    const [, table, colsStr, valsStr] = insertMatch;
+    const [, table, colsStr, valsStr, conflictCol] = insertMatch;
     const col = store.col(table);
     const cols = colsStr.split(',').map(c => c.trim());
     const vals = valsStr.split(',').map(v => v.trim());
@@ -301,8 +336,19 @@ async function executeMongoSql(store, sqlText, params = []) {
         doc[cols[i]] = v;
       }
     }
-    await col.insertOne(doc);
-    return { rows: [], rowCount: 1 };
+    if (conflictCol && doc[conflictCol.trim()] !== undefined) {
+      const existing = await col.findOne({ [conflictCol.trim()]: doc[conflictCol.trim()] });
+      if (existing) return { rows: [], rowCount: 0 };
+    }
+    try {
+      await col.insertOne(doc);
+      return { rows: [], rowCount: 1 };
+    } catch (err) {
+      if (err.code === 11000 || String(err.message).includes('E11000')) {
+        return { rows: [], rowCount: 0 };
+      }
+      throw err;
+    }
   }
 
   const deleteMatch = trimmed.match(/^DELETE\s+FROM\s+([a-zA-Z0-9_]+)(?:\s+WHERE\s+([\s\S]+?))?$/i);
@@ -317,10 +363,22 @@ async function executeMongoSql(store, sqlText, params = []) {
   return { rows: [], rowCount: 0 };
 }
 
+function getDbNameFromUri(uri) {
+  if (!uri || typeof uri !== 'string') return null;
+  try {
+    const parsed = new URL(uri);
+    const name = parsed.pathname.replace(/^\//, '').split('?')[0].trim();
+    return name || null;
+  } catch {
+    const match = uri.match(/^mongodb(?:\+srv)?:\/\/[^/]+\/([^?]+)/i);
+    return match ? match[1].trim() : null;
+  }
+}
+
 class MongoMessageStore {
   constructor({ databaseUrl, mongoUri, databaseName, collectionPrefix = '', client, db, logger } = {}) {
     this.mongoUri = mongoUri || (databaseUrl && !databaseUrl.startsWith('file:') && !databaseUrl.startsWith('postgres') ? databaseUrl : process.env.MONGODB_URI);
-    this.databaseName = databaseName || 'voltronix_crm';
+    this.databaseName = databaseName || getDbNameFromUri(this.mongoUri) || 'voltronix_crm';
     this.collectionPrefix = collectionPrefix;
     this.client = client || null;
     this.db = db || null;
@@ -399,10 +457,12 @@ class MongoMessageStore {
       { col: 'contact_locks', key: { lease_expires_at: 1 } },
       { col: 'crm_contacts', key: { contact_key: 1 }, options: { unique: true } },
       { col: 'crm_outgoing', key: { id: 1 }, options: { unique: true } },
-      { col: 'crm_outgoing', key: { message_id: 1 }, options: { unique: true } },
+      { col: 'crm_outgoing', key: { request_key: 1 }, options: { unique: true } },
+      { col: 'crm_outgoing', key: { message_id: 1 } },
       { col: 'lead_groups', key: { id: 1 }, options: { unique: true } },
       { col: 'lead_messages', key: { message_id: 1 } },
       { col: 'lead_attachments', key: { id: 1 } },
+      { col: 'lead_attachments', key: { lead_id: 1 } },
     ];
 
     for (const idx of indexes) {
@@ -521,6 +581,8 @@ class MongoMessageStore {
         session_id: null,
         conversation_kind: null,
         extracted_lead_data: null,
+        extracted_text: null,
+        transcription: null,
         zoho_lead_id: null,
         crm_action: null,
         crm_write_started: false,
@@ -599,7 +661,7 @@ class MongoMessageStore {
   async claimLeadExtraction({ leaseMs = 120000, maxAttempts = 3, messageIds = null } = {}) {
     positiveInteger(leaseMs, 'leaseMs', 3600000);
     positiveInteger(maxAttempts, 'maxAttempts', 100);
-    if (messageIds !== null && (!Array.isArray(messageIds) || messageIds.length > 1000)) throw new TypeError('Invalid messageIds.');
+    validateMessageIds(messageIds);
     if (Array.isArray(messageIds) && messageIds.length === 0) return null;
 
     const now = await this._now();
@@ -691,10 +753,12 @@ class MongoMessageStore {
         }).toArray();
         if (earlierMessages.length) {
           const earlierIds = earlierMessages.map(m => m.whatsapp_message_id);
-          const earlierReceipts = await this.col('message_receipts').find({
+          const earlierReceiptsQuery = {
             message_id: { $in: earlierIds },
             sequence: { $lt: mySeq }
-          }).toArray();
+          };
+          if (messageIds) earlierReceiptsQuery.message_id = { $in: messageIds.filter(id => id !== candidate.message_id) };
+          const earlierReceipts = await this.col('message_receipts').find(earlierReceiptsQuery).toArray();
           if (earlierReceipts.length) {
             const earlierExtractions = await this.col('lead_extractions').find({
               message_id: { $in: earlierReceipts.map(r => r.message_id) },
@@ -790,12 +854,17 @@ class MongoMessageStore {
     return res.matchedCount === 1;
   }
 
-  async checkpointLeadMedia(messageId, leaseToken, { transcription, extractedText } = {}) {
+  async checkpointLeadMedia(messageId, leaseToken, { transcription, extractedText, storageReference, storageUrl } = {}) {
     string(messageId, 'messageId', 512);
     string(leaseToken, 'leaseToken', 128);
     mediaText(transcription, 'transcription');
     mediaText(extractedText, 'extracted text');
-    const entries = [['transcription', transcription], ['extracted_text', extractedText]].filter(([, value]) => value !== undefined);
+    const entries = [
+      ['transcription', transcription],
+      ['extracted_text', extractedText],
+      ['storage_reference', storageReference],
+      ['storage_url', storageUrl]
+    ].filter(([, value]) => value !== undefined);
     if (!entries.length) throw new TypeError('A media checkpoint requires text.');
     const now = await this._now();
 
@@ -813,6 +882,66 @@ class MongoMessageStore {
     const update = Object.fromEntries(entries);
     await this.col('whatsapp_messages').updateOne({ whatsapp_message_id: messageId }, { $set: update });
     return true;
+  }
+
+  async saveMediaFile({ messageId, mediaId, buffer, mimeType, filename } = {}) {
+    if (!buffer) return null;
+    const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+    if (!this.mediaBucket && this.db) {
+      const { GridFSBucket } = require('mongodb');
+      this.mediaBucket = new GridFSBucket(this.db, { bucketName: 'lead_media' });
+    }
+    const fileId = new mongoose.Types.ObjectId();
+    const ext = mimeType?.split('/')[1]?.replace(/^jpeg$/, 'jpg') || 'bin';
+    const safeFilename = filename || `${mediaId || fileId.toString()}.${ext}`;
+
+    if (this.mediaBucket) {
+      const uploadStream = this.mediaBucket.openUploadStreamWithId(fileId, safeFilename, {
+        metadata: {
+          messageId: messageId || null,
+          mediaId: mediaId || null,
+          mimeType: mimeType || 'application/octet-stream',
+          uploadedAt: new Date().toISOString()
+        }
+      });
+      await new Promise((resolve, reject) => {
+        uploadStream.on('finish', resolve);
+        uploadStream.on('error', reject);
+        uploadStream.end(buf);
+      });
+    }
+
+    const storageReference = fileId.toString();
+    const storageUrl = `/api/media/${storageReference}`;
+    return {
+      storageReference,
+      storageUrl,
+      filename: safeFilename,
+      sizeBytes: buf.length,
+      mimeType: mimeType || 'application/octet-stream'
+    };
+  }
+
+  async getMediaFile(storageReference) {
+    if (!storageReference) return null;
+    if (!this.mediaBucket && this.db) {
+      const { GridFSBucket } = require('mongodb');
+      this.mediaBucket = new GridFSBucket(this.db, { bucketName: 'lead_media' });
+    }
+    if (!this.mediaBucket) return null;
+    let fileId;
+    try {
+      fileId = new mongoose.Types.ObjectId(storageReference);
+    } catch {
+      return null;
+    }
+    const chunks = [];
+    return new Promise((resolve) => {
+      const stream = this.mediaBucket.openDownloadStream(fileId);
+      stream.on('data', chunk => chunks.push(chunk));
+      stream.on('end', () => resolve(Buffer.concat(chunks)));
+      stream.on('error', () => resolve(null));
+    });
   }
 
   async finishLeadExtraction(messageId, leaseToken, patch) {
@@ -1142,13 +1271,45 @@ class MongoMessageStore {
       const sessionMsgs = await this.col('whatsapp_messages').find({
         $or: [
           { session_id: active.id },
-          { whatsapp_message_id: messageId }
+          { whatsapp_message_id: active.first_message_id },
+          { whatsapp_message_id: messageId },
+          {
+            sender_phone: inbox.sender_phone,
+            received_at: { $gte: active.created_at || active.started_at },
+          }
         ]
       }).sort({ received_at: 1 }).toArray();
 
       const allMsgs = sessionMsgs.length > 0 ? sessionMsgs : [inbox];
 
-
+      const attachments = [];
+      for (const m of allMsgs) {
+        if (m.media_id) {
+          const attId = randomUUID();
+          const ext = m.media_mime_type?.split('/')[1]?.replace(/^jpeg$/, 'jpg') || 'bin';
+          const filename = m.media_filename || `${m.media_id}.${ext}`;
+          const storageReference = m.storage_reference || m.media_id;
+          const storageUrl = m.storage_url || `/api/media/${storageReference}`;
+          attachments.push({
+            id: attId,
+            mediaId: m.media_id,
+            whatsappMediaId: m.media_id,
+            type: m.message_type || 'image',
+            mimeType: m.media_mime_type,
+            filename,
+            source: 'whatsapp',
+            whatsappMessageId: m.whatsapp_message_id,
+            storageUrl,
+            storageReference,
+            transcription: m.transcription || null,
+            extractedText: m.extracted_text || null,
+            zohoAttachmentId: null,
+            zohoUploadStatus: 'pending',
+            zohoError: null,
+            createdAt: now
+          });
+        }
+      }
 
       const leadRecord = {
         id: finalLeadId,
@@ -1177,6 +1338,9 @@ class MongoMessageStore {
         zohoUrl: null,
         zoho_synced_at: null,
         zohoSyncedAt: null,
+        attachments,
+        attachment_status: attachments.length > 0 ? 'pending' : 'none',
+        attachmentStatus: attachments.length > 0 ? 'pending' : 'none',
         validation_result: saveValidation,
         created_at: now,
         updated_at: now
@@ -1200,6 +1364,11 @@ class MongoMessageStore {
             updated_at: now
           }
         }
+      );
+
+      await this.col('whatsapp_messages').updateMany(
+        { $or: [{ session_id: active.id }, { whatsapp_message_id: messageId }] },
+        { $set: { lead_id: finalLeadId, session_id: active.id } }
       );
 
       await this.col('lead_groups').updateOne(
@@ -1234,17 +1403,22 @@ class MongoMessageStore {
         );
 
         if (m.media_id) {
+          const att = attachments.find(a => a.whatsappMessageId === m.whatsapp_message_id);
           await this.col('lead_attachments').updateOne(
             { message_id: m.whatsapp_message_id, lead_id: finalLeadId },
             {
               $setOnInsert: {
-                id: randomUUID(),
+                id: att?.id || randomUUID(),
                 message_id: m.whatsapp_message_id,
                 lead_id: finalLeadId,
                 whatsapp_media_id: m.media_id,
                 type: m.message_type,
                 mime_type: m.media_mime_type,
-                filename: m.media_filename,
+                filename: m.media_filename || att?.filename,
+                storage_reference: m.storage_reference || att?.storageReference || m.media_id,
+                storage_url: m.storage_url || att?.storageUrl || `/api/media/${m.media_id}`,
+                transcription: m.transcription || null,
+                extracted_text: m.extracted_text || null,
                 created_at: now
               }
             },
@@ -1349,6 +1523,8 @@ class MongoMessageStore {
           sender_phone: inbox.sender_phone,
           text: replyText,
           status: 'PENDING',
+          lead_id: state === 'completed' ? (leadId || active?.lead_id || null) : null,
+          session_id: active?.id || null,
           created_at: now,
           sent_at: null,
           provider_message_id: null,
@@ -1425,14 +1601,63 @@ class MongoMessageStore {
     return row;
   }
 
+  async updateLeadAttachments(leadId, attachments = []) {
+    if (typeof leadId !== 'string') return false;
+    const now = await this._now();
+    const hasFailed = attachments.some(a => a.zohoUploadStatus === 'failed');
+    const allUploaded = attachments.length > 0 && attachments.every(a => a.zohoUploadStatus === 'uploaded');
+    const attachmentStatus = hasFailed ? 'failed' : allUploaded ? 'uploaded' : 'pending';
+
+    await this.col('leads').updateOne(
+      { $or: [{ id: leadId }, { leadId }] },
+      {
+        $set: {
+          attachments,
+          attachment_status: attachmentStatus,
+          attachmentStatus,
+          updated_at: now
+        }
+      }
+    );
+
+    for (const att of attachments) {
+      if (att.id || att.messageId || att.whatsappMessageId) {
+        await this.col('lead_attachments').updateOne(
+          { $or: [{ id: att.id }, { message_id: att.messageId || att.whatsappMessageId, lead_id: leadId }] },
+          {
+            $set: {
+              zoho_attachment_id: att.zohoAttachmentId || null,
+              zoho_upload_status: att.zohoUploadStatus || 'pending',
+              zoho_error: att.zohoError || null,
+              storage_reference: att.storageReference || null,
+              storage_url: att.storageUrl || null,
+              updated_at: now
+            }
+          }
+        );
+      }
+    }
+    return true;
+  }
+
+  async getLeadAttachments(leadId) {
+    if (typeof leadId !== 'string') return [];
+    const lead = await this.col('leads').findOne({ $or: [{ id: leadId }, { leadId }] });
+    if (Array.isArray(lead?.attachments) && lead.attachments.length > 0) {
+      return lead.attachments;
+    }
+    const rows = await this.col('lead_attachments').find({ lead_id: leadId }).sort({ created_at: 1 }).toArray();
+    return rows.map(decode);
+  }
+
   async listConversations({ page = 1, pageSize = 20, search = '' } = {}) {
     positiveInteger(page, 'page', 1000000);
-    positiveInteger(pageSize, 'pageSize', 100);
+    positiveInteger(pageSize, 'pageSize', 1000);
     if (typeof search !== 'string' || search.length > 200 || /[\u0000-\u001f\u007f]/.test(search)) throw new TypeError('Invalid conversation search.');
 
     let phones = await this.col('whatsapp_messages').distinct('sender_phone');
     if (search.trim()) {
-      const q = search.trim().toLowerCase();
+      const q = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const matchedMsgs = await this.col('whatsapp_messages').find({
         $or: [
           { sender_phone: { $regex: q, $options: 'i' } },
@@ -1547,7 +1772,7 @@ class MongoMessageStore {
         created_at: m.created_at,
         received_at: m.received_at,
         status: m.processing_status,
-        lead_id: null,
+        lead_id: m.lead_id || null,
         session_id: m.session_id || null,
         receipt_sequence: 0,
         direction_order: 0
@@ -1555,31 +1780,63 @@ class MongoMessageStore {
     });
 
     const msgIds = incoming.map(m => m.message_id);
-    const outbox = (await this.col('reply_outbox').find({ $or: [{ sender_phone: id }, { message_id: { $in: msgIds } }] }).toArray()).map(r => ({
-      id: 'out:' + r.id,
-      message_id: r.message_id,
-      whatsapp_message_id: r.provider_message_id || r.message_id,
-      in_reply_to_message_id: r.message_id,
-      direction: 'outgoing',
-      text: r.text,
-      message_type: 'text',
-      media_id: null,
-      media_mime_type: null,
-      media_filename: null,
-      transcription: null,
-      extracted_text: null,
-      sender_name: null,
-      sender_type: 'bot',
-      created_at: r.sent_at || r.created_at,
-      received_at: null,
-      status: r.status,
-      lead_id: null,
-      session_id: null,
-      receipt_sequence: 0,
-      direction_order: 1
-    }));
+    const msgMap = new Map(incoming.map(m => [m.message_id, m]));
 
-    const all = [...incoming, ...outbox];
+    const outbox = (await this.col('reply_outbox').find({ $or: [{ sender_phone: id }, { message_id: { $in: msgIds } }] }).toArray()).map(r => {
+      const inc = msgMap.get(r.message_id);
+      return {
+        id: 'out:' + r.id,
+        message_id: r.message_id,
+        whatsapp_message_id: r.provider_message_id || null,
+        in_reply_to_message_id: r.message_id,
+        direction: 'outgoing',
+        text: r.text,
+        message_type: 'text',
+        media_id: null,
+        media_mime_type: null,
+        media_filename: null,
+        transcription: null,
+        extracted_text: null,
+        sender_name: null,
+        sender_type: 'bot',
+        created_at: r.sent_at || r.created_at,
+        received_at: null,
+        status: r.status,
+        lead_id: r.lead_id || inc?.lead_id || null,
+        session_id: r.session_id || inc?.session_id || null,
+        receipt_sequence: 0,
+        direction_order: 1
+      };
+    });
+
+    const historyReplies = (await this.col('reply_history').find({ message_id: { $in: msgIds } }).toArray()).map(r => {
+      const inc = msgMap.get(r.message_id);
+      return {
+        id: 'out:' + r.id,
+        message_id: r.message_id,
+        whatsapp_message_id: r.provider_message_id || r.message_id,
+        in_reply_to_message_id: r.message_id,
+        direction: 'outgoing',
+        text: r.text,
+        message_type: 'text',
+        media_id: null,
+        media_mime_type: null,
+        media_filename: null,
+        transcription: null,
+        extracted_text: null,
+        sender_name: null,
+        sender_type: 'bot',
+        created_at: r.sent_at || r.created_at,
+        received_at: null,
+        status: r.status,
+        lead_id: r.lead_id || inc?.lead_id || null,
+        session_id: r.session_id || inc?.session_id || null,
+        receipt_sequence: 0,
+        direction_order: 1
+      };
+    });
+
+    const all = [...incoming, ...outbox, ...historyReplies];
     all.sort((a, b) => new Date(a.created_at) - new Date(b.created_at) || a.direction_order - b.direction_order);
 
     const total = all.length;
@@ -1607,7 +1864,7 @@ class MongoMessageStore {
     }
 
     if (search.trim()) {
-      const q = search.trim().toLowerCase();
+      const q = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.$or = [
         { sender_phone: { $regex: q, $options: 'i' } },
         { company_name: { $regex: q, $options: 'i' } },
@@ -1646,7 +1903,7 @@ class MongoMessageStore {
     positiveInteger(maxAttempts, 'maxAttempts', 100);
     validateProcessingFlow(processingFlow);
     if (processingFlow === 'boss_lead') throw new TypeError('Boss lead work requires claimLeadExtraction.');
-    if (messageIds !== null && (!Array.isArray(messageIds) || messageIds.length > 1000)) throw new TypeError('Invalid messageIds.');
+    validateMessageIds(messageIds);
     if (Array.isArray(messageIds) && messageIds.length === 0) return null;
 
     const scoped = processingFlow === 'conversation';
@@ -1704,32 +1961,40 @@ class MongoMessageStore {
       }
     });
 
-    const candidateFilter = {
-      $or: [
-        { processing_status: 'RECEIVED' },
-        { processing_status: 'FAILED', next_attempt_at: { $lte: now } },
-        { processing_status: 'PROCESSING', lease_expires_at: { $lte: now } }
-      ]
-    };
+    const statusOr = [
+      { processing_status: 'RECEIVED' },
+      { processing_status: 'FAILED', next_attempt_at: { $lte: now } },
+      { processing_status: 'PROCESSING', lease_expires_at: { $lte: now } }
+    ];
+
+    let candidateFilter;
     if (scoped) {
-      candidateFilter.processing_flow = 'conversation';
-      candidateFilter.authenticated = true;
-      candidateFilter.message_type = 'text';
-      candidateFilter.received_at = { $gt: oldestReceived };
-      candidateFilter.attempts = { $lt: maxAttempts };
+      candidateFilter = {
+        $or: statusOr,
+        processing_flow: 'conversation',
+        authenticated: true,
+        message_type: 'text',
+        received_at: { $gt: oldestReceived },
+        attempts: { $lt: maxAttempts }
+      };
     } else {
-      candidateFilter.$or = [
-        { processing_flow: null },
-        { processing_flow: { $ne: 'boss_lead' } }
-      ];
-      candidateFilter.$and = [
-        {
-          $or: [
-            { attempts: { $lt: maxAttempts } },
-            { zoho_lead_id: { $ne: null } }
-          ]
-        }
-      ];
+      candidateFilter = {
+        $and: [
+          { $or: statusOr },
+          {
+            $or: [
+              { processing_flow: null },
+              { processing_flow: { $ne: 'boss_lead' } }
+            ]
+          },
+          {
+            $or: [
+              { attempts: { $lt: maxAttempts } },
+              { zoho_lead_id: { $ne: null } }
+            ]
+          }
+        ]
+      };
     }
     if (messageIds) candidateFilter.whatsapp_message_id = { $in: messageIds };
 
@@ -1955,18 +2220,22 @@ class MongoMessageStore {
     positiveInteger(leaseMs, 'leaseMs', 3600000);
     validateReplyText(replyText);
     validateProcessingFlow(processingFlow);
-    if (messageIds !== null && (!Array.isArray(messageIds) || messageIds.length > 1000)) throw new TypeError('Invalid messageIds.');
+    validateMessageIds(messageIds);
     if (Array.isArray(messageIds) && messageIds.length === 0) return null;
 
     const now = await this._now();
 
+    const sweepFilter = { status: 'SENDING', lease_expires_at: { $lte: now } };
+    if (messageIds) sweepFilter.message_id = { $in: messageIds };
     await this.col('reply_outbox').updateMany(
-      { status: 'SENDING', lease_expires_at: { $lte: now } },
+      sweepFilter,
       { $set: { status: 'UNKNOWN', error_message: 'SEND_LEASE_EXPIRED', lease_expires_at: null } }
     );
 
     const oldestReceived = addMilliseconds(now, -REPLY_WINDOW_MS);
-    const expiredMsgs = await this.col('whatsapp_messages').find({ received_at: { $lte: oldestReceived } }).toArray();
+    const expiredQuery = { received_at: { $lte: oldestReceived } };
+    if (messageIds) expiredQuery.whatsapp_message_id = { $in: messageIds };
+    const expiredMsgs = await this.col('whatsapp_messages').find(expiredQuery).toArray();
     if (expiredMsgs.length) {
       await this.col('reply_outbox').updateMany(
         { status: 'PENDING', message_id: { $in: expiredMsgs.map(m => m.whatsapp_message_id) } },
@@ -1992,7 +2261,9 @@ class MongoMessageStore {
       if (msg.processing_flow === 'boss_lead') {
         const myReceipt = await this.col('message_receipts').findOne({ message_id: candidate.message_id });
         if (myReceipt) {
-          const earlierReceipts = await this.col('message_receipts').find({ sequence: { $lt: myReceipt.sequence } }).toArray();
+          const earlierReceiptsQuery = { sequence: { $lt: myReceipt.sequence } };
+          if (messageIds) earlierReceiptsQuery.message_id = { $in: messageIds.filter(id => id !== candidate.message_id) };
+          const earlierReceipts = await this.col('message_receipts').find(earlierReceiptsQuery).toArray();
           if (earlierReceipts.length) {
             const earlierIds = earlierReceipts.map(r => r.message_id);
             const earlierSending = await this.col('reply_outbox').countDocuments({

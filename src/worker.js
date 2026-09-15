@@ -33,7 +33,6 @@ function createWorker({ store, processor, config, logger, processInbox = true, i
   }
   async function stop() {
     stopped = true;
-    triggerGate?.close();
     clearInterval(timer);
     await running;
   }

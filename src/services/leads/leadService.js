@@ -65,7 +65,9 @@ function createLeadService({ store, ai, config, resolveMessageContent, resolveMe
           text = content.text;
           if (typeof text !== 'string' || !text.trim()) throw new Error('Unreadable media.');
           media = { transcription: content.transcription ?? (job.message_type === 'audio' ? text : null),
-            extractedText: content.extractedText ?? (job.message_type === 'audio' ? null : text) };
+            extractedText: content.extractedText ?? (job.message_type === 'audio' ? null : text),
+            storageReference: content.storageReference ?? job.storage_reference ?? null,
+            storageUrl: content.storageUrl ?? job.storage_url ?? null };
         } catch (error) {
           return commit({ kind: 'media_error', state: session ? 'collecting' : null,
             replyText: error?.code === 'LEAD_MEDIA_UNSUPPORTED' ? UNSUPPORTED_MEDIA_REPLY

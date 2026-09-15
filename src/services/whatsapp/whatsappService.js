@@ -14,8 +14,8 @@ function failure(message, code, deliveryState = 'NOT_ATTEMPTED', details = {}) {
 
 function readWhatsAppSendConfig(env = process.env) {
   const clean = (value) => typeof value === 'string' ? value.trim() : '';
-  const accessToken = clean(env.WHATSAPP_ACCESS_TOKEN);
-  const phoneNumberId = clean(env.WHATSAPP_PHONE_NUMBER_ID);
+  const accessToken = clean(env.WHATSAPP_ACCESS_TOKEN || env.WHATSAPP_TOKEN);
+  const phoneNumberId = clean(env.WHATSAPP_PHONE_NUMBER_ID || env.PHONE_NUMBER_ID);
   const apiVersion = clean(env.META_GRAPH_API_VERSION || env.WHATSAPP_API_VERSION);
   if (!accessToken || accessToken.length > 4096 || /[^\x21-\x7e]/.test(accessToken)
       || !/^\d+$/.test(phoneNumberId) || !/^v\d+\.\d+$/.test(apiVersion)) {

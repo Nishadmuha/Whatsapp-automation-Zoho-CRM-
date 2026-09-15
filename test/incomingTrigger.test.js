@@ -100,10 +100,37 @@ async function setup(t, { store: suppliedStore, extract, download } = {}) {
       for (let index = 0; index < 20; index++) if (!(await processor.processNextReply())) return;
       assert.fail('Fresh-message outbox did not drain within its bound.');
     },
-    async poll() {
+    async poll(maxWaitMs = 3500) {
       worker.start();
       customerWorker.start();
-      await pause(config.pollMs * 3 + 20);
+      const minWait = config.pollMs * 3 + 20;
+      await pause(minWait);
+      const start = Date.now();
+      while (Date.now() - start < maxWaitMs) {
+        const activeIds = triggerGate.messageIds();
+        if (!activeIds.length) break;
+        const hasProcessingExtraction = await store.col('lead_extractions').countDocuments({
+          message_id: { $in: activeIds },
+          processing_status: { $in: ['RECEIVED', 'PROCESSING'] }
+        });
+        const hasPendingReply = await store.col('reply_outbox').countDocuments({
+          message_id: { $in: activeIds },
+          status: { $in: ['PENDING', 'SENDING'] }
+        });
+        if (!hasPendingReply && !hasProcessingExtraction) {
+          await pause(config.pollMs * 2);
+          const stillPending = await store.col('reply_outbox').countDocuments({
+            message_id: { $in: activeIds },
+            status: { $in: ['PENDING', 'SENDING'] }
+          });
+          if (!stillPending) break;
+        }
+        await pause(50);
+      }
+      for (let index = 0; index < 20; index++) {
+        if (!(await processor.processNextReply())) break;
+      }
+      await pause(50);
     },
   };
 }

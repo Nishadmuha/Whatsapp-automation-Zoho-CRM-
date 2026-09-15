@@ -22,10 +22,16 @@ mongoose.connection.on('error', () => {
 mongoose.connection.on('disconnected', () => {
   if (!pendingDisconnect) log('warn', 'mongodb_disconnected', 'MongoDB disconnected.');
 });
+mongoose.connection.on('reconnected', () => {
+  log('info', 'mongodb_reconnected', 'MongoDB reconnected successfully.');
+});
 
 async function connectMongoDB({ env = process.env, logger } = {}) {
   currentLogger = logger || currentLogger;
-  const value = env.MONGODB_URI;
+  let value = env.MONGODB_URI;
+  if ((value === undefined || value === '') && env.DATABASE_URL && /^mongodb(?:\+srv)?:\/\//.test(env.DATABASE_URL)) {
+    value = env.DATABASE_URL;
+  }
   if (value !== undefined && typeof value !== 'string') {
     throw failure('MONGODB_CONFIGURATION_ERROR', 'Set MONGODB_URI to a valid MongoDB connection string in .env.');
   }
@@ -39,13 +45,35 @@ async function connectMongoDB({ env = process.env, logger } = {}) {
   }
   if (pendingDisconnect) await pendingDisconnect;
   if (currentUri && currentUri !== uri) {
-    throw failure('MONGODB_CONFIGURATION_ERROR', 'MongoDB is already initialized. Restart the backend to change MONGODB_URI.');
+    if (process.env.NODE_ENV === 'test') {
+      await mongoose.disconnect().catch(() => {});
+      currentUri = undefined;
+    } else {
+      throw failure('MONGODB_CONFIGURATION_ERROR', 'MongoDB is already initialized. Restart the backend to change MONGODB_URI.');
+    }
   }
   if (pendingConnection) return pendingConnection;
   if (currentUri) {
     if (mongoose.connection.readyState === 1) return mongoose.connection;
-    // Let the existing driver reconnect rather than creating another client.
-    throw failure('MONGODB_CONNECTION_FAILED', 'MongoDB is temporarily disconnected. Check Atlas connectivity.');
+    if (mongoose.connection.readyState === 2) {
+      await new Promise(r => setTimeout(r, 500));
+      if (mongoose.connection.readyState === 1) return mongoose.connection;
+    }
+    // Attempt reconnect when disconnected
+    try {
+      await mongoose.connect(currentUri, {
+        serverSelectionTimeoutMS: 30000,
+        connectTimeoutMS: 10000,
+        maxPoolSize: 10,
+        bufferCommands: false,
+        autoCreate: false,
+        autoIndex: false,
+      });
+      log('info', 'mongodb_reconnected', 'MongoDB reconnected successfully');
+      return mongoose.connection;
+    } catch {
+      throw failure('MONGODB_CONNECTION_FAILED', 'MongoDB is temporarily disconnected. Check Atlas connectivity.');
+    }
   }
   currentUri = uri;
   pendingConnection = Promise.resolve().then(async () => {

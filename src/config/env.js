@@ -31,11 +31,18 @@ function readConfig(env = process.env) {
   if ((production || enabled) && !appSecret) {
     throw new Error('Set META_APP_SECRET (legacy WHATSAPP_APP_SECRET) for production or automation.');
   }
+  if (production && env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+    throw new Error('TLS certificate validation cannot be disabled in production.');
+  }
+  const rawDbUrl = env.DATABASE_URL !== undefined ? env.DATABASE_URL : (env.MONGODB_URI !== undefined ? env.MONGODB_URI : 'file:./data/messages.sqlite');
+  if (production && (rawDbUrl.startsWith('file:') || (env.DATABASE_URL && env.DATABASE_URL.startsWith('file:')))) {
+    throw new Error('SQLite database files cannot be used in production.');
+  }
   if (production && verifyToken.length < 32) throw new Error('WEBHOOK_VERIFY_TOKEN must have at least 32 characters in production.');
-  if (production && env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new Error('TLS certificate verification must be enabled in production.');
-  const mongoUri = (env.MONGODB_URI || '').trim();
-  if (production && !mongoUri) throw new Error('Set MONGODB_URI to a valid MongoDB connection string in production.');
-  const databaseUrl = mongoUri;
+  const mongoUri = (env.MONGODB_URI || (env.DATABASE_URL && /^mongodb(?:\+srv)?:\/\//.test(env.DATABASE_URL) ? env.DATABASE_URL : '')).trim();
+  if (production && !mongoUri && !env.DATABASE_URL) throw new Error('Set MONGODB_URI to a valid MongoDB connection string in production.');
+  const databaseUrl = rawDbUrl;
+  const databaseName = (env.MONGODB_DB_NAME || env.MONGO_DB_NAME || 'voltronix_crm').trim();
   const allowedSenders = (env.ALLOWED_SENDER_PHONES || '').split(',').map((s) => s.trim()).filter(Boolean);
   if (allowedSenders.some((s) => !/^\+?[1-9]\d{6,14}$/.test(s))) {
     throw new Error('ALLOWED_SENDER_PHONES must be comma-separated international phone numbers.');
@@ -63,7 +70,7 @@ function readConfig(env = process.env) {
   if (adminPassword && (!adminPassword.trim() || adminPassword.length < 8 || adminPassword.length > 256 || /[\u0000-\u001f\u007f-\u009f]/.test(adminPassword))) {
     throw new Error('ADMIN_PASSWORD must contain 8 to 256 characters without control characters.');
   }
-  const phoneNumberId = (env.WHATSAPP_PHONE_NUMBER_ID || '').trim();
+  const phoneNumberId = (env.WHATSAPP_PHONE_NUMBER_ID || env.PHONE_NUMBER_ID || '').trim();
   if (phoneNumberId && !/^\d+$/.test(phoneNumberId)) {
     throw new Error('WHATSAPP_PHONE_NUMBER_ID must be numeric when configured.');
   }
@@ -73,7 +80,7 @@ function readConfig(env = process.env) {
     readWhatsAppSendConfig(env);
   }
   return {
-    production, enabled, aiProvider, verifyToken, appSecret, mongoUri, databaseUrl, phoneNumberId, graphVersion, adminUsername, adminPassword, adminApiToken,
+    production, enabled, aiProvider, verifyToken, appSecret, mongoUri, databaseUrl, databaseName, phoneNumberId, graphVersion, adminUsername, adminPassword, adminApiToken,
     allowedSenders: new Set(allowedSenders.map((s) => `+${s.replace(/^\+/, '')}`)),
     bossSenders: new Set(bossSenders),
     port: integer(env.PORT, 5000, 1, 65535, 'PORT'),

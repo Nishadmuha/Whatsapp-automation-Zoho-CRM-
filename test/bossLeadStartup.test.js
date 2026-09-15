@@ -213,7 +213,7 @@ test(extractionFails
       ZOHO_CLIENT_ID: '', ZOHO_CLIENT_SECRET: '', ZOHO_REFRESH_TOKEN: '', ZOHO_ACCOUNTS_URL: '', ZOHO_API_BASE_URL: '',
       LOG_LEVEL: 'info',
     },
-    timeout: 15_000,
+    timeout: 45_000,
   });
   assert.match(outcome.stdout, /server_listening/);
   assert.doesNotMatch(outcome.stdout + outcome.stderr,

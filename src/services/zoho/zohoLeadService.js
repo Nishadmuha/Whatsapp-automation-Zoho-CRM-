@@ -145,11 +145,19 @@ function createZohoLeadService({ env = process.env, http = axios, auth, logger }
     const mutation = method !== 'GET';
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const token = await tokenService.getAccessToken();
+      const requestHeaders = {
+        'Content-Type': 'application/json',
+        ...headers,
+        Authorization: `Zoho-oauthtoken ${token}`,
+      };
+      if (headers && headers['Content-Type'] === null) {
+        delete requestHeaders['Content-Type'];
+      }
       let response;
       try {
         response = await http.request({
           ...options, method, url: `${baseUrl}${path}`, params, data,
-          headers: { ...headers, Authorization: `Zoho-oauthtoken ${token}`, 'Content-Type': 'application/json' },
+          headers: requestHeaders,
         });
       } catch (error) {
         if (error?.response) response = error.response;
@@ -280,7 +288,45 @@ function createZohoLeadService({ env = process.env, http = axios, auth, logger }
     return mutationResult(response, id);
   }
 
-  return { searchLeadByPhone, searchLeadByEmail, createLead, updateLead, getLead };
+  async function uploadLeadAttachment(id, { buffer, filename = 'attachment.bin', mimeType = 'application/octet-stream' } = {}) {
+    validateId(id);
+    if (!buffer) throw inputError('A file buffer is required for attachment upload.');
+    const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+
+    let payload;
+    const customHeaders = {};
+    const FormDataClass = globalThis.FormData;
+    if (FormDataClass) {
+      payload = new FormDataClass();
+      const blob = new globalThis.Blob([buf], { type: mimeType });
+      payload.append('file', blob, filename);
+      customHeaders['Content-Type'] = null;
+    } else {
+      payload = buf;
+      customHeaders['Content-Type'] = mimeType;
+    }
+
+    logger?.info?.({ event: 'zoho_upload_attachment', lead_id: id, filename });
+    const response = await request('POST', `/Leads/${id}/Attachments`, {
+      data: payload,
+      headers: customHeaders,
+    });
+
+    const result = response.data?.data?.[0];
+    const attachmentId = result?.details?.id || 'attached';
+    return { id: attachmentId, status: 'uploaded' };
+  }
+
+  async function checkHealth() {
+    try {
+      const token = await tokenService.getAccessToken();
+      return { healthy: Boolean(token), configured: true };
+    } catch (err) {
+      return { healthy: false, configured: true, error: err?.code || 'ZOHO_AUTH_FAILED' };
+    }
+  }
+
+  return { searchLeadByPhone, searchLeadByEmail, createLead, updateLead, getLead, uploadLeadAttachment, checkHealth };
 }
 
 module.exports = { createZohoLeadService, DEFAULT_FIELD_MAPPING, parseFieldMapping, mapLeadToZoho, escapeCriteriaValue };

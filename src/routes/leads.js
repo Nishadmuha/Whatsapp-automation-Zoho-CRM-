@@ -69,7 +69,7 @@ function listQuery(query) {
     extractionStatus: query.extraction_status, zohoStatus: query.zoho_status };
 }
 
-function createLeadsRouter({ config, store, ready, logger, env = {}, requireAuth }) {
+function createLeadsRouter({ config, store, ready, logger, env = {}, requireAuth, whatsapp = null }) {
   const router = express.Router();
   const redact = outputRedactor(config, env);
   router.use(rateLimit({ windowMs: 60_000, limit: config.rateLimit || 120,
@@ -85,7 +85,9 @@ function createLeadsRouter({ config, store, ready, logger, env = {}, requireAuth
     try {
       await ready;
       const stats = await store.getLeadStats();
-      return res.json(Object.fromEntries(STAT_FIELDS.map(field => [field, Number.isSafeInteger(stats[field]) && stats[field] >= 0 ? stats[field] : 0])));
+      const mapped = Object.fromEntries(STAT_FIELDS.map(field => [field,
+        Number.isSafeInteger(stats[field]) && stats[field] >= 0 ? stats[field] : 0]));
+      return res.json(redact(mapped));
     } catch { return unavailable(req, res); }
   });
   router.get('/', async (req, res) => {
@@ -107,7 +109,7 @@ function createLeadsRouter({ config, store, ready, logger, env = {}, requireAuth
       return lead ? res.json(redact(leadDto(lead))) : res.status(404).json({ success: false, message: 'Lead not found' });
     } catch { return unavailable(req, res); }
   });
-  router.post('/:id/sync-zoho', async (req, res) => {
+  router.post(['/:id/sync-zoho', '/:id/push-to-zoho'], async (req, res) => {
     if (!UUID.test(req.params.id)) return invalid(res);
     try {
       await ready;
@@ -119,7 +121,8 @@ function createLeadsRouter({ config, store, ready, logger, env = {}, requireAuth
         store,
         config,
         logger,
-        force: true
+        force: true,
+        whatsapp,
       });
       const updated = await store.getLead(req.params.id);
       if (syncResult && syncResult.success) {

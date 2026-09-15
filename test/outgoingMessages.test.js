@@ -10,7 +10,7 @@ const { createOutgoingMessages, ACKNOWLEDGEMENT } = require('../src/services/wha
 const { createIncomingTriggerGate } = require('../src/services/whatsapp/incomingTriggerGate');
 
 const senderPhone = '+971551234567';
-const flushTurn = () => new Promise(resolve => setImmediate(resolve));
+const flushTurn = () => new Promise(resolve => setTimeout(resolve, 350));
 function deferred() {
   let resolve;
   const promise = new Promise(done => { resolve = done; });

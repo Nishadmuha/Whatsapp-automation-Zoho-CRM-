@@ -2,8 +2,6 @@
 
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { randomUUID } = require('node:crypto');
-const { createMessageStore } = require('../src/database');
 const { temporaryStore, incoming } = require('./helpers');
 
 const ago = milliseconds => new Date(Date.now() - milliseconds).toISOString();
@@ -11,35 +9,13 @@ const conversation = { processingFlow: 'conversation' };
 const boss = { processingFlow: 'boss_lead' };
 const message = (id, overrides = {}) => incoming({ whatsapp_message_id: id, ...overrides });
 
-async function fixture(t, dialect) {
-  if (dialect === 'sqlite') return temporaryStore(t);
-  const { Pool } = require('pg');
-  const admin = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
-  const schema = `test_trigger_scope_${randomUUID().replaceAll('-', '')}`;
-  await admin.query(`CREATE SCHEMA ${schema}`);
-  const connectionUrl = new URL(process.env.TEST_DATABASE_URL);
-  connectionUrl.searchParams.set('options', `-c search_path=${schema}`);
-  const store = createMessageStore({ databaseUrl: connectionUrl.toString() });
-  t.after(async () => {
-    try { await store.close(); }
-    finally {
-      try { await admin.query(`DROP SCHEMA ${schema} CASCADE`); }
-      finally { await admin.end(); }
-    }
-  });
-  await store.init();
-  return { store };
-}
-
 async function snapshot(store, ids) {
   return Promise.all(ids.map(async id => ({
     message: await store.getMessage(id), extraction: await store.getLeadExtraction(id), reply: await store.getReply(id),
   })));
 }
 
-for (const dialect of ['sqlite', 'postgres']) {
-  const dbTest = (name, run) => test(`${dialect}: trigger scope ${name}`,
-    { skip: dialect === 'postgres' && !process.env.TEST_DATABASE_URL }, async t => run((await fixture(t, dialect)).store, t));
+const dbTest = (name, run) => test(`trigger scope: ${name}`, async t => run((await temporaryStore(t)).store, t));
 
   dbTest('an empty authorization list performs no database operations', async (store, t) => {
     t.mock.method(store.driver, 'query', () => { assert.fail('Empty scope cannot query or mutate the database.'); });
@@ -137,4 +113,4 @@ for (const dialect of ['sqlite', 'postgres']) {
     await store.enqueueMany([message('scoped-fixed-reply')], { replyText: 'Fixed reply' });
     assert.equal((await store.claimReply({ messageIds: ['scoped-fixed-reply'], replyText: 'Fixed reply' })).message_id, 'scoped-fixed-reply');
   });
-}
+
