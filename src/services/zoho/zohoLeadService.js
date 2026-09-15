@@ -290,8 +290,9 @@ function createZohoLeadService({ env = process.env, http = axios, auth, logger }
 
   async function uploadLeadAttachment(id, { buffer, filename = 'attachment.bin', mimeType = 'application/octet-stream' } = {}) {
     validateId(id);
-    if (!buffer) throw inputError('A file buffer is required for attachment upload.');
-    const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+    const rawBuffer = buffer?.buffer && Buffer.isBuffer(buffer.buffer) ? buffer.buffer : buffer;
+    if (!rawBuffer) throw inputError('A file buffer is required for attachment upload.');
+    const buf = Buffer.isBuffer(rawBuffer) ? rawBuffer : Buffer.from(rawBuffer);
 
     let payload;
     const customHeaders = {};

@@ -134,20 +134,29 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
         if (att.zohoUploadStatus === 'uploaded' && att.zohoAttachmentId) continue;
         try {
           let buffer = null;
+          let mimeType = att.mimeType || att.mime_type || 'application/octet-stream';
           const storageRef = att.storageReference || att.storage_reference;
           if (storageRef && typeof store.getMediaFile === 'function') {
-            buffer = await store.getMediaFile(storageRef);
+            const stored = await store.getMediaFile(storageRef);
+            buffer = Buffer.isBuffer(stored) ? stored : (stored?.buffer || null);
+            if (stored?.mimeType) mimeType = stored.mimeType;
           }
           const mediaId = att.mediaId || att.whatsapp_media_id;
+          if (!buffer && mediaId && typeof store.getMediaFileByMediaId === 'function') {
+            const storedByMedia = await store.getMediaFileByMediaId(mediaId);
+            buffer = Buffer.isBuffer(storedByMedia) ? storedByMedia : (storedByMedia?.buffer || null);
+            if (storedByMedia?.mimeType) mimeType = storedByMedia.mimeType;
+          }
           if (!buffer && mediaId && whatsapp?.downloadMedia) {
             const downloaded = await whatsapp.downloadMedia(mediaId).catch(() => null);
             buffer = downloaded?.buffer || null;
+            if (downloaded?.mimeType) mimeType = downloaded.mimeType;
             if (buffer && typeof store.saveMediaFile === 'function') {
               const ref = await store.saveMediaFile({
                 messageId: att.messageId || att.whatsappMessageId || att.message_id,
                 mediaId,
                 buffer,
-                mimeType: downloaded.mimeType || att.mimeType || att.mime_type,
+                mimeType,
                 filename: att.filename
               });
               att.storageReference = ref;
@@ -161,7 +170,7 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
             const uploadRes = await zohoClient.uploadLeadAttachment(zohoLeadId, {
               buffer,
               filename,
-              mimeType: att.mimeType || att.mime_type || 'application/octet-stream',
+              mimeType,
             });
             att.zohoAttachmentId = uploadRes?.id || 'attached';
             att.zohoUploadStatus = 'uploaded';
