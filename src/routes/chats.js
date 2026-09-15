@@ -8,7 +8,7 @@ const PHONE_ID = /^\+[1-9]\d{6,14}$/;
 const CONVERSATION_FIELDS = ['id', 'sender_phone', 'sender_name', 'type', 'status', 'last_message',
   'last_message_type', 'last_message_at', 'lead_id', 'session_id'];
 const MESSAGE_FIELDS = ['id', 'message_id', 'whatsapp_message_id', 'in_reply_to_message_id', 'direction', 'sender_type', 'text', 'message_type', 'media_id',
-  'media_mime_type', 'media_filename', 'transcription', 'extracted_text', 'sender_name', 'created_at', 'received_at', 'status', 'lead_id', 'session_id'];
+  'media_mime_type', 'media_filename', 'storage_url', 'transcription', 'extracted_text', 'sender_name', 'created_at', 'received_at', 'status', 'lead_id', 'session_id'];
 const LEAD_FIELDS = ['company_name', 'contact_name', 'phone', 'email', 'address', 'trn_no', 'project_name', 'project_location',
   'product_or_service', 'requirement', 'quantity', 'deadline', 'notes'];
 const strings = (row, fields) => Object.fromEntries(fields.map(field => [field, typeof row?.[field] === 'string' ? row[field] : null]));
@@ -46,7 +46,7 @@ function paginated(result, query, fields) {
     page: query.page, page_size: query.pageSize, total_pages: Math.ceil(total / query.pageSize) };
 }
 
-function createChatsRouter({ config, store, ready, logger, env = {}, requireAuth }) {
+function createChatsRouter({ config, store, ready, logger, env = {}, requireAuth, whatsapp: injectedWhatsapp }) {
   const router = express.Router();
   const redact = outputRedactor(config, env);
   router.use(rateLimit({ windowMs: 60_000, limit: config.rateLimit || 120,
@@ -79,9 +79,32 @@ function createChatsRouter({ config, store, ready, logger, env = {}, requireAuth
     const mediaId = req.params.mediaId;
     if (!/^\d{1,128}$/.test(mediaId)) return invalid(res);
     try {
-      const whatsapp = req.app.locals.whatsapp;
+      // 1. Check if stored in MongoDB GridFS by mediaId
+      if (typeof store.getMediaFileByMediaId === 'function') {
+        const stored = await store.getMediaFileByMediaId(mediaId);
+        if (stored?.buffer) {
+          res.setHeader('Content-Type', stored.mimeType || 'image/jpeg');
+          res.setHeader('Cache-Control', 'private, max-age=86400');
+          return res.send(stored.buffer);
+        }
+      }
+      // 2. Check if mediaId is a storage reference
+      if (typeof store.getMediaFile === 'function') {
+        const stored = await store.getMediaFile(mediaId);
+        if (stored?.buffer) {
+          res.setHeader('Content-Type', stored.mimeType || 'image/jpeg');
+          res.setHeader('Cache-Control', 'private, max-age=86400');
+          return res.send(stored.buffer);
+        }
+      }
+      // 3. Fallback to WhatsApp Meta API download
+      const whatsapp = req.app?.locals?.whatsapp || injectedWhatsapp ||
+        (config?.accessToken && config?.phoneNumberId ? require('../services/whatsapp/whatsappService').createWhatsAppService({ logger, config }) : null);
       if (!whatsapp?.downloadMedia) return res.status(404).json({ success: false, message: 'Media service unavailable' });
       const { buffer, mimeType } = await whatsapp.downloadMedia(mediaId);
+      if (typeof store.saveMediaFile === 'function' && buffer) {
+        store.saveMediaFile({ mediaId, buffer, mimeType }).catch(() => {});
+      }
       res.setHeader('Content-Type', mimeType);
       res.setHeader('Cache-Control', 'private, max-age=86400');
       return res.send(buffer);

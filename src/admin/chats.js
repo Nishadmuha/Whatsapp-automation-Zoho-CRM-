@@ -202,12 +202,19 @@
       if (message.message_type && message.message_type !== 'text') {
         bubble.append(node('p', mediaLabels[message.message_type] || 'Media message', 'media-indicator'));
         if (message.media_filename) bubble.append(node('p', message.media_filename, 'media-indicator'));
-        if (message.message_type === 'image' && message.media_id) {
+        if (message.message_type === 'image' && (message.media_id || message.storage_url)) {
           const img = document.createElement('img');
           img.className = 'chat-media-img';
-          img.src = '/api/chats/media/' + encodeURIComponent(message.media_id);
+          const primarySrc = message.storage_url || ('/api/chats/media/' + encodeURIComponent(message.media_id));
+          const fallbackSrc = message.media_id ? ('/api/chats/media/' + encodeURIComponent(message.media_id)) : '';
+          img.src = primarySrc;
           img.alt = 'Screenshot / image';
           img.loading = 'lazy';
+          img.onerror = () => {
+            if (fallbackSrc && img.src !== fallbackSrc) {
+              img.src = fallbackSrc;
+            }
+          };
           img.addEventListener('click', () => {
             const zoomImg = el('zoom-image');
             if (zoomImg) zoomImg.src = img.src;
@@ -216,12 +223,12 @@
           });
           bubble.append(img);
         }
-        if ((message.message_type === 'audio' || message.message_type === 'voice') && message.media_id) {
+        if ((message.message_type === 'audio' || message.message_type === 'voice') && (message.media_id || message.storage_url)) {
           const audio = document.createElement('audio');
           audio.className = 'chat-audio-player';
           audio.controls = true;
           audio.preload = 'none';
-          audio.src = '/api/chats/media/' + encodeURIComponent(message.media_id);
+          audio.src = message.storage_url || ('/api/chats/media/' + encodeURIComponent(message.media_id));
           bubble.append(audio);
         }
       }

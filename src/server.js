@@ -40,6 +40,7 @@ async function startServer() {
       const whatsapp = createWhatsAppService({ logger });
       const outgoingMessages = createOutgoingMessages({ store, whatsapp, config, logger, triggerGate });
       app.locals.outgoingMessages = outgoingMessages;
+      app.locals.whatsapp = whatsapp;
       app.locals.onNewMessage = async (message) => {
         if ((config.fastAck || process.env.FAST_ACKNOWLEDGEMENT === 'true') && config.bossSenders?.has(message.senderPhone)) {
           await outgoingMessages.acknowledge(message);

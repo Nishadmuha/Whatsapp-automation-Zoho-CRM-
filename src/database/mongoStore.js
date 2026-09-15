@@ -952,6 +952,26 @@ class MongoMessageStore {
     return { buffer, mimeType };
   }
 
+  async getMediaFileByMediaId(mediaId) {
+    if (!mediaId) return null;
+    if (!this.mediaBucket && this.db) {
+      const { GridFSBucket } = require('mongodb');
+      this.mediaBucket = new GridFSBucket(this.db, { bucketName: 'lead_media' });
+    }
+    if (!this.mediaBucket) return null;
+    try {
+      const fileDoc = await this.db.collection('lead_media.files').findOne({ 'metadata.mediaId': String(mediaId) });
+      if (fileDoc) {
+        return this.getMediaFile(fileDoc._id.toString());
+      }
+      const msg = await this.col('whatsapp_messages').findOne({ media_id: String(mediaId) });
+      if (msg?.storage_reference) {
+        return this.getMediaFile(msg.storage_reference);
+      }
+    } catch { /* fall through */ }
+    return null;
+  }
+
   async finishLeadExtraction(messageId, leaseToken, patch) {
     string(messageId, 'messageId', 512);
     string(leaseToken, 'leaseToken', 128);
@@ -1773,6 +1793,7 @@ class MongoMessageStore {
         media_id: m.media_id,
         media_mime_type: m.media_mime_type,
         media_filename: m.media_filename,
+        storage_url: m.storage_url || (m.storage_reference ? `/api/media/${m.storage_reference}` : null),
         transcription: m.transcription,
         extracted_text: m.extracted_text,
         sender_name: m.sender_name,

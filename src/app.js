@@ -105,7 +105,7 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
     onNewMessage: message => app.locals.onNewMessage?.(message) }));
   app.use('/api/admin', adminAccess.router);
   app.use('/api/leads', createLeadsRouter({ config, store, ready, logger, env, requireAuth: adminAccess.requireAuth, whatsapp: app.locals.whatsapp }));
-  app.use('/api/chats', createChatsRouter({ config, store, ready, logger, env, requireAuth: adminAccess.requireAuth }));
+  app.use('/api/chats', createChatsRouter({ config, store, ready, logger, env, requireAuth: adminAccess.requireAuth, whatsapp: app.locals.whatsapp }));
   app.use('/admin', createLeadsDashboardRouter());
   app.use('/admin', createChatsDashboardRouter());
   // Root and bare /admin redirect to the leads workspace.
