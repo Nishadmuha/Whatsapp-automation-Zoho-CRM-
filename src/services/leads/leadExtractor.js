@@ -18,21 +18,36 @@ function extractionFailure(error, stage) {
 
 function createLeadExtractor({ ai }) {
   return {
-    async extract(text) {
-      let extracted;
-      try {
-        validateLeadInput(text);
-        extracted = await ai.extractLeadEnquiry(text);
-      } catch (error) {
-        throw extractionFailure(error);
+    async extract(text, options = {}) {
+      validateLeadInput(text);
+      const tiers = ['low', 'medium', 'high'];
+      let lastError;
+      for (let attempt = 0; attempt < tiers.length; attempt++) {
+        const tier = options.requestedTier || tiers[attempt];
+        let extracted;
+        try {
+          extracted = await ai.extractLeadEnquiry(text, {
+            ...options,
+            requestedTier: tier,
+            isRetry: attempt > 0,
+            previousAttempts: attempt,
+          });
+        } catch (error) {
+          throw extractionFailure(error);
+        }
+        try {
+          // Recheck mocked or substituted providers at the service boundary. No
+          // sender identity is used to fill missing customer facts.
+          return validateLeadExtraction(extracted, { originalText: text });
+        } catch (error) {
+          lastError = error;
+          // Stop escalating if caller pinned requestedTier or reached the highest tier
+          if (options.requestedTier || attempt === tiers.length - 1) {
+            throw extractionFailure(lastError, 'schema');
+          }
+        }
       }
-      try {
-        // Recheck mocked or substituted providers at the service boundary. No
-        // sender identity is used to fill missing customer facts.
-        return validateLeadExtraction(extracted, { originalText: text });
-      } catch (error) {
-        throw extractionFailure(error, 'schema');
-      }
+      throw extractionFailure(lastError, 'schema');
     },
   };
 }
