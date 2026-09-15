@@ -294,3 +294,30 @@ test('chat APIs read migrated SQLite history, duplicate receipts, pending sessio
   assert.deepEqual(loaded.map(message => message.text), ['Hi', 'Hi Boss', 'Al Noor needs 2 MDB', 'Is this lead complete?', 'Yes', 'Lead saved successfully']);
   assert.equal(loaded.at(-1).lead_id, detail.leads[0].id);
 });
+
+test('chat media endpoint serves stored files, caches 404 on missing, and has separate rate limit', async t => {
+  const fakeBuffer = Buffer.from('fake-image-bytes');
+  const h = await backend(t, {
+    methods: {
+      async getMediaFileByMediaId(id) {
+        if (id === '123456') return { buffer: fakeBuffer, mimeType: 'image/png' };
+        return null;
+      },
+    },
+  });
+  // 1. Existing media file returns 200 with correct mime type and cache header
+  const successRes = await h.request('/api/chats/media/123456');
+  assert.equal(successRes.status, 200);
+  assert.equal(successRes.headers.get('content-type'), 'image/png');
+  assert.equal(successRes.headers.get('cache-control'), 'private, max-age=86400');
+  const buf = Buffer.from(await successRes.arrayBuffer());
+  assert.deepEqual(buf, fakeBuffer);
+
+  // 2. Missing/expired media file returns 404
+  const missingRes = await h.request('/api/chats/media/999999');
+  assert.equal(missingRes.status, 404);
+
+  // 3. Invalid media id format returns 400
+  const invalidRes = await h.request('/api/chats/media/invalid-id-xyz');
+  assert.equal(invalidRes.status, 400);
+});

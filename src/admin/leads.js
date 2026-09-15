@@ -222,7 +222,8 @@
           const isImage = mediaType === 'image' || mimeType.startsWith('image/');
           // Prefer the persistent GridFS URL; fall back to the Meta proxy only when absent
           const persistentUrl = att.storage_url || att.storageUrl;
-          const fallbackUrl = '/api/chats/media/' + encodeURIComponent(att.media_id || att.mediaId || att.whatsapp_media_id || '');
+          const mediaId = att.media_id || att.mediaId || att.whatsapp_media_id;
+          const fallbackUrl = mediaId ? ('/api/chats/media/' + encodeURIComponent(mediaId)) : '';
           const mediaSrc = persistentUrl || fallbackUrl;
           if (isImage) {
             const img = document.createElement('img');
@@ -230,7 +231,24 @@
             img.src = mediaSrc;
             img.alt = att.filename || 'Lead image';
             img.loading = 'lazy';
-            img.addEventListener('click', () => window.open(mediaSrc, '_blank'));
+            let triedFallback = false;
+            img.onerror = () => {
+              if (persistentUrl && fallbackUrl && !triedFallback) {
+                triedFallback = true;
+                img.src = fallbackUrl;
+              } else {
+                img.onerror = null;
+                const placeholder = node('div', undefined, 'media-unavailable');
+                placeholder.append(
+                  node('span', '🖼️', 'media-unavailable-icon'),
+                  node('span', 'Image expired or unavailable', 'media-unavailable-text')
+                );
+                img.replaceWith(placeholder);
+              }
+            };
+            img.addEventListener('click', () => {
+              if (img.src) window.open(img.src, '_blank');
+            });
             card.append(img);
             if (att.ocr_text || att.extractedText) {
               card.append(node('div', 'OCR Text:', 'media-label'));
@@ -240,7 +258,23 @@
             const audio = document.createElement('audio');
             audio.className = 'lead-audio-player';
             audio.controls = true;
+            audio.preload = 'none';
             audio.src = mediaSrc;
+            let triedAudioFallback = false;
+            audio.onerror = () => {
+              if (persistentUrl && fallbackUrl && !triedAudioFallback) {
+                triedAudioFallback = true;
+                audio.src = fallbackUrl;
+              } else {
+                audio.onerror = null;
+                const placeholder = node('div', undefined, 'media-unavailable');
+                placeholder.append(
+                  node('span', '🎤', 'media-unavailable-icon'),
+                  node('span', 'Audio unavailable or expired', 'media-unavailable-text')
+                );
+                audio.replaceWith(placeholder);
+              }
+            };
             card.append(audio);
             if (att.transcription_text || att.transcription) {
               card.append(node('div', 'Voice Transcription:', 'media-label'));

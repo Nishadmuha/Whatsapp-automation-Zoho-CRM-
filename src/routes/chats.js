@@ -49,9 +49,17 @@ function paginated(result, query, fields) {
 function createChatsRouter({ config, store, ready, logger, env = {}, requireAuth, whatsapp: injectedWhatsapp }) {
   const router = express.Router();
   const redact = outputRedactor(config, env);
-  router.use(rateLimit({ windowMs: 60_000, limit: config.rateLimit || 120,
-    standardHeaders: 'draft-8', legacyHeaders: false, message: { success: false, message: 'Too many requests' } }));
+  const chatLimiter = rateLimit({ windowMs: 60_000, limit: config.rateLimit || 120,
+    standardHeaders: 'draft-8', legacyHeaders: false, message: { success: false, message: 'Too many requests' } });
+  const mediaLimiter = rateLimit({ windowMs: 60_000, limit: Math.max((config.rateLimit || 120) * 10, 1200),
+    standardHeaders: 'draft-8', legacyHeaders: false, message: { success: false, message: 'Too many requests' } });
   router.use(requireAuth);
+  router.use((req, res, next) => {
+    if (req.path.startsWith('/media/')) {
+      return mediaLimiter(req, res, next);
+    }
+    return chatLimiter(req, res, next);
+  });
   const invalid = res => res.status(400).json({ success: false, message: 'Invalid chat query' });
   const unavailable = (req, res) => {
     logger?.error?.({ event: 'chats_api_unavailable', request_id: req.requestId });

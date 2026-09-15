@@ -206,13 +206,25 @@
           const img = document.createElement('img');
           img.className = 'chat-media-img';
           const primarySrc = message.storage_url || ('/api/chats/media/' + encodeURIComponent(message.media_id));
-          const fallbackSrc = message.media_id ? ('/api/chats/media/' + encodeURIComponent(message.media_id)) : '';
+          const fallbackSrc = (message.storage_url && message.media_id)
+            ? ('/api/chats/media/' + encodeURIComponent(message.media_id))
+            : '';
           img.src = primarySrc;
           img.alt = 'Screenshot / image';
           img.loading = 'lazy';
+          let triedFallback = false;
           img.onerror = () => {
-            if (fallbackSrc && img.src !== fallbackSrc) {
+            if (fallbackSrc && !triedFallback) {
+              triedFallback = true;
               img.src = fallbackSrc;
+            } else {
+              img.onerror = null;
+              const placeholder = node('div', undefined, 'media-unavailable');
+              placeholder.append(
+                node('span', '🖼️', 'media-unavailable-icon'),
+                node('span', 'Media expired or unavailable', 'media-unavailable-text')
+              );
+              img.replaceWith(placeholder);
             }
           };
           img.addEventListener('click', () => {
@@ -228,7 +240,26 @@
           audio.className = 'chat-audio-player';
           audio.controls = true;
           audio.preload = 'none';
-          audio.src = message.storage_url || ('/api/chats/media/' + encodeURIComponent(message.media_id));
+          const primaryAudio = message.storage_url || ('/api/chats/media/' + encodeURIComponent(message.media_id));
+          const fallbackAudio = (message.storage_url && message.media_id)
+            ? ('/api/chats/media/' + encodeURIComponent(message.media_id))
+            : '';
+          audio.src = primaryAudio;
+          let triedAudioFallback = false;
+          audio.onerror = () => {
+            if (fallbackAudio && !triedAudioFallback) {
+              triedAudioFallback = true;
+              audio.src = fallbackAudio;
+            } else {
+              audio.onerror = null;
+              const placeholder = node('div', undefined, 'media-unavailable');
+              placeholder.append(
+                node('span', '🎤', 'media-unavailable-icon'),
+                node('span', 'Audio unavailable or expired', 'media-unavailable-text')
+              );
+              audio.replaceWith(placeholder);
+            }
+          };
           bubble.append(audio);
         }
       }
