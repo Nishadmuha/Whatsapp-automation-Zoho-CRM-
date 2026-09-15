@@ -216,32 +216,48 @@
         const grid = node('div', undefined, 'lead-media-grid');
         for (const att of lead.attachments) {
           const card = node('div', undefined, 'lead-media-card');
-          const isAudio = att.media_type === 'audio' || (att.mime_type && att.mime_type.startsWith('audio/'));
-          const isImage = att.media_type === 'image' || (att.mime_type && att.mime_type.startsWith('image/'));
+          const mimeType = att.mime_type || att.mimeType || '';
+          const mediaType = att.type || att.media_type || '';
+          const isAudio = mediaType === 'audio' || mimeType.startsWith('audio/');
+          const isImage = mediaType === 'image' || mimeType.startsWith('image/');
+          // Prefer the persistent GridFS URL; fall back to the Meta proxy only when absent
+          const persistentUrl = att.storage_url || att.storageUrl;
+          const fallbackUrl = '/api/chats/media/' + encodeURIComponent(att.media_id || att.mediaId || att.whatsapp_media_id || '');
+          const mediaSrc = persistentUrl || fallbackUrl;
           if (isImage) {
             const img = document.createElement('img');
             img.className = 'lead-media-img';
-            img.src = '/api/chats/media/' + encodeURIComponent(att.media_id);
-            img.alt = 'Lead image';
+            img.src = mediaSrc;
+            img.alt = att.filename || 'Lead image';
             img.loading = 'lazy';
-            img.addEventListener('click', () => window.open(img.src, '_blank'));
+            img.addEventListener('click', () => window.open(mediaSrc, '_blank'));
             card.append(img);
-            if (att.ocr_text) {
+            if (att.ocr_text || att.extractedText) {
               card.append(node('div', 'OCR Text:', 'media-label'));
-              card.append(node('pre', att.ocr_text, 'media-text'));
+              card.append(node('pre', att.ocr_text || att.extractedText, 'media-text'));
             }
           } else if (isAudio) {
             const audio = document.createElement('audio');
             audio.className = 'lead-audio-player';
             audio.controls = true;
-            audio.src = '/api/chats/media/' + encodeURIComponent(att.media_id);
+            audio.src = mediaSrc;
             card.append(audio);
-            if (att.transcription_text) {
+            if (att.transcription_text || att.transcription) {
               card.append(node('div', 'Voice Transcription:', 'media-label'));
-              card.append(node('pre', att.transcription_text, 'media-text'));
+              card.append(node('pre', att.transcription_text || att.transcription, 'media-text'));
             }
           } else {
-            card.append(node('div', (att.media_type || 'File') + ' (' + (att.mime_type || 'unknown') + ')', 'media-label'));
+            card.append(node('div', (mediaType || 'File') + ' (' + (mimeType || 'unknown') + ')', 'media-label'));
+          }
+          // Filename and MIME type
+          if (att.filename) card.append(node('div', '📎 ' + att.filename, 'media-label'));
+          // Zoho upload status
+          const zohoStatus = att.zohoUploadStatus || att.zoho_upload_status || 'pending';
+          const zohoLabel = { uploaded: '✅ Uploaded to Zoho', failed: '❌ Zoho upload failed', pending: '⏳ Pending Zoho upload' }[zohoStatus] || zohoStatus;
+          const zohoSpan = node('div', zohoLabel, 'media-label zoho-att-' + zohoStatus);
+          card.append(zohoSpan);
+          if (zohoStatus === 'failed' && (att.zohoError || att.zoho_error)) {
+            card.append(node('div', att.zohoError || att.zoho_error, 'media-label media-error'));
           }
           grid.append(card);
         }

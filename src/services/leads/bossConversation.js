@@ -100,8 +100,25 @@ function formatBossFinalSuccessMessage({ contact, company, phone, email, zohoLea
     if (voice > 0) attachmentLines.push(`${voice} voice message${voice > 1 ? 's' : ''} attached ✅`);
     if (docs > 0) attachmentLines.push(`${docs} document${docs > 1 ? 's' : ''} attached ✅`);
 
+    lines.push('', `Attachments (${attachments.length}):`);
     if (attachmentLines.length > 0) {
-      lines.push('', 'Attachments:', ...attachmentLines);
+      lines.push(...attachmentLines);
+    }
+    for (const att of attachments) {
+      const name = att.filename || att.mediaId || att.media_id || 'file';
+      const status = att.zohoUploadStatus || att.zoho_upload_status || 'pending';
+      const statusIcon = status === 'uploaded' ? '\u2705' : status === 'failed' ? '\u274c' : '\u23f3';
+      const statusText = status === 'uploaded' ? 'uploaded to Zoho'
+        : status === 'failed' ? `upload failed: ${att.zohoError || att.zoho_error || 'unknown error'}`
+        : 'pending upload';
+      lines.push(`  ${statusIcon} ${name} \u2014 ${statusText}`);
+    }
+    const allUploaded = attachments.every(a => (a.zohoUploadStatus || a.zoho_upload_status) === 'uploaded');
+    const anyFailed = attachments.some(a => (a.zohoUploadStatus || a.zoho_upload_status) === 'failed');
+    if (anyFailed) {
+      lines.push('', '\u26a0\ufe0f Some attachments could not be uploaded. Use "Push to Zoho" in the admin panel to retry.');
+    } else if (allUploaded) {
+      lines.push('', '\ud83d\uddbc\ufe0f All attachments uploaded to Zoho \u2705');
     }
   }
 

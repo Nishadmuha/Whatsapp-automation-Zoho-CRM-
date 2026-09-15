@@ -935,13 +935,21 @@ class MongoMessageStore {
     } catch {
       return null;
     }
+    // Fetch mimeType from GridFS file metadata alongside the binary stream
+    let mimeType = 'application/octet-stream';
+    try {
+      const fileDoc = await this.db.collection('lead_media.files').findOne({ _id: fileId });
+      if (fileDoc?.metadata?.mimeType) mimeType = fileDoc.metadata.mimeType;
+    } catch { /* fall through with default mimeType */ }
     const chunks = [];
-    return new Promise((resolve) => {
+    const buffer = await new Promise((resolve) => {
       const stream = this.mediaBucket.openDownloadStream(fileId);
       stream.on('data', chunk => chunks.push(chunk));
       stream.on('end', () => resolve(Buffer.concat(chunks)));
       stream.on('error', () => resolve(null));
     });
+    if (!buffer) return null;
+    return { buffer, mimeType };
   }
 
   async finishLeadExtraction(messageId, leaseToken, patch) {

@@ -134,15 +134,30 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
         if (att.zohoUploadStatus === 'uploaded' && att.zohoAttachmentId) continue;
         try {
           let buffer = null;
-          if (att.storageReference && typeof store.getMediaFile === 'function') {
-            buffer = await store.getMediaFile(att.storageReference);
+          const storageRef = att.storageReference || att.storage_reference;
+          if (storageRef && typeof store.getMediaFile === 'function') {
+            buffer = await store.getMediaFile(storageRef);
           }
-          if (!buffer && att.mediaId && whatsapp?.downloadMedia) {
-            const downloaded = await whatsapp.downloadMedia(att.mediaId).catch(() => null);
+          const mediaId = att.mediaId || att.whatsapp_media_id;
+          if (!buffer && mediaId && whatsapp?.downloadMedia) {
+            const downloaded = await whatsapp.downloadMedia(mediaId).catch(() => null);
             buffer = downloaded?.buffer || null;
+            if (buffer && typeof store.saveMediaFile === 'function') {
+              const ref = await store.saveMediaFile({
+                messageId: att.messageId || att.whatsappMessageId || att.message_id,
+                mediaId,
+                buffer,
+                mimeType: downloaded.mimeType || att.mimeType || att.mime_type,
+                filename: att.filename
+              });
+              att.storageReference = ref;
+              att.storageUrl = `/api/media/${ref}`;
+              att.storage_reference = ref;
+              att.storage_url = `/api/media/${ref}`;
+            }
           }
           if (buffer) {
-            const filename = att.filename || `attachment_${att.mediaId || Date.now()}`;
+            const filename = att.filename || `attachment_${mediaId || Date.now()}`;
             const uploadRes = await zohoClient.uploadLeadAttachment(zohoLeadId, {
               buffer,
               filename,
@@ -150,22 +165,30 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
             });
             att.zohoAttachmentId = uploadRes?.id || 'attached';
             att.zohoUploadStatus = 'uploaded';
+            att.zoho_upload_status = 'uploaded';
             att.zohoError = null;
+            att.zoho_error = null;
           } else {
             att.zohoUploadStatus = 'failed';
+            att.zoho_upload_status = 'failed';
             att.zohoError = 'Media file buffer not found';
+            att.zoho_error = 'Media file buffer not found';
           }
         } catch (uploadErr) {
           logger?.warn?.({ event: 'zoho_attachment_upload_failed', lead_id: leadId, error: uploadErr?.message });
           att.zohoUploadStatus = 'failed';
-          att.zohoError = uploadErr?.message || 'Attachment upload failed';
+          att.zoho_upload_status = 'failed';
+          att.zohoError = uploadErr?.message || 'Unknown error';
+          att.zoho_error = uploadErr?.message || 'Unknown error';
         }
       }
 
       if (typeof store.updateLeadAttachments === 'function') {
         try {
           await store.updateLeadAttachments(leadId, attachments);
-        } catch { /* best effort */ }
+        } catch (err) {
+          logger?.warn?.({ event: 'failed_to_update_lead_attachments', error: err.message });
+        }
       }
     }
 
@@ -215,7 +238,7 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
 function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGate, zoho }) {
   const service = createLeadService({ store, ai, config, resolveMessageContent: async (job, { assertLease }) => {
     const { resolveLeadMessageContent } = require('./leadMedia');
-    return resolveLeadMessageContent({ message: job, whatsapp, ai, assertActive: assertLease });
+    return resolveLeadMessageContent({ message: job, whatsapp, ai, assertActive: assertLease, store });
   } });
   const active = () => config.enabled && config.aiProvider === 'openai';
   const authorized = job => job.authenticated === true

@@ -83,14 +83,15 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
       return res.status(503).json({ status: 'unavailable' });
     }
   });
-  app.get('/api/media/:reference', async (req, res) => {
+  app.get('/api/media/:reference', adminAccess.requireAuth, async (req, res) => {
     const ref = req.params.reference;
     if (!ref || typeof ref !== 'string') return res.status(400).json({ success: false, message: 'Invalid media reference' });
     try {
       if (typeof store.getMediaFile === 'function') {
-        const buffer = await store.getMediaFile(ref);
-        if (buffer) {
-          res.setHeader('Content-Type', 'application/octet-stream');
+        const result = await store.getMediaFile(ref);
+        if (result) {
+          const { buffer, mimeType } = result;
+          res.setHeader('Content-Type', mimeType || 'application/octet-stream');
           res.setHeader('Cache-Control', 'private, max-age=86400');
           return res.send(buffer);
         }
@@ -107,7 +108,12 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
   app.use('/api/chats', createChatsRouter({ config, store, ready, logger, env, requireAuth: adminAccess.requireAuth }));
   app.use('/admin', createLeadsDashboardRouter());
   app.use('/admin', createChatsDashboardRouter());
+  // Root and bare /admin redirect to the leads workspace.
+  // leads.html already contains the login panel — unauthenticated users see it
+  // automatically; no second auth system is introduced.
+  app.get(['/', '/admin', '/admin/'], (_req, res) => res.redirect(302, '/admin/leads'));
   app.use((_req, res) => res.status(404).json({ success: false, message: 'Route not found' }));
+
   app.use(errorHandler(logger));
   return app;
 }
