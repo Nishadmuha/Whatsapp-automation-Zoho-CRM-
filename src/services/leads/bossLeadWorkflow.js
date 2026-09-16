@@ -75,6 +75,10 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
   await store.updateLeadZohoStatus(leadId, { zohoStatus: 'creating' });
 
   try {
+    if (typeof zohoClient.verifyAuthentication === 'function') {
+      await zohoClient.verifyAuthentication();
+    }
+
     const extraNotes = [
       lead.project_name ? `Project: ${lead.project_name}` : null,
       lead.quantity ? `Qty: ${lead.quantity}` : null,

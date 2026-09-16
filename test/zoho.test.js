@@ -579,4 +579,99 @@ test('Zoho uploadLeadAttachment validates input arguments strictly', async () =>
   await assert.rejects(service.uploadLeadAttachment('12345', { buffer: Buffer.alloc(0) }), { code: 'ZOHO_INPUT' });
 });
 
+test('Zoho OAuth: valid refresh token automatically generates access token and supports preconfigured ZOHO_ACCESS_TOKEN', async () => {
+  const http = mockHttp([
+    { status: 200, data: { access_token: 'fresh-access-token-999', expires_in: 3600, api_domain: 'https://www.zohoapis.com' } },
+  ]);
+  const auth = createZohoAuthService({ env: settings(), http });
+  const token = await auth.getAccessToken();
+  assert.equal(token, 'fresh-access-token-999');
+  assert.equal(http.calls.length, 1);
+
+  // When ZOHO_ACCESS_TOKEN is passed, it is used initially without an immediate refresh call
+  const authWithInitial = createZohoAuthService({ env: settings({ ZOHO_ACCESS_TOKEN: 'pre-existing-access-token' }), http: mockHttp([]) });
+  assert.equal(await authWithInitial.getAccessToken(), 'pre-existing-access-token');
+});
+
+test('Zoho OAuth: expired access token automatically triggers refresh using refresh token', async () => {
+  let currentTime = 1000000;
+  const http = mockHttp([
+    { status: 200, data: { access_token: 'initial-token', expires_in: 60 } },
+    { status: 200, data: { access_token: 'refreshed-token', expires_in: 60 } },
+  ]);
+  const auth = createZohoAuthService({ env: settings(), http, now: () => currentTime });
+
+  // First call fetches initial token (valid for 60s)
+  assert.equal(await auth.getAccessToken(), 'initial-token');
+  assert.equal(http.calls.length, 1);
+
+  // Time advances past expiry
+  currentTime += 70000;
+
+  // Second call automatically refreshes
+  assert.equal(await auth.getAccessToken(), 'refreshed-token');
+  assert.equal(http.calls.length, 2);
+});
+
+test('Zoho OAuth: invalid or revoked refresh token throws clear safe error without leaking credentials', async () => {
+  const http = mockHttp([
+    { status: 200, data: { error: 'invalid_code' } },
+  ]);
+  const auth = createZohoAuthService({ env: settings(), http });
+  await assert.rejects(
+    auth.getAccessToken(),
+    (err) => {
+      assert.equal(err.code, 'ZOHO_AUTH');
+      assert.equal(err.providerCode, 'INVALID_CODE');
+      assert.equal(inspect(err).includes('test-secret'), false);
+      assert.equal(inspect(err).includes('test-refresh'), false);
+      return true;
+    }
+  );
+});
+
+test('Zoho OAuth: OAuth scope mismatch is identified and safely surfaced on mutation/query', async () => {
+  const http = mockHttp([
+    { status: 401, data: { code: 'OAUTH_SCOPE_MISMATCH', message: 'invalid oauth scope to access this URL' } },
+  ]);
+  const service = crm(http);
+  await assert.rejects(
+    service.uploadLeadAttachment('5653678000072495041', {
+      buffer: Buffer.from('data'),
+      filename: 'file.jpg',
+      mimeType: 'image/jpeg',
+    }),
+    (err) => {
+      assert.equal(err.code, 'ZOHO_API');
+      assert.equal(err.providerCode, 'OAUTH_SCOPE_MISMATCH');
+      assert.equal(err.httpStatus, 401);
+      return true;
+    }
+  );
+});
+
+test('Zoho OAuth: getAuthHealth reports status safely without exposing credentials', async () => {
+  const http = mockHttp([
+    { status: 200, data: { access_token: 'valid-token', expires_in: 3600, api_domain: 'https://www.zohoapis.com' } },
+  ]);
+  const auth = createZohoAuthService({ env: settings(), http });
+  const health = await auth.getAuthHealth();
+
+  assert.equal(health.status, 'authenticated');
+  assert.equal(health.configured, true);
+  assert.equal(health.authenticated, true);
+  assert.equal(health.tokenCached, true);
+  assert.ok(health.expiresInSeconds > 0);
+  assert.equal(health.apiDomain, 'https://www.zohoapis.com');
+  assert.equal(inspect(health).includes('valid-token'), false);
+  assert.equal(inspect(health).includes('test-secret'), false);
+
+  // Unconfigured reporting
+  const unconfiguredAuth = createZohoAuthService({ env: {}, http: mockHttp([]) });
+  const unconfiguredHealth = await unconfiguredAuth.getAuthHealth();
+  assert.equal(unconfiguredHealth.status, 'unconfigured');
+  assert.equal(unconfiguredHealth.configured, false);
+  assert.equal(unconfiguredHealth.authenticated, false);
+});
+
 

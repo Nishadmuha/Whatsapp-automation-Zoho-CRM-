@@ -83,10 +83,16 @@ async function run() {
   }
 
   const authService = createZohoAuthService({ env: process.env });
+  const isAuthCodePastedAsRefreshToken = authCode && refreshToken && authCode === refreshToken;
+  const shouldExchange = authCode && (!refreshToken || isAuthCodePastedAsRefreshToken || process.argv.includes('--exchange'));
 
   // 2. Exchange Authorization Code if present
-  if (authCode && !refreshToken) {
-    console.log('[2/4] Authorization Code found. Initiating secure OAuth exchange...');
+  if (shouldExchange) {
+    if (isAuthCodePastedAsRefreshToken) {
+      console.log('[2/4] Authorization code detected in ZOHO_REFRESH_TOKEN. Initiating secure OAuth exchange...');
+    } else {
+      console.log('[2/4] Authorization Code found. Initiating secure OAuth exchange...');
+    }
     try {
       const exchangeResult = await authService.exchangeAuthorizationCode({
         code: authCode,
@@ -117,7 +123,10 @@ async function run() {
       console.error(`  ❌ Authorization Code exchange failed: [${error.code || 'ERROR'}] ${error.message}`);
       if (error.providerCode === 'INVALID_CODE') {
         console.log('  ⚠️  The Authorization Code has expired or was already consumed.');
-        console.log('     Generate a new code in Zoho Developer Console Self Client and put in .env.');
+        console.log('     Authorization codes are single-use and expire within 10 minutes.');
+        console.log('     Generate a new code in Zoho Developer Console (Self Client) with scope:');
+        console.log('     ZohoCRM.modules.ALL');
+        console.log('     Then put it in .env as ZOHO_AUTHORIZATION_CODE=1000.xxxx and re-run: npm run zoho:auth');
       } else if (error.providerCode === 'INVALID_CLIENT') {
         console.log('  ⚠️  Zoho rejected the Client ID / Client Secret, or the Accounts URL domain does not match where the client was created.');
       }
@@ -130,11 +139,11 @@ async function run() {
     console.log('  Then re-run: node scripts/zoho-auth.js\n');
     return;
   } else {
-    console.log('[2/4] Refresh Token is already configured.');
+    console.log('[2/4] Refresh Token is configured.');
   }
   console.log('');
 
-  // 3. Test Access Token generation & refresh
+  // 3. Test Access Token generation & auto-refresh
   console.log('[3/4] Testing Access Token generation & auto-refresh:');
   try {
     await authService.getAccessToken({ forceRefresh: true });
@@ -142,12 +151,20 @@ async function run() {
     console.log('  ✓ Token validation passed (type: Bearer, format verified).');
   } catch (error) {
     console.error(`  ❌ Failed to generate Access Token: [${error.code || 'AUTH_ERROR'}] ${error.message}`);
+    if (error.providerCode === 'INVALID_CODE' || error.providerCode === 'INVALID_GRANT') {
+      console.log('  ⚠️  The current Refresh Token was rejected by Zoho as invalid or expired.');
+      console.log('     If you pasted an Authorization Code as the refresh token, generate a fresh code');
+      console.log('     in Zoho Developer Console (Self Client) with scope:');
+      console.log('     ZohoCRM.modules.ALL');
+      console.log('     Add it to .env as: ZOHO_AUTHORIZATION_CODE=1000.xxxx');
+      console.log('     and re-run: npm run zoho:auth');
+    }
     return;
   }
   console.log('');
 
   // 4. Test Zoho CRM API & Leads Module Access
-  console.log('[4/4] Testing live Zoho CRM Leads API access:');
+  console.log('[4/4] Testing live Zoho CRM Leads & Attachments API access:');
   try {
     const leadService = createZohoLeadService({ env: process.env, auth: authService });
     // Search a dummy number to verify API connectivity and scope permissions
@@ -158,16 +175,37 @@ async function run() {
 
     console.log('  ✓ Zoho CRM API authentication successful (HTTP 200/204).');
     console.log('  ✓ Scopes verified: ZohoCRM.modules.leads.READ, CREATE, UPDATE.');
-    console.log('  ✓ Lead CRM search executed successfully without error.');
   } catch (error) {
     console.error(`  ❌ Zoho CRM API test failed: [${error.code || 'API_ERROR'}] ${error.message}`);
     if (error.providerCode === 'OAUTH_SCOPE_MISMATCH') {
       console.log('  ⚠️  Scope mismatch: Make sure your Self Client has scopes:');
-      console.log('     ZohoCRM.modules.leads.CREATE, ZohoCRM.modules.leads.READ, ZohoCRM.modules.leads.UPDATE, ZohoCRM.modules.attachments.CREATE');
-      console.log('     (Or use ZohoCRM.modules.ALL for full CRM module access)');
+      console.log('     ZohoCRM.modules.ALL');
     }
     return;
   }
+
+  // Check Attachment scope specifically
+  try {
+    const accounts = (process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho.com').trim();
+    const tokenRes = await require('axios').post(`${accounts}/oauth/v2/token`, new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+    }).toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 10000,
+    });
+    const grantedScope = tokenRes.data?.scope || '';
+    const hasAttachments = grantedScope.includes('attachments') || grantedScope.includes('modules.ALL');
+    if (hasAttachments) {
+      console.log('  ✓ Scopes verified for Attachments: ZohoCRM.modules.attachments.CREATE.');
+    } else {
+      console.log('  ⚠️  Scope Notice: The token does not include attachment permission:');
+      console.log(`     Granted scopes: "${grantedScope || '(none returned)'}"`);
+      console.log('     To upload attachments, re-generate with scope: ZohoCRM.modules.ALL');
+    }
+  } catch { /* best effort */ }
 
   console.log('\n====================================================');
   console.log('  🎉 All Zoho CRM OAuth 2.0 Checks PASSED!          ');

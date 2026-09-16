@@ -4,8 +4,10 @@ const axios = require('axios');
 const { ZohoError, configError, validateZohoUrl, requestOptions, apiError } = require('./zohoSupport');
 
 function createZohoAuthService({ env = process.env, http = axios, now = Date.now } = {}) {
-  let cachedToken;
-  let expiresAt = 0;
+  let cachedToken = (typeof env.ZOHO_ACCESS_TOKEN === 'string' && env.ZOHO_ACCESS_TOKEN.trim() && !/\s/.test(env.ZOHO_ACCESS_TOKEN.trim()))
+    ? env.ZOHO_ACCESS_TOKEN.trim()
+    : undefined;
+  let expiresAt = cachedToken ? now() + 3600000 : 0;
   let refreshing;
   let discoveredApiDomain;
 
@@ -161,7 +163,47 @@ function createZohoAuthService({ env = process.env, http = axios, now = Date.now
     return discoveredApiDomain ? `${discoveredApiDomain}/crm/v8` : undefined;
   }
 
-  return { getAccessToken, invalidate, exchangeAuthorizationCode, getApiDomain, getApiBaseUrl };
+  async function getAuthHealth() {
+    const hasClientId = Boolean(env.ZOHO_CLIENT_ID && typeof env.ZOHO_CLIENT_ID === 'string' && env.ZOHO_CLIENT_ID.trim());
+    const hasClientSecret = Boolean(env.ZOHO_CLIENT_SECRET && typeof env.ZOHO_CLIENT_SECRET === 'string' && env.ZOHO_CLIENT_SECRET.trim());
+    const hasRefreshToken = Boolean(env.ZOHO_REFRESH_TOKEN && typeof env.ZOHO_REFRESH_TOKEN === 'string' && env.ZOHO_REFRESH_TOKEN.trim());
+    const hasAccessToken = Boolean(cachedToken || (env.ZOHO_ACCESS_TOKEN && typeof env.ZOHO_ACCESS_TOKEN === 'string' && env.ZOHO_ACCESS_TOKEN.trim()));
+
+    if (!hasClientId || !hasClientSecret || !hasRefreshToken) {
+      return {
+        status: 'unconfigured',
+        configured: false,
+        authenticated: false,
+        hasClientId,
+        hasClientSecret,
+        hasRefreshToken,
+        hasAccessToken,
+      };
+    }
+
+    try {
+      await getAccessToken();
+      return {
+        status: 'authenticated',
+        configured: true,
+        authenticated: true,
+        tokenCached: Boolean(cachedToken),
+        expiresInSeconds: Math.max(0, Math.round((expiresAt - now()) / 1000)),
+        apiDomain: discoveredApiDomain || null,
+      };
+    } catch (error) {
+      return {
+        status: 'error',
+        configured: true,
+        authenticated: false,
+        code: error.code || 'ZOHO_AUTH_FAILED',
+        providerCode: error.providerCode || null,
+        message: error.message || 'Zoho authentication failed.',
+      };
+    }
+  }
+
+  return { getAccessToken, invalidate, exchangeAuthorizationCode, getApiDomain, getApiBaseUrl, getAuthHealth };
 }
 
 module.exports = { createZohoAuthService };

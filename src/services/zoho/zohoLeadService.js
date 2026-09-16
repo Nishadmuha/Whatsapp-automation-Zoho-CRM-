@@ -395,16 +395,23 @@ function createZohoLeadService({ env = process.env, http = axios, auth, logger }
     return { id: attachmentId, status: 'uploaded' };
   }
 
+  async function verifyAuthentication() {
+    return tokenService.getAccessToken();
+  }
+
   async function checkHealth() {
+    if (typeof tokenService.getAuthHealth === 'function') {
+      return tokenService.getAuthHealth();
+    }
     try {
       const token = await tokenService.getAccessToken();
-      return { healthy: Boolean(token), configured: true };
+      return { healthy: Boolean(token), configured: true, status: 'authenticated' };
     } catch (err) {
-      return { healthy: false, configured: true, error: err?.code || 'ZOHO_AUTH_FAILED' };
+      return { healthy: false, configured: true, status: 'error', error: err?.code || 'ZOHO_AUTH_FAILED' };
     }
   }
 
-  return { searchLeadByPhone, searchLeadByEmail, createLead, updateLead, getLead, uploadLeadAttachment, checkHealth };
+  return { searchLeadByPhone, searchLeadByEmail, createLead, updateLead, getLead, uploadLeadAttachment, checkHealth, verifyAuthentication };
 }
 
 module.exports = { createZohoLeadService, DEFAULT_FIELD_MAPPING, parseFieldMapping, mapLeadToZoho, escapeCriteriaValue };
