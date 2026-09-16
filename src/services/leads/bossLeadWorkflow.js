@@ -131,50 +131,73 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
 
     if (attachments.length > 0 && typeof zohoClient.uploadLeadAttachment === 'function') {
       for (const att of attachments) {
-        if (att.zohoUploadStatus === 'uploaded' && att.zohoAttachmentId) continue;
+        // Idempotency: skip if already uploaded to Zoho
+        if ((att.zohoUploadStatus === 'uploaded' || att.zoho_upload_status === 'uploaded') &&
+            att.zohoAttachmentId && att.zohoAttachmentId !== 'attached') {
+          continue;
+        }
+
         try {
           let buffer = null;
           let mimeType = att.mimeType || att.mime_type || 'application/octet-stream';
-          const storageRef = att.storageReference || att.storage_reference;
+          let storageRef = att.storageReference || att.storage_reference;
+          if (storageRef && typeof storageRef === 'object') {
+            storageRef = storageRef.storageReference || storageRef.storage_reference || null;
+          }
+
           if (storageRef && typeof store.getMediaFile === 'function') {
             const stored = await store.getMediaFile(storageRef);
             buffer = Buffer.isBuffer(stored) ? stored : (stored?.buffer || null);
             if (stored?.mimeType) mimeType = stored.mimeType;
           }
-          const mediaId = att.mediaId || att.whatsapp_media_id;
+
+          const mediaId = att.mediaId || att.whatsapp_media_id || att.whatsappMediaId;
           if (!buffer && mediaId && typeof store.getMediaFileByMediaId === 'function') {
             const storedByMedia = await store.getMediaFileByMediaId(mediaId);
             buffer = Buffer.isBuffer(storedByMedia) ? storedByMedia : (storedByMedia?.buffer || null);
             if (storedByMedia?.mimeType) mimeType = storedByMedia.mimeType;
           }
+
           if (!buffer && mediaId && whatsapp?.downloadMedia) {
             const downloaded = await whatsapp.downloadMedia(mediaId).catch(() => null);
             buffer = downloaded?.buffer || null;
             if (downloaded?.mimeType) mimeType = downloaded.mimeType;
             if (buffer && typeof store.saveMediaFile === 'function') {
-              const ref = await store.saveMediaFile({
+              const saved = await store.saveMediaFile({
                 messageId: att.messageId || att.whatsappMessageId || att.message_id,
                 mediaId,
                 buffer,
                 mimeType,
-                filename: att.filename
+                filename: att.filename,
               });
-              att.storageReference = ref;
-              att.storageUrl = `/api/media/${ref}`;
-              att.storage_reference = ref;
-              att.storage_url = `/api/media/${ref}`;
+              if (saved) {
+                const cleanRef = typeof saved === 'object' && saved.storageReference ? saved.storageReference : String(saved);
+                att.storageReference = cleanRef;
+                att.storageUrl = `/api/media/${cleanRef}`;
+                att.storage_reference = cleanRef;
+                att.storage_url = `/api/media/${cleanRef}`;
+              }
             }
           }
+
           if (buffer) {
-            const filename = att.filename || `attachment_${mediaId || Date.now()}`;
+            let filename = att.filename || att.mediaFilename || att.media_filename;
+            if (!filename) {
+              const ext = mimeType?.split('/')[1]?.replace(/^jpeg$/, 'jpg')?.replace(/^x-/, '') || 'bin';
+              filename = `attachment_${mediaId || Date.now()}.${ext}`;
+            }
+
             const uploadRes = await zohoClient.uploadLeadAttachment(zohoLeadId, {
               buffer,
               filename,
               mimeType,
             });
+
+            att.zohoLeadId = zohoLeadId;
             att.zohoAttachmentId = uploadRes?.id || 'attached';
             att.zohoUploadStatus = 'uploaded';
             att.zoho_upload_status = 'uploaded';
+            att.uploadedAt = new Date().toISOString();
             att.zohoError = null;
             att.zoho_error = null;
           } else {
@@ -184,11 +207,27 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
             att.zoho_error = 'Media file buffer not found';
           }
         } catch (uploadErr) {
-          logger?.warn?.({ event: 'zoho_attachment_upload_failed', lead_id: leadId, error: uploadErr?.message });
+          const providerCode = uploadErr?.providerCode || null;
+          const httpStatus = uploadErr?.httpStatus || null;
+          const safeErr = providerCode
+            ? `Zoho rejected upload (${providerCode}${httpStatus ? ` - HTTP ${httpStatus}` : ''})`
+            : (uploadErr?.message || 'Attachment upload failed');
+
+          logger?.warn?.({
+            event: 'zoho_attachment_upload_failed',
+            lead_id: leadId,
+            zoho_lead_id: zohoLeadId,
+            local_media_id: att.mediaId || att.whatsapp_media_id,
+            filename: att.filename,
+            mime_type: att.mimeType,
+            provider_code: providerCode,
+            http_status: httpStatus,
+            error: safeErr,
+          });
           att.zohoUploadStatus = 'failed';
           att.zoho_upload_status = 'failed';
-          att.zohoError = uploadErr?.message || 'Unknown error';
-          att.zoho_error = uploadErr?.message || 'Unknown error';
+          att.zohoError = safeErr;
+          att.zoho_error = safeErr;
         }
       }
 

@@ -924,6 +924,10 @@ class MongoMessageStore {
 
   async getMediaFile(storageReference) {
     if (!storageReference) return null;
+    const ref = typeof storageReference === 'object'
+      ? (storageReference.storageReference || storageReference.storage_reference || null)
+      : storageReference;
+    if (!ref || typeof ref !== 'string') return null;
     if (!this.mediaBucket && this.db) {
       const { GridFSBucket } = require('mongodb');
       this.mediaBucket = new GridFSBucket(this.db, { bucketName: 'lead_media' });
@@ -931,7 +935,7 @@ class MongoMessageStore {
     if (!this.mediaBucket) return null;
     let fileId;
     try {
-      fileId = new mongoose.Types.ObjectId(storageReference);
+      fileId = new mongoose.Types.ObjectId(ref);
     } catch {
       return null;
     }

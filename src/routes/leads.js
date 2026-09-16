@@ -6,7 +6,7 @@ const { rateLimit } = require('express-rate-limit');
 const LEAD_FIELDS = ['company_name', 'contact_name', 'phone', 'email', 'address', 'trn_no', 'project_name', 'project_location',
   'product_or_service', 'requirement', 'quantity', 'deadline', 'notes'];
 const DTO_FIELDS = ['id', 'whatsapp_message_id', 'sender_phone', 'original_message', ...LEAD_FIELDS,
-  'extraction_status', 'validation_status', 'zoho_status', 'zoho_lead_id', 'error_stage', 'error_code', 'created_at', 'updated_at'];
+  'extraction_status', 'validation_status', 'zoho_status', 'zoho_lead_id', 'attachment_status', 'error_stage', 'error_code', 'created_at', 'updated_at'];
 const STAT_FIELDS = ['total', 'valid', 'incomplete', 'extraction_failed', 'zoho_pending', 'zoho_saved'];
 const VALIDATION_STATUSES = ['pending', 'valid', 'incomplete', 'invalid'];
 const EXTRACTION_STATUSES = ['pending', 'processing', 'completed', 'failed'];
@@ -36,6 +36,9 @@ function outputRedactor(config, env) {
 
 function leadDto(row) {
   const result = Object.fromEntries(DTO_FIELDS.map(field => [field, typeof row[field] === 'string' ? row[field] : null]));
+  if (typeof (row.attachment_status || row.attachmentStatus) === 'string') {
+    result.attachment_status = row.attachment_status || row.attachmentStatus;
+  }
   if (typeof row.zoho_url === 'string') result.zoho_url = row.zoho_url;
   if (typeof row.zoho_synced_at === 'string') result.zoho_synced_at = row.zoho_synced_at;
   // A lead belongs to its WhatsApp sender's conversation, even when it contains
@@ -47,7 +50,26 @@ function leadDto(row) {
     missing_fields: Array.isArray(validation.missing_fields) ? validation.missing_fields.filter(field => LEAD_FIELDS.includes(field)) : [],
     errors: Array.isArray(validation.errors) ? validation.errors.filter(code => typeof code === 'string' && SAFE_CODE.test(code)) : [],
   } : null;
-  if (Array.isArray(row.attachments)) result.attachments = row.attachments;
+  if (Array.isArray(row.attachments)) {
+    result.attachments = row.attachments.map(att => ({
+      id: att.id || att.mediaId || null,
+      media_id: att.mediaId || att.media_id || att.whatsappMediaId || att.whatsapp_media_id || null,
+      type: att.type || att.media_type || 'image',
+      mime_type: att.mimeType || att.mime_type || 'application/octet-stream',
+      filename: att.filename || null,
+      storage_url: att.storageUrl || att.storage_url || null,
+      storage_reference: typeof att.storageReference === 'object'
+        ? (att.storageReference?.storageReference || null)
+        : (att.storageReference || att.storage_reference || null),
+      zoho_lead_id: att.zohoLeadId || att.zoho_lead_id || null,
+      zoho_attachment_id: att.zohoAttachmentId || att.zoho_attachment_id || null,
+      zoho_upload_status: att.zohoUploadStatus || att.zoho_upload_status || 'pending',
+      zoho_error: att.zohoError || att.zoho_error || null,
+      uploaded_at: att.uploadedAt || att.uploaded_at || null,
+      transcription: att.transcription || att.transcription_text || null,
+      extracted_text: att.extractedText || att.extracted_text || att.ocr_text || null,
+    }));
+  }
   if (Array.isArray(row.messages)) result.messages = row.messages;
   return result;
 }

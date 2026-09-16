@@ -172,33 +172,58 @@
       if (link) section('Conversation').append(link);
       definitions(section('Extracted fields'), fields, lead);
       const statusSection = section('Current status');
-      definitions(statusSection, ['id', 'extraction_status', 'validation_status', 'zoho_status', 'zoho_lead_id', 'zoho_url', 'error_stage', 'error_code'], lead);
-      if (lead.zoho_status !== 'saved') {
-        const pushBtn = node('button', 'Push to Zoho');
+      definitions(statusSection, ['id', 'extraction_status', 'validation_status', 'zoho_status', 'attachment_status', 'zoho_lead_id', 'zoho_url', 'error_stage', 'error_code'], lead);
+
+      // Zoho CRM Synchronization Overview
+      const zohoSection = section('Zoho CRM');
+      const zohoBlock = node('div', undefined, 'zoho-sync-block');
+
+      const leadSynced = lead.zoho_status === 'saved';
+      const leadCreating = ['creating', 'updating', 'pending'].includes(lead.zoho_status);
+      const leadFailed = lead.zoho_status === 'failed';
+      const leadDot = leadSynced ? '🟢' : leadCreating ? '🟠' : leadFailed ? '🔴' : '⚪';
+      const leadLabel = leadSynced ? 'Lead synced' : leadCreating ? 'Lead sync in progress' : leadFailed ? 'Lead sync failed' : 'Lead not synced';
+      zohoBlock.append(node('div', `${leadDot} ${leadLabel}`, 'zoho-sync-item'));
+
+      const atts = Array.isArray(lead.attachments) ? lead.attachments : [];
+      if (atts.length > 0) {
+        const anyFailed = atts.some(a => (a.zoho_upload_status || a.zohoUploadStatus) === 'failed');
+        const allUploaded = atts.every(a => (a.zoho_upload_status || a.zohoUploadStatus) === 'uploaded');
+        const anyPending = atts.some(a => (a.zoho_upload_status || a.zohoUploadStatus) === 'pending' || (a.zoho_upload_status || a.zohoUploadStatus) === 'uploading');
+        const attDot = allUploaded ? '🟢' : anyFailed ? '🔴' : anyPending ? '🟠' : '⚪';
+        const attLabel = allUploaded ? 'Attachment synced' : anyFailed ? 'Attachment upload failed' : 'Attachment upload pending';
+        zohoBlock.append(node('div', `${attDot} ${attLabel}`, 'zoho-sync-item'));
+      }
+      zohoSection.append(zohoBlock);
+
+      const hasFailedAtts = atts.some(a => (a.zoho_upload_status || a.zohoUploadStatus) === 'failed' || (a.zoho_upload_status || a.zohoUploadStatus) === 'pending');
+      if (lead.zoho_status !== 'saved' || hasFailedAtts) {
+        const btnLabel = lead.zoho_status !== 'saved' ? 'Push to Zoho' : 'Retry Attachment Upload';
+        const pushBtn = node('button', btnLabel);
         pushBtn.type = 'button';
         if (pushBtn.style) pushBtn.style.marginTop = '0.8rem';
         pushBtn.addEventListener('click', async () => {
           pushBtn.disabled = true;
-          pushBtn.textContent = 'Pushing to Zoho…';
+          pushBtn.textContent = 'Syncing to Zoho…';
           try {
             const res = await request('/api/leads/' + encodeURIComponent(id) + '/sync-zoho', { method: 'POST' });
             const body = await res.json();
             if (body.success) {
-              alert('Successfully pushed to Zoho! Zoho Lead ID: ' + body.zoho_lead_id);
+              alert('Successfully synced to Zoho! Zoho Lead ID: ' + (body.zoho_lead_id || lead.zoho_lead_id));
               await showDetail(id);
               await load();
             } else {
-              alert('Failed to push to Zoho: ' + (body.message || 'Unknown error'));
+              alert('Zoho sync failed: ' + (body.message || 'Unknown error'));
               pushBtn.disabled = false;
-              pushBtn.textContent = 'Push to Zoho';
+              pushBtn.textContent = btnLabel;
             }
           } catch (e) {
-            alert('Error pushing to Zoho: ' + e.message);
+            alert('Error syncing to Zoho: ' + e.message);
             pushBtn.disabled = false;
-            pushBtn.textContent = 'Push to Zoho';
+            pushBtn.textContent = btnLabel;
           }
         });
-        statusSection.append(pushBtn);
+        zohoSection.append(pushBtn);
       }
       const validation = section('Validation result');
       if (!lead.validation_result) validation.append(node('p', 'Validation has not completed.'));
@@ -285,13 +310,24 @@
           }
           // Filename and MIME type
           if (att.filename) card.append(node('div', '📎 ' + att.filename, 'media-label'));
-          // Zoho upload status
-          const zohoStatus = att.zohoUploadStatus || att.zoho_upload_status || 'pending';
-          const zohoLabel = { uploaded: '✅ Uploaded to Zoho', failed: '❌ Zoho upload failed', pending: '⏳ Pending Zoho upload' }[zohoStatus] || zohoStatus;
+          if (mimeType) card.append(node('div', '📄 ' + mimeType, 'media-meta-sub'));
+
+          // Zoho upload status & metadata
+          const zohoStatus = att.zoho_upload_status || att.zohoUploadStatus || 'pending';
+          const zohoAttId = att.zoho_attachment_id || att.zohoAttachmentId;
+          const uploadedAt = att.uploaded_at || att.uploadedAt;
+          const zohoLabel = { uploaded: '🟢 Uploaded to Zoho', failed: '🔴 Zoho upload failed', pending: '🟠 Pending Zoho upload' }[zohoStatus] || zohoStatus;
           const zohoSpan = node('div', zohoLabel, 'media-label zoho-att-' + zohoStatus);
           card.append(zohoSpan);
-          if (zohoStatus === 'failed' && (att.zohoError || att.zoho_error)) {
-            card.append(node('div', att.zohoError || att.zoho_error, 'media-label media-error'));
+
+          if (zohoAttId && zohoAttId !== 'attached') {
+            card.append(node('div', '🆔 Attachment ID: ' + zohoAttId, 'media-meta-sub'));
+          }
+          if (uploadedAt) {
+            card.append(node('div', '🕒 Synced: ' + date(uploadedAt), 'media-meta-sub'));
+          }
+          if (zohoStatus === 'failed' && (att.zoho_error || att.zohoError)) {
+            card.append(node('div', att.zoho_error || att.zohoError, 'media-label media-error'));
           }
           grid.append(card);
         }

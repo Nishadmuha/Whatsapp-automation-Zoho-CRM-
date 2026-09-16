@@ -163,7 +163,8 @@ async function run() {
     console.error(`  ❌ Zoho CRM API test failed: [${error.code || 'API_ERROR'}] ${error.message}`);
     if (error.providerCode === 'OAUTH_SCOPE_MISMATCH') {
       console.log('  ⚠️  Scope mismatch: Make sure your Self Client has scopes:');
-      console.log('     ZohoCRM.modules.leads.CREATE, ZohoCRM.modules.leads.READ, ZohoCRM.modules.leads.UPDATE');
+      console.log('     ZohoCRM.modules.leads.CREATE, ZohoCRM.modules.leads.READ, ZohoCRM.modules.leads.UPDATE, ZohoCRM.modules.attachments.CREATE');
+      console.log('     (Or use ZohoCRM.modules.ALL for full CRM module access)');
     }
     return;
   }

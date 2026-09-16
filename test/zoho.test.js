@@ -432,3 +432,151 @@ test('Zoho exchangeAuthorizationCode fails safely with invalid or consumed autho
   );
 });
 
+test('Zoho uploadLeadAttachment uploads image binary with multipart FormData and parses success', async () => {
+  const logs = [];
+  const http = mockHttp([
+    { status: 201, data: { data: [{ status: 'success', code: 'SUCCESS', details: { id: '714777000000123456' } }] } },
+  ]);
+  const service = crm(http, settings(), {
+    logger: {
+      info(rec) { logs.push(rec); },
+      error(rec) { logs.push(rec); },
+    },
+  });
+
+  const imgBuf = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
+  const result = await service.uploadLeadAttachment('5653678000072495041', {
+    buffer: imgBuf,
+    filename: 'blueprint.jpg',
+    mimeType: 'image/jpeg',
+  });
+
+  assert.equal(result.id, '714777000000123456');
+  assert.equal(result.status, 'uploaded');
+
+  const call = http.calls[0];
+  assert.equal(call.method, 'POST');
+  assert.equal(call.url, 'https://www.zohoapis.com/crm/v8/Leads/5653678000072495041/Attachments');
+  assert.equal(call.headers.Authorization, 'Zoho-oauthtoken test-access');
+  assert.equal(call.maxBodyLength, 25 * 1024 * 1024);
+
+  // Check logs contain safe observability events
+  assert.ok(logs.some(l => l.event === 'ZOHO_ATTACHMENT_UPLOAD_STARTED' && l.filename === 'blueprint.jpg' && l.mime_type === 'image/jpeg'));
+  assert.ok(logs.some(l => l.event === 'ZOHO_ATTACHMENT_UPLOAD_SUCCESS' && l.attachment_id === '714777000000123456'));
+});
+
+test('Zoho uploadLeadAttachment supports large PDF (>128KB) without maxBodyLength error', async () => {
+  const http = mockHttp([
+    { status: 200, data: { data: [{ status: 'success', code: 'SUCCESS', details: { id: '714777000000999888' } }] } },
+  ]);
+  const service = crm(http);
+
+  // 250 KB buffer - exceeds original 128KB maxBodyLength limit
+  const pdfBuf = Buffer.alloc(250 * 1024, 0x25);
+  const result = await service.uploadLeadAttachment('5653678000072495041', {
+    buffer: pdfBuf,
+    filename: 'specifications.pdf',
+    mimeType: 'application/pdf',
+  });
+
+  assert.equal(result.id, '714777000000999888');
+  assert.equal(result.status, 'uploaded');
+  assert.equal(http.calls[0].maxBodyLength, 25 * 1024 * 1024);
+});
+
+test('Zoho uploadLeadAttachment uploads audio/ogg voice note successfully', async () => {
+  const http = mockHttp([
+    { status: 200, data: { data: [{ status: 'success', code: 'SUCCESS', details: { id: '714777000000555444' } }] } },
+  ]);
+  const service = crm(http);
+
+  const voiceBuf = Buffer.from('OggS voice data stream');
+  const result = await service.uploadLeadAttachment('5653678000072495041', {
+    buffer: voiceBuf,
+    filename: 'voice_note.ogg',
+    mimeType: 'audio/ogg',
+  });
+
+  assert.equal(result.id, '714777000000555444');
+  assert.equal(result.status, 'uploaded');
+});
+
+test('Zoho uploadLeadAttachment handles 401 with token invalidation and successful retry', async () => {
+  let invalidations = 0;
+  const http = mockHttp([
+    { status: 401, data: { code: 'INVALID_TOKEN' } },
+    { status: 200, data: { data: [{ status: 'success', code: 'SUCCESS', details: { id: '714777000000111222' } }] } },
+  ]);
+  const service = crm(http, settings(), {
+    auth: {
+      async getAccessToken() { return 'token-' + invalidations; },
+      invalidate() { invalidations += 1; },
+    },
+  });
+
+  const result = await service.uploadLeadAttachment('5653678000072495041', {
+    buffer: Buffer.from('test data'),
+    filename: 'file.bin',
+  });
+
+  assert.equal(result.id, '714777000000111222');
+  assert.equal(invalidations, 1);
+  assert.equal(http.calls.length, 2);
+});
+
+test('Zoho uploadLeadAttachment stops on OAUTH_SCOPE_MISMATCH without retry and logs failure', async () => {
+  const logs = [];
+  let invalidations = 0;
+  const http = mockHttp([
+    { status: 401, data: { code: 'OAUTH_SCOPE_MISMATCH', message: 'scope mismatch' } },
+  ]);
+  const service = crm(http, settings(), {
+    auth: {
+      async getAccessToken() { return 'test-token'; },
+      invalidate() { invalidations += 1; },
+    },
+    logger: {
+      info(rec) { logs.push(rec); },
+      error(rec) { logs.push(rec); },
+    },
+  });
+
+  await assert.rejects(
+    service.uploadLeadAttachment('5653678000072495041', {
+      buffer: Buffer.from('test image'),
+      filename: 'image.jpg',
+      mimeType: 'image/jpeg',
+    }),
+    { code: 'ZOHO_API', providerCode: 'OAUTH_SCOPE_MISMATCH', httpStatus: 401, retryable: false }
+  );
+
+  assert.equal(invalidations, 0, 'Must not invalidate token on permanent scope mismatch');
+  assert.equal(http.calls.length, 1);
+  assert.ok(logs.some(l => l.event === 'ZOHO_ATTACHMENT_UPLOAD_FAILED' && l.provider_code === 'OAUTH_SCOPE_MISMATCH'));
+});
+
+test('Zoho uploadLeadAttachment fails safely when Zoho returns error in response body', async () => {
+  const http = mockHttp([
+    { status: 200, data: { data: [{ status: 'error', code: 'INVALID_FILE_TYPE', message: 'The file type is not supported.' }] } },
+  ]);
+  const service = crm(http);
+
+  await assert.rejects(
+    service.uploadLeadAttachment('5653678000072495041', {
+      buffer: Buffer.from('unsupported format'),
+      filename: 'file.exe',
+      mimeType: 'application/x-msdownload',
+    }),
+    { code: 'ZOHO_API', providerCode: 'INVALID_FILE_TYPE' }
+  );
+});
+
+test('Zoho uploadLeadAttachment validates input arguments strictly', async () => {
+  const service = crm(mockHttp([]));
+
+  await assert.rejects(service.uploadLeadAttachment('not-numeric-id', { buffer: Buffer.from('x') }), { code: 'ZOHO_INPUT' });
+  await assert.rejects(service.uploadLeadAttachment('12345', { buffer: null }), { code: 'ZOHO_INPUT' });
+  await assert.rejects(service.uploadLeadAttachment('12345', { buffer: Buffer.alloc(0) }), { code: 'ZOHO_INPUT' });
+});
+
+

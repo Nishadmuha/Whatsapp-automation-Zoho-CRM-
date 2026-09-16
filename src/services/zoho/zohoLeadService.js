@@ -140,8 +140,9 @@ function createZohoLeadService({ env = process.env, http = axios, auth, logger }
     };
   }
 
-  async function request(method, path, { params, data, headers } = {}) {
+  async function request(method, path, { params, data, headers, requestOverrides } = {}) {
     const { baseUrl, options } = settings();
+    const mergedOptions = requestOverrides ? { ...options, ...requestOverrides } : options;
     const mutation = method !== 'GET';
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const token = await tokenService.getAccessToken();
@@ -156,7 +157,7 @@ function createZohoLeadService({ env = process.env, http = axios, auth, logger }
       let response;
       try {
         response = await http.request({
-          ...options, method, url: `${baseUrl}${path}`, params, data,
+          ...mergedOptions, method, url: `${baseUrl}${path}`, params, data,
           headers: requestHeaders,
         });
       } catch (error) {
@@ -293,28 +294,104 @@ function createZohoLeadService({ env = process.env, http = axios, auth, logger }
     const rawBuffer = buffer?.buffer && Buffer.isBuffer(buffer.buffer) ? buffer.buffer : buffer;
     if (!rawBuffer) throw inputError('A file buffer is required for attachment upload.');
     const buf = Buffer.isBuffer(rawBuffer) ? rawBuffer : Buffer.from(rawBuffer);
+    if (!buf.length) throw inputError('A file buffer is required for attachment upload.');
+
+    const cleanFilename = String(filename || 'attachment.bin').replace(/[\r\n"]/g, '').trim() || 'attachment.bin';
+    const cleanMime = String(mimeType || 'application/octet-stream').replace(/[\r\n]/g, '').trim() || 'application/octet-stream';
+
+    logger?.info?.({
+      event: 'ZOHO_ATTACHMENT_UPLOAD_STARTED',
+      lead_id: id,
+      filename: cleanFilename,
+      mime_type: cleanMime,
+      size_bytes: buf.length,
+    });
 
     let payload;
     const customHeaders = {};
     const FormDataClass = globalThis.FormData;
     if (FormDataClass) {
       payload = new FormDataClass();
-      const blob = new globalThis.Blob([buf], { type: mimeType });
-      payload.append('file', blob, filename);
+      const blob = new globalThis.Blob([buf], { type: cleanMime });
+      payload.append('file', blob, cleanFilename);
       customHeaders['Content-Type'] = null;
     } else {
       payload = buf;
-      customHeaders['Content-Type'] = mimeType;
+      customHeaders['Content-Type'] = cleanMime;
     }
 
-    logger?.info?.({ event: 'zoho_upload_attachment', lead_id: id, filename });
-    const response = await request('POST', `/Leads/${id}/Attachments`, {
-      data: payload,
-      headers: customHeaders,
+    let response;
+    try {
+      response = await request('POST', `/Leads/${id}/Attachments`, {
+        data: payload,
+        headers: customHeaders,
+        requestOverrides: {
+          maxBodyLength: 25 * 1024 * 1024,
+          maxContentLength: 25 * 1024 * 1024,
+          timeout: 60000,
+        },
+      });
+    } catch (err) {
+      logger?.error?.({
+        event: 'ZOHO_ATTACHMENT_UPLOAD_FAILED',
+        lead_id: id,
+        filename: cleanFilename,
+        mime_type: cleanMime,
+        error: err?.message,
+        code: err?.code,
+        provider_code: err?.providerCode,
+        http_status: err?.httpStatus,
+      });
+      throw err;
+    }
+
+    const result = response?.data?.data?.[0];
+    if (!result || typeof result !== 'object') {
+      const err = new ZohoError('ZOHO_RESPONSE', 'Zoho returned an invalid attachment upload response.', { uncertain: true });
+      logger?.error?.({
+        event: 'ZOHO_ATTACHMENT_UPLOAD_FAILED',
+        lead_id: id,
+        filename: cleanFilename,
+        error: err.message,
+        code: err.code,
+      });
+      throw err;
+    }
+
+    if (result.status !== 'success' || (result.code && result.code !== 'SUCCESS')) {
+      const err = apiError(result, response.status, { mutation: true });
+      logger?.error?.({
+        event: 'ZOHO_ATTACHMENT_UPLOAD_FAILED',
+        lead_id: id,
+        filename: cleanFilename,
+        provider_code: err.providerCode,
+        http_status: response.status,
+      });
+      throw err;
+    }
+
+    const attachmentId = result?.details?.id;
+    if (typeof attachmentId !== 'string' || !/^\d{1,40}$/.test(attachmentId)) {
+      const err = new ZohoError('ZOHO_RESPONSE', 'Zoho did not return a valid attachment ID.', { uncertain: true });
+      logger?.error?.({
+        event: 'ZOHO_ATTACHMENT_UPLOAD_FAILED',
+        lead_id: id,
+        filename: cleanFilename,
+        error: err.message,
+        code: err.code,
+      });
+      throw err;
+    }
+
+    logger?.info?.({
+      event: 'ZOHO_ATTACHMENT_UPLOAD_SUCCESS',
+      lead_id: id,
+      attachment_id: attachmentId,
+      filename: cleanFilename,
+      mime_type: cleanMime,
+      size_bytes: buf.length,
     });
 
-    const result = response.data?.data?.[0];
-    const attachmentId = result?.details?.id || 'attached';
     return { id: attachmentId, status: 'uploaded' };
   }
 

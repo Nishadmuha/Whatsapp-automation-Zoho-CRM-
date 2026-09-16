@@ -24,6 +24,7 @@ const SAFE_PROVIDER_CODES = new Set([
   'TOO_MANY_REQUESTS', 'INTERNAL_ERROR', 'INVALID_REQUEST', 'INVALID_REQUEST_METHOD',
   'INVALID_QUERY', 'INVALID_CLIENT', 'INVALID_CODE', 'INVALID_SCOPE', 'INVALID_GRANT',
   'INVALID_CLIENT_SECRET', 'ACCESS_DENIED', 'INVALID_RESPONSE', 'MULTIPLE_OR_MULTI_ERRORS',
+  'FILE_SIZE_EXCEEDED', 'INVALID_FILE_TYPE', 'NOT_SUPPORTED', 'UNSUPPORTED_FILE_TYPE', 'FILE_NOT_FOUND',
 ]);
 
 class ZohoError extends Error {
@@ -58,16 +59,18 @@ function validateZohoUrl(value, kind) {
   return parsed.href.replace(/\/$/, '');
 }
 
-function requestOptions(env) {
-  const timeout = Number(env.ZOHO_TIMEOUT_MS || 15000);
-  if (!Number.isInteger(timeout) || timeout < 1000 || timeout > 60000) {
+function requestOptions(env, overrides = {}) {
+  const timeout = overrides.timeout !== undefined ? Number(overrides.timeout) : Number(env.ZOHO_TIMEOUT_MS || 15000);
+  const maxTimeout = overrides.timeout !== undefined ? 120000 : 60000;
+  if (!Number.isInteger(timeout) || timeout < 1000 || timeout > maxTimeout) {
     throw configError('ZOHO_TIMEOUT_MS must be between 1000 and 60000 milliseconds.');
   }
   return {
     timeout, httpsAgent, maxRedirects: 0,
-    maxContentLength: 2 * 1024 * 1024,
-    maxBodyLength: 128 * 1024,
+    maxContentLength: overrides.maxContentLength !== undefined ? overrides.maxContentLength : 2 * 1024 * 1024,
+    maxBodyLength: overrides.maxBodyLength !== undefined ? overrides.maxBodyLength : 128 * 1024,
     validateStatus: () => true,
+    ...overrides,
   };
 }
 
