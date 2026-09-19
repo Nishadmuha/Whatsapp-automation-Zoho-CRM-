@@ -121,7 +121,10 @@ test('MongoDB startup waits for the driver, coalesces concurrent requests, and r
   await database.disconnectMongoDB();
 });
 
-test('an active MongoDB connection refuses a different URI without opening another connection', async () => {
+test('an active production MongoDB connection refuses a different URI without opening another connection', async t => {
+  const previous = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  t.after(() => { if (previous === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previous; });
   const database = isolatedDatabase();
   await database.connectMongoDB({ env: { MONGODB_URI: testUri }, logger: database.logger });
   await assert.rejects(database.connectMongoDB({

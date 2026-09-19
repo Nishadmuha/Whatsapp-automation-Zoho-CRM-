@@ -1,0 +1,1178 @@
+/* ==========================================================================
+   VOLTRONIX ZOHO BILL AUTOMATION - VISILY EXACT UI DESIGN
+   ========================================================================== */
+
+:where(.admin-page-books) {
+  --vx-red: #E00800;
+  --vx-red-hover: #C50700;
+  --vx-charcoal: #252525;
+  --vx-dark: #0D182C;
+  --vx-bg: #F4F6F9;
+  --vx-card-bg: #FFFFFF;
+  --vx-border: #E5E7EB;
+  --vx-text-main: #111827;
+  --vx-text-muted: #6B7280;
+  --vx-text-light: #9CA3AF;
+  font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+}
+
+:where(.admin-page-books) [hidden] { display: none !important; }
+
+/* Top Tab Switcher between Bills Table & Zoho Bill Dashboard */
+:where(.admin-page-books) .view-mode-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--vx-border);
+  padding-bottom: 0.5rem;
+}
+
+:where(.admin-page-books) .btn-view-tab {
+  background: transparent;
+  border: none;
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--vx-text-muted);
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: all 0.15s ease;
+}
+
+:where(.admin-page-books) .btn-view-tab:hover {
+  background: #F3F4F6;
+  color: var(--vx-text-main);
+}
+
+:where(.admin-page-books) .btn-view-tab.active {
+  background: #111827;
+  color: #FFFFFF;
+}
+
+/* ==========================================================================
+   VISILY BILLS TABLE (IMAGE 5)
+   ========================================================================== */
+:where(.admin-page-books) .bills-page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+:where(.admin-page-books) .bills-header-left h1 {
+  font-size: 1.85rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--vx-text-main);
+  margin: 0 0 0.35rem 0;
+  text-transform: uppercase;
+}
+
+:where(.admin-page-books) .bills-subtitle {
+  font-size: 0.92rem;
+  color: var(--vx-text-muted);
+  margin: 0;
+}
+
+:where(.admin-page-books) .bills-header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+:where(.admin-page-books) .btn-outline-action {
+  background: #FFFFFF;
+  border: 1px solid var(--vx-border);
+  border-radius: 6px;
+  padding: 0.65rem 1.15rem;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--vx-text-main);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: all 0.15s ease;
+}
+
+:where(.admin-page-books) .btn-outline-action:hover {
+  background: #F9FAFB;
+  border-color: #D1D5DB;
+}
+
+:where(.admin-page-books) .btn-primary-red {
+  background: var(--vx-red);
+  color: #FFFFFF;
+  border: none;
+  border-radius: 6px;
+  padding: 0.65rem 1.25rem;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: all 0.2s ease;
+}
+
+:where(.admin-page-books) .btn-primary-red:hover {
+  background: var(--vx-red-hover);
+  box-shadow: 0 4px 12px rgba(224, 8, 0, 0.25);
+}
+
+/* 4 KPI Cards Grid */
+:where(.admin-page-books) .kpi-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+:where(.admin-page-books) .kpi-card {
+  background: #FFFFFF;
+  border: 1px solid var(--vx-border);
+  border-radius: 8px;
+  padding: 1.15rem 1.25rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  position: relative;
+}
+
+:where(.admin-page-books) .kpi-card.accent-red {
+  border-left: 4px solid var(--vx-red);
+}
+
+:where(.admin-page-books) .kpi-card-content {
+  display: flex;
+  flex-direction: column;
+}
+
+:where(.admin-page-books) .kpi-label {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--vx-text-muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 0.4rem;
+}
+
+:where(.admin-page-books) .kpi-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+:where(.admin-page-books) .kpi-currency {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--vx-text-main);
+}
+
+:where(.admin-page-books) .kpi-number {
+  font-size: 1.65rem;
+  font-weight: 800;
+  color: var(--vx-text-main);
+  letter-spacing: -0.02em;
+}
+
+:where(.admin-page-books) .kpi-subtext {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--vx-text-muted);
+}
+
+:where(.admin-page-books) .kpi-trend {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  margin-top: 0.4rem;
+}
+
+:where(.admin-page-books) .kpi-trend.green { color: #059669; }
+:where(.admin-page-books) .kpi-trend.red { color: #DC2626; }
+
+:where(.admin-page-books) .kpi-icon-wrap {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: #F9FAFB;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vx-text-muted);
+}
+
+/* Visily Table Toolbar */
+:where(.admin-page-books) .bills-toolbar {
+  background: #FFFFFF;
+  border: 1px solid var(--vx-border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+}
+
+:where(.admin-page-books) .bills-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+}
+
+:where(.admin-page-books) .bills-search-box {
+  position: relative;
+  flex: 1;
+  max-width: 380px;
+}
+
+:where(.admin-page-books) .bills-search-box svg {
+  position: absolute;
+  left: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--vx-text-light);
+  pointer-events: none;
+}
+
+:where(.admin-page-books) .bills-search-box input {
+  width: 100%;
+  padding: 0.55rem 0.85rem 0.55rem 2.25rem;
+  font-size: 0.84rem;
+  border: 1px solid var(--vx-border);
+  border-radius: 6px;
+  outline: none;
+  background: #FFFFFF;
+  color: var(--vx-text-main);
+}
+
+:where(.admin-page-books) .bills-search-box input:focus {
+  border-color: var(--vx-red);
+}
+
+:where(.admin-page-books) .filter-pills-group {
+  display: flex;
+  border: 1px solid var(--vx-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+:where(.admin-page-books) .btn-filter-pill {
+  background: #FFFFFF;
+  border: none;
+  padding: 0.45rem 0.95rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #4B5563;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+:where(.admin-page-books) .btn-filter-pill.active {
+  background: #111827;
+  color: #FFFFFF;
+}
+
+:where(.admin-page-books) .bills-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  font-size: 0.82rem;
+  color: var(--vx-text-muted);
+}
+
+/* Visily Table Styling */
+:where(.admin-page-books) .bills-table-card {
+  background: #FFFFFF;
+  border: 1px solid var(--vx-border);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  margin-bottom: 1.5rem;
+}
+
+:where(.admin-page-books) .bills-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 0.85rem;
+}
+
+:where(.admin-page-books) .bills-table th {
+  background: #FAFAFA;
+  color: #4B5563;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--vx-border);
+  white-space: nowrap;
+}
+
+:where(.admin-page-books) .bills-table td {
+  padding: 1rem 1rem;
+  border-bottom: 1px solid #F3F4F6;
+  color: var(--vx-text-main);
+  vertical-align: middle;
+}
+
+:where(.admin-page-books) .bills-table tr:hover {
+  background: #F9FAFB;
+}
+
+:where(.admin-page-books) .col-bill-num {
+  font-weight: 700;
+  color: var(--vx-text-main);
+  cursor: pointer;
+}
+
+:where(.admin-page-books) .col-bill-num:hover {
+  color: var(--vx-red);
+}
+
+:where(.admin-page-books) .col-vendor-name {
+  font-weight: 600;
+  color: var(--vx-text-main);
+}
+
+:where(.admin-page-books) .col-category {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #4B5563;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+:where(.admin-page-books) .col-date-red {
+  color: var(--vx-red);
+  font-weight: 600;
+}
+
+:where(.admin-page-books) .col-amount {
+  font-weight: 700;
+  color: var(--vx-text-main);
+  font-family: 'Roboto', monospace;
+}
+
+/* Bill Status Pills */
+:where(.admin-page-books) .bill-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+:where(.admin-page-books) .bill-status-pill.synced {
+  background: #111827;
+  color: #FFFFFF;
+}
+
+:where(.admin-page-books) .bill-status-pill.pending {
+  background: #E5E7EB;
+  color: #374151;
+}
+
+:where(.admin-page-books) .bill-status-pill.approved {
+  border: 1.5px solid #FECACA;
+  color: var(--vx-red);
+  background: #FFFFFF;
+}
+
+:where(.admin-page-books) .bill-status-pill.rejected {
+  background: var(--vx-red);
+  color: #FFFFFF;
+}
+
+/* Bottom Two Cards matching Visily */
+:where(.admin-page-books) .bills-bottom-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+/* Card 1: Flagged Discrepancies */
+:where(.admin-page-books) .flagged-card {
+  background: #FFFFFF;
+  border: 1px solid var(--vx-border);
+  border-radius: 8px;
+  padding: 1.25rem;
+}
+
+:where(.admin-page-books) .flagged-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: var(--vx-red);
+  letter-spacing: 0.05em;
+  margin-bottom: 1rem;
+}
+
+:where(.admin-page-books) .flagged-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+:where(.admin-page-books) .flagged-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #F3F4F6;
+}
+
+:where(.admin-page-books) .flagged-item:last-child {
+  border-bottom: none;
+}
+
+:where(.admin-page-books) .flagged-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+
+:where(.admin-page-books) .flagged-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+
+:where(.admin-page-books) .flagged-dot.red { background: var(--vx-red); }
+:where(.admin-page-books) .flagged-dot.gray { background: #9CA3AF; }
+
+:where(.admin-page-books) .flagged-text-box strong {
+  font-size: 0.84rem;
+  color: var(--vx-text-main);
+  display: block;
+}
+
+:where(.admin-page-books) .flagged-text-box span {
+  font-size: 0.78rem;
+  color: var(--vx-text-muted);
+}
+
+:where(.admin-page-books) .flagged-action-link {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #111827;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+
+:where(.admin-page-books) .flagged-action-link:hover {
+  color: var(--vx-red);
+}
+
+/* Card 2: Automation Queue (Dark Obsidian) */
+:where(.admin-page-books) .queue-card {
+  background: #111827;
+  border-radius: 8px;
+  padding: 1.25rem;
+  color: #FFFFFF;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+:where(.admin-page-books) .queue-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: var(--vx-red);
+  letter-spacing: 0.05em;
+  margin-bottom: 0.85rem;
+}
+
+:where(.admin-page-books) .queue-card p {
+  font-size: 0.82rem;
+  color: #9CA3AF;
+  line-height: 1.4;
+  margin: 0 0 1rem 0;
+}
+
+:where(.admin-page-books) .queue-card strong {
+  color: #FFFFFF;
+}
+
+:where(.admin-page-books) .queue-progress-bar {
+  width: 100%;
+  height: 4px;
+  background: #374151;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 1.25rem;
+}
+
+:where(.admin-page-books) .queue-progress-track {
+  width: 65%;
+  height: 100%;
+  background: var(--vx-red);
+}
+
+:where(.admin-page-books) .btn-queue-sync {
+  width: 100%;
+  background: var(--vx-red);
+  color: #FFFFFF;
+  border: none;
+  border-radius: 6px;
+  padding: 0.75rem;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: background 0.15s;
+}
+
+:where(.admin-page-books) .btn-queue-sync:hover {
+  background: var(--vx-red-hover);
+}
+
+/* ==========================================================================
+   VISILY ZOHO BILL DASHBOARD (IMAGE 3)
+   ========================================================================== */
+:where(.admin-page-books) .charts-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+:where(.admin-page-books) .chart-card {
+  background: #FFFFFF;
+  border: 1px solid var(--vx-border);
+  border-radius: 8px;
+  padding: 1.25rem;
+}
+
+:where(.admin-page-books) .chart-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 1.25rem;
+}
+
+:where(.admin-page-books) .chart-card-header h3 {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--vx-text-main);
+  margin: 0 0 0.25rem 0;
+  text-transform: uppercase;
+}
+
+:where(.admin-page-books) .chart-card-header p {
+  font-size: 0.78rem;
+  color: var(--vx-text-muted);
+  margin: 0;
+}
+
+:where(.admin-page-books) .chart-legend {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+:where(.admin-page-books) .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+:where(.admin-page-books) .legend-box {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+:where(.admin-page-books) .legend-box.black { background: #111827; }
+:where(.admin-page-books) .legend-box.red { background: var(--vx-red); }
+
+/* Dual Bar Chart Mockup matching Visily */
+:where(.admin-page-books) .bar-chart-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  height: 180px;
+  padding: 0 1rem;
+  border-bottom: 1px solid var(--vx-border);
+}
+
+:where(.admin-page-books) .bar-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+:where(.admin-page-books) .bars-pair {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+:where(.admin-page-books) .bar-pill {
+  width: 14px;
+  border-radius: 2px 2px 0 0;
+}
+
+:where(.admin-page-books) .bar-pill.black { background: #111827; }
+:where(.admin-page-books) .bar-pill.red { background: var(--vx-red); }
+
+:where(.admin-page-books) .bar-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #6B7280;
+}
+
+/* Donut Chart Mockup */
+:where(.admin-page-books) .donut-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem 0;
+}
+
+:where(.admin-page-books) .donut-svg-wrap {
+  width: 130px;
+  height: 130px;
+  margin-bottom: 1.25rem;
+}
+
+:where(.admin-page-books) .donut-legend-rows {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+:where(.admin-page-books) .donut-legend-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+}
+
+/* Dashboard Operations Row */
+:where(.admin-page-books) .operations-grid {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+/* Integration Controls (Dark) */
+:where(.admin-page-books) .integration-card {
+  background: #111827;
+  border-radius: 8px;
+  padding: 1.25rem;
+  color: #FFFFFF;
+}
+
+:where(.admin-page-books) .integration-card h3 {
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: #FFFFFF;
+  margin: 0 0 0.25rem 0;
+  letter-spacing: 0.05em;
+}
+
+:where(.admin-page-books) .integration-card p {
+  font-size: 0.76rem;
+  color: #9CA3AF;
+  margin: 0 0 1rem 0;
+}
+
+:where(.admin-page-books) .sync-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  font-size: 0.74rem;
+  color: #9CA3AF;
+  text-transform: uppercase;
+}
+
+:where(.admin-page-books) .sync-status-row strong {
+  color: var(--vx-red);
+}
+
+:where(.admin-page-books) .sync-pill-time {
+  background: #1F2937;
+  border: 1px solid #374151;
+  border-radius: 4px;
+  padding: 0.45rem 0.75rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+  margin-bottom: 1.25rem;
+}
+
+:where(.admin-page-books) .sync-active-badge {
+  background: var(--vx-red);
+  color: #FFFFFF;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 0.15rem 0.45rem;
+  border-radius: 2px;
+}
+
+:where(.admin-page-books) .integration-btns-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+:where(.admin-page-books) .btn-integration-op {
+  width: 100%;
+  background: #1F2937;
+  border: 1px solid #374151;
+  color: #FFFFFF;
+  border-radius: 6px;
+  padding: 0.55rem 0.85rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+:where(.admin-page-books) .btn-integration-op:hover {
+  background: #374151;
+  border-color: #4B5563;
+}
+
+:where(.admin-page-books) .btn-integration-op svg {
+  color: var(--vx-red);
+}
+
+:where(.admin-page-books) .integration-subtext {
+  font-size: 0.68rem;
+  color: #6B7280;
+}
+
+/* Recent Sync Activity Card */
+:where(.admin-page-books) .sync-activity-card {
+  background: #FFFFFF;
+  border: 1px solid var(--vx-border);
+  border-radius: 8px;
+  padding: 1.25rem;
+}
+
+/* Bottom Accuracy Monitoring */
+:where(.admin-page-books) .accuracy-card {
+  background: #FFFFFF;
+  border: 1px solid var(--vx-border);
+  border-radius: 8px;
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+:where(.admin-page-books) .accuracy-header {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--vx-red);
+  letter-spacing: 0.05em;
+  margin-bottom: 1rem;
+}
+
+:where(.admin-page-books) .accuracy-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2rem;
+}
+
+:where(.admin-page-books) .accuracy-stat-item strong {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--vx-text-main);
+  display: inline-block;
+  margin: 0.25rem 0;
+}
+
+:where(.admin-page-books) .accuracy-progress-bar {
+  width: 100%;
+  height: 4px;
+  background: #E5E7EB;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 0.5rem;
+}
+
+:where(.admin-page-books) .accuracy-progress-track.green { background: #059669; width: 99.2%; }
+:where(.admin-page-books) .accuracy-progress-track.red { background: var(--vx-red); width: 94.5%; }
+:where(.admin-page-books) .accuracy-progress-track.gray { background: #9CA3AF; width: 1.8%; }
+
+/* ==========================================================================
+   VISILY BILL AUDIT / BILL DETAILS MODAL (IMAGE 4)
+   ========================================================================== */
+:where(.admin-page-books) .bill-audit-dialog {
+  border: none;
+  border-radius: 10px;
+  padding: 0;
+  max-width: 1050px;
+  width: 95vw;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  background: #FFFFFF;
+  overflow: hidden;
+}
+
+:where(.admin-page-books) .bill-audit-dialog::backdrop {
+  background: rgba(13, 24, 44, 0.75);
+  backdrop-filter: blur(4px);
+}
+
+:where(.admin-page-books) .audit-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.15rem 1.5rem;
+  border-bottom: 1px solid var(--vx-border);
+  background: #FFFFFF;
+}
+
+:where(.admin-page-books) .audit-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+:where(.admin-page-books) .audit-header-left svg {
+  color: var(--vx-red);
+}
+
+:where(.admin-page-books) .audit-header-title {
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: var(--vx-text-main);
+}
+
+:where(.admin-page-books) .audit-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+:where(.admin-page-books) .audit-modal-body {
+  padding: 1.5rem;
+  background: #F9FAFB;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+:where(.admin-page-books) .audit-split-view {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+/* Left Document Source Preview */
+:where(.admin-page-books) .doc-source-card {
+  background: #FFFFFF;
+  border: 1px solid var(--vx-border);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+:where(.admin-page-books) .doc-source-topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--vx-border);
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--vx-red);
+  letter-spacing: 0.05em;
+}
+
+:where(.admin-page-books) .doc-source-image-wrap {
+  flex: 1;
+  background: #252525;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 380px;
+  padding: 1rem;
+}
+
+:where(.admin-page-books) .doc-source-image-wrap img {
+  max-width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+:where(.admin-page-books) .doc-source-bottombar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  background: #111827;
+  color: #9CA3AF;
+  font-size: 0.65rem;
+  font-family: 'Roboto', monospace;
+}
+
+/* Right Verified Fields Panel */
+:where(.admin-page-books) .doc-fields-card {
+  background: #FFFFFF;
+  border: 1px solid var(--vx-border);
+  border-radius: 8px;
+  padding: 1.25rem;
+}
+
+:where(.admin-page-books) .doc-tabs-row {
+  display: flex;
+  border-bottom: 1px solid var(--vx-border);
+  margin-bottom: 1.25rem;
+}
+
+:where(.admin-page-books) .doc-tab-btn {
+  background: transparent;
+  border: none;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: #6B7280;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+:where(.admin-page-books) .doc-tab-btn.active {
+  color: var(--vx-red);
+  border-bottom-color: var(--vx-red);
+}
+
+:where(.admin-page-books) .verified-fields-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+:where(.admin-page-books) .verified-fields-title {
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: #111827;
+  letter-spacing: 0.05em;
+}
+
+:where(.admin-page-books) .badge-confidence {
+  background: #111827;
+  color: #FFFFFF;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.2rem 0.5rem;
+  border-radius: 3px;
+}
+
+:where(.admin-page-books) .audit-fields-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+  margin-bottom: 1.25rem;
+}
+
+:where(.admin-page-books) .audit-field-item label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #6B7280;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 0.25rem;
+}
+
+:where(.admin-page-books) .audit-field-item input {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.84rem;
+  border: 1px solid var(--vx-border);
+  border-radius: 4px;
+  background: #FAFAFA;
+  color: #111827;
+}
+
+:where(.admin-page-books) .total-payable-box {
+  grid-column: 1/-1;
+  background: #FEF2F2;
+  border: 1.5px solid var(--vx-red);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+}
+
+:where(.admin-page-books) .total-payable-label {
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: var(--vx-red);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 0.25rem;
+}
+
+:where(.admin-page-books) .total-payable-amount {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--vx-red);
+}
+
+:where(.admin-page-books) .audit-status-row {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+:where(.admin-page-books) .status-black-card {
+  flex: 1;
+  background: #111827;
+  border-left: 4px solid var(--vx-red);
+  border-radius: 4px;
+  padding: 0.65rem 0.85rem;
+  color: #FFFFFF;
+}
+
+:where(.admin-page-books) .status-black-card .sub {
+  font-size: 0.65rem;
+  color: #9CA3AF;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+:where(.admin-page-books) .status-black-card .val {
+  font-size: 0.84rem;
+  font-weight: 700;
+  margin-top: 0.15rem;
+}
+
+:where(.admin-page-books) .auditor-card {
+  flex: 1;
+  background: #F3F4F6;
+  border-radius: 4px;
+  padding: 0.65rem 0.85rem;
+}
+
+:where(.admin-page-books) .auditor-card .sub {
+  font-size: 0.65rem;
+  color: #6B7280;
+  text-transform: uppercase;
+}
+
+:where(.admin-page-books) .auditor-card .val {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: #111827;
+  margin-top: 0.15rem;
+}
+
+:where(.admin-page-books) .audit-decision-btns {
+  display: flex;
+  gap: 0.75rem;
+}
+
+:where(.admin-page-books) .btn-decision {
+  flex: 1;
+  padding: 0.65rem;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.15s;
+}
+
+:where(.admin-page-books) .btn-decision.reject {
+  background: #FFFFFF;
+  border: 1.5px solid #111827;
+  color: #111827;
+}
+
+:where(.admin-page-books) .btn-decision.hold {
+  background: #FFFFFF;
+  border: 1.5px solid var(--vx-red);
+  color: var(--vx-red);
+}
+
+/* Bottom 3 Audit Cards */
+:where(.admin-page-books) .audit-bottom-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+:where(.admin-page-books) .audit-info-card {
+  background: #FFFFFF;
+  border: 1px solid var(--vx-border);
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+:where(.admin-page-books) .audit-info-card svg {
+  flex-shrink: 0;
+  color: var(--vx-red);
+}
+
+:where(.admin-page-books) .audit-info-text {
+  font-size: 0.78rem;
+}
+
+:where(.admin-page-books) .audit-info-text strong {
+  display: block;
+  color: #111827;
+  margin-bottom: 0.2rem;
+  font-size: 0.82rem;
+}
+
+:where(.admin-page-books) .audit-info-text p {
+  color: #6B7280;
+  margin: 0;
+}
+
+:where(.admin-page-books) .audit-info-text a {
+  color: var(--vx-red);
+  font-weight: 700;
+  text-decoration: none;
+  font-size: 0.72rem;
+  display: inline-block;
+  margin-top: 0.25rem;
+}

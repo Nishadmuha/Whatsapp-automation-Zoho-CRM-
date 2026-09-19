@@ -1,0 +1,709 @@
+/* ==========================================================
+   VOLTRONIX AUTOMATION SYSTEM · ENTERPRISE LOGIN PORTAL
+   Full-Viewport Split Layout (100vw x 100vh - Zero Scrollbars)
+   ========================================================== */
+
+:root {
+  --voltronix-red: #E11D2A;
+  --voltronix-red-glow: rgba(225, 29, 42, 0.25);
+  --dark-bg: #07080B;
+  --card-bg-white: #FFFFFF;
+  --text-main: #0F172A;
+  --text-muted: #64748B;
+  --text-light: #94A3B8;
+  --input-bg: #F8FAFC;
+  --input-border: #E2E8F0;
+  --input-focus: #0F172A;
+  --font-serif: 'Playfair Display', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  font-family: var(--font-sans);
+  background-color: var(--card-bg-white);
+  color: var(--text-main);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ==========================================================
+   SPLASH / LOADING SCREEN
+   ========================================================== */
+.splash-screen {
+  position: fixed;
+  inset: 0;
+  background-color: #060709;
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.8s;
+}
+
+.splash-screen.hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.splash-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.splash-logo {
+  height: 64px;
+  width: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 0 20px rgba(225, 29, 42, 0.45));
+  animation: logoPulse 2s ease-in-out infinite alternate;
+}
+
+.splash-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(255, 255, 255, 0.12);
+  border-top-color: var(--voltronix-red);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+.splash-text {
+  font-size: 0.75rem;
+  letter-spacing: 0.25em;
+  font-weight: 600;
+  color: #94A3B8;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes logoPulse {
+  0% { transform: scale(0.97); opacity: 0.9; }
+  100% { transform: scale(1.03); opacity: 1; filter: drop-shadow(0 0 25px rgba(225, 29, 42, 0.6)); }
+}
+
+/* Hide ambient glow elements to keep pure white crisp background */
+.ambient-glow {
+  display: none;
+}
+
+/* ==========================================================
+   FULL-VIEWPORT SPLIT LAYOUT
+   ========================================================== */
+.login-wrapper {
+  width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  overflow: hidden;
+  background-color: var(--card-bg-white);
+}
+
+.login-split-card {
+  width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  margin: 0;
+  padding: 12px;
+  display: flex;
+  background: var(--card-bg-white);
+  border-radius: 0;
+  overflow: hidden;
+  position: relative;
+  opacity: 0;
+  animation: cardFadeIn 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-delay: 0.5s;
+}
+
+@keyframes cardFadeIn {
+  to {
+    opacity: 1;
+  }
+}
+
+/* ==========================================================
+   LEFT HERO ARTWORK CARD (Fluid Live Moving Red Wave)
+   ========================================================== */
+.hero-artwork-card {
+  flex: 1.15;
+  height: 100%;
+  border-radius: 24px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 44px 40px;
+  background-color: #090a0d;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.3);
+}
+
+/* Outer wrapper for animated layers */
+.live-wave-canvas {
+  position: absolute;
+  inset: -30px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* The primary image with continuous multi-axis organic live movement */
+.live-wave-image {
+  position: absolute;
+  inset: -45px;
+  background-image: url('/red-wave-art.jpg');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  will-change: transform;
+  animation: liveWaveMovement 20s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate;
+  transform-origin: center center;
+}
+
+/* Subtle liquid light shimmer / iridescent metallic sheen sweep */
+.live-wave-sheen {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    125deg,
+    transparent 15%,
+    rgba(255, 255, 255, 0.08) 35%,
+    rgba(255, 70, 80, 0.20) 50%,
+    rgba(255, 255, 255, 0.12) 65%,
+    transparent 85%
+  );
+  mix-blend-mode: overlay;
+  opacity: 0.65;
+  animation: liveSheenSweep 10s ease-in-out infinite alternate;
+}
+
+/* Depth vignette: soft dark gradient to ensure high contrast for typography */
+.live-wave-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.45) 0%,
+    rgba(0, 0, 0, 0.10) 25%,
+    rgba(0, 0, 0, 0.15) 55%,
+    rgba(0, 0, 0, 0.85) 90%,
+    rgba(0, 0, 0, 0.95) 100%
+  );
+  z-index: 2;
+}
+
+/* Live moving wave keyframes: smooth fluid respiration & drift */
+@keyframes liveWaveMovement {
+  0% {
+    transform: scale(1.08) translate(0%, 0%) rotate(0deg);
+  }
+  20% {
+    transform: scale(1.18) translate(-2.5%, -1.8%) rotate(0.8deg);
+  }
+  45% {
+    transform: scale(1.14) translate(2.2%, -3%) rotate(-0.5deg);
+  }
+  70% {
+    transform: scale(1.22) translate(-1.8%, 2.2%) rotate(0.6deg);
+  }
+  100% {
+    transform: scale(1.10) translate(2.8%, 1.2%) rotate(-0.7deg);
+  }
+}
+
+@keyframes liveSheenSweep {
+  0% {
+    opacity: 0.3;
+    transform: translateY(-25%) scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: translateY(10%) scale(1.05);
+  }
+  100% {
+    opacity: 0.35;
+    transform: translateY(30%) scale(1);
+  }
+}
+
+/* Hero Content Styling */
+.hero-artwork-content {
+  position: relative;
+  z-index: 10;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+/* Top Tagline: A WISE QUOTE ------- */
+.hero-top-quote {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.hero-quote-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.28em;
+  color: rgba(255, 255, 255, 0.88);
+  text-transform: uppercase;
+}
+
+.hero-quote-divider {
+  display: inline-block;
+  width: 65px;
+  height: 1.5px;
+  background-color: rgba(255, 255, 255, 0.45);
+  border-radius: 1px;
+}
+
+/* Bottom Body Typography */
+.hero-bottom-body {
+  margin-top: auto;
+  max-width: 440px;
+}
+
+.hero-display-heading {
+  font-family: var(--font-serif);
+  font-size: 2.85rem;
+  line-height: 1.1;
+  font-weight: 600;
+  color: #FFFFFF;
+  margin: 0 0 14px 0;
+  letter-spacing: -0.015em;
+  text-shadow: 0 4px 20px rgba(0, 0, 0, 0.65);
+}
+
+.hero-quote-description {
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.82);
+  margin: 0;
+  font-weight: 400;
+  max-width: 400px;
+  letter-spacing: 0.01em;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+/* ==========================================================
+   RIGHT FORM PANEL
+   ========================================================== */
+.login-form-panel {
+  flex: 1;
+  height: 100%;
+  background: var(--card-bg-white);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 48px;
+  overflow: hidden;
+}
+
+.login-form-inner {
+  width: 100%;
+  max-width: 390px;
+  margin: auto;
+}
+
+/* Top Brand Logo */
+.brand-badge-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.brand-emblem-logo {
+  height: 56px;
+  width: auto;
+  object-fit: contain;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.brand-emblem-logo:hover {
+  transform: scale(1.06);
+}
+
+/* Panel Headings: VOLTRONIX */
+.panel-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.welcome-heading {
+  font-family: var(--font-serif);
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: #0F172A;
+  margin: 0 0 6px 0;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.1;
+}
+
+.welcome-subheading {
+  font-size: 0.86rem;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.45;
+  font-weight: 400;
+}
+
+/* Form Layout */
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+/* Field Group */
+.form-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: #1E293B;
+  display: block;
+}
+
+/* Inputs */
+.field-input {
+  width: 100%;
+  padding: 12px 16px;
+  background-color: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 10px;
+  font-size: 0.92rem;
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  outline: none;
+}
+
+.field-input::placeholder {
+  color: var(--text-light);
+  font-weight: 400;
+}
+
+.field-input:hover {
+  background-color: #F1F5F9;
+  border-color: #CBD5E1;
+}
+
+.field-input:focus {
+  background-color: #FFFFFF;
+  border-color: #0F172A;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.08);
+}
+
+/* Password with inner toggle */
+.password-field-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.password-field-input {
+  padding-right: 44px;
+}
+
+.toggle-password-btn {
+  position: absolute;
+  right: 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94A3B8;
+  transition: color 0.15s ease, transform 0.1s ease;
+  border-radius: 6px;
+}
+
+.toggle-password-btn:hover {
+  color: #0F172A;
+}
+
+.toggle-password-btn:active {
+  transform: scale(0.92);
+}
+
+/* Remember Me & Forgot Password Row */
+.form-aux-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: -2px;
+  margin-bottom: 4px;
+}
+
+.remember-me-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.remember-me-option input {
+  position: absolute;
+  opacity: 0;
+  cursor: pointer;
+  height: 0;
+  width: 0;
+}
+
+.custom-checkbox-box {
+  width: 16px;
+  height: 16px;
+  background-color: #F8FAFC;
+  border: 1px solid #CBD5E1;
+  border-radius: 4px;
+  display: inline-block;
+  position: relative;
+  transition: all 0.2s ease;
+}
+
+.remember-me-option:hover .custom-checkbox-box {
+  border-color: #0F172A;
+}
+
+.remember-me-option input:checked ~ .custom-checkbox-box {
+  background-color: #0F172A;
+  border-color: #0F172A;
+}
+
+.remember-me-option input:checked ~ .custom-checkbox-box::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 2px;
+  width: 4px;
+  height: 7px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.remember-label-text {
+  font-size: 0.82rem;
+  color: #475569;
+  font-weight: 400;
+}
+
+.forgot-password-link {
+  font-size: 0.82rem;
+  color: #0F172A;
+  font-weight: 500;
+  text-decoration: none;
+  transition: opacity 0.15s ease;
+}
+
+.forgot-password-link:hover {
+  text-decoration: underline;
+  opacity: 0.8;
+}
+
+/* Sign In Button (Black Full-Width) */
+.btn-sign-in {
+  width: 100%;
+  padding: 13px;
+  background-color: #000000;
+  color: #FFFFFF;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.94rem;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  margin-top: 4px;
+}
+
+.btn-sign-in:hover {
+  background-color: #1E293B;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.btn-sign-in:active {
+  transform: translateY(0);
+}
+
+.btn-sign-in:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Inline Error Banner */
+.login-error-banner {
+  background-color: #FEF2F2;
+  border: 1px solid #FCA5A5;
+  color: #991B1B;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 0.84rem;
+  line-height: 1.4;
+  animation: shake 0.35s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-5px); }
+  40%, 80% { transform: translateX(5px); }
+}
+
+/* Footer Prompt: Don't have an account? Sign Up */
+.panel-footer {
+  margin-top: 22px;
+  text-align: center;
+}
+
+.signup-prompt-text {
+  font-size: 0.84rem;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.signup-action-link {
+  color: #000000;
+  font-weight: 600;
+  text-decoration: none;
+  margin-left: 3px;
+  transition: opacity 0.15s ease;
+}
+
+.signup-action-link:hover {
+  text-decoration: underline;
+  opacity: 0.8;
+}
+
+/* ==========================================================
+   INFO MODAL (For Forgot Password & Sign Up)
+   ========================================================== */
+.info-modal-dialog {
+  border: none;
+  padding: 0;
+  background: transparent;
+  max-width: 420px;
+  width: 90%;
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+.info-modal-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+}
+
+.info-modal-card {
+  background: #FFFFFF;
+  padding: 28px;
+  border-radius: 20px;
+  text-align: center;
+}
+
+.modal-title {
+  font-family: var(--font-serif);
+  font-size: 1.4rem;
+  color: #0F172A;
+  margin: 0 0 10px 0;
+}
+
+.modal-description {
+  font-size: 0.88rem;
+  color: var(--text-muted);
+  line-height: 1.55;
+  margin: 0 0 20px 0;
+}
+
+.modal-close-btn {
+  background-color: #000000;
+  color: #FFFFFF;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 24px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.modal-close-btn:hover {
+  background-color: #1E293B;
+}
+
+/* ==========================================================
+   RESPONSIVE DESIGN (Tablets & Mobile)
+   ========================================================== */
+@media (max-width: 940px) {
+  .login-wrapper {
+    overflow-y: auto;
+  }
+
+  .login-split-card {
+    flex-direction: column;
+    height: auto;
+    min-height: 100vh;
+    padding: 8px;
+    overflow-y: auto;
+  }
+
+  .hero-artwork-card {
+    height: 300px;
+    min-height: 300px;
+    padding: 28px 24px;
+    border-radius: 18px;
+  }
+
+  .hero-display-heading {
+    font-size: 2.2rem;
+  }
+
+  .hero-quote-description {
+    display: none;
+  }
+
+  .login-form-panel {
+    height: auto;
+    padding: 32px 20px;
+    border-radius: 18px;
+  }
+
+  .welcome-heading {
+    font-size: 2.1rem;
+  }
+}

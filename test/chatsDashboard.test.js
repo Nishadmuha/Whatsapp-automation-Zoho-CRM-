@@ -3,37 +3,25 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const vm = require('node:vm');
+const { renderAdminPage } = require('../src/views/adminPage');
 const { test } = require('node:test');
 
-class Element {
-  constructor(tag = 'div') { this.tagName = tag; this.children = []; this.listeners = new Map(); this.value = ''; this.hidden = false; this._text = ''; this.dataset = {}; this.attributes = {}; }
-  set textContent(value) { this._text = String(value); this.children = []; }
-  get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
-  set innerHTML(_value) { throw new Error('HTML injection sink is forbidden'); }
-  append(...children) { this.children.push(...children); }
-  replaceChildren(...children) { this._text = ''; this.children = children; }
-  addEventListener(event, handler) { this.listeners.set(event, handler); }
-  dispatch(event) { return this.listeners.get(event)?.({ preventDefault() {} }); }
-  setAttribute(name, value) { this.attributes[name] = value; }
-}
+const { MockElement, createMockDocument } = require('./helpers');
+
 function response(data, status = 200) { return { status, ok: status >= 200 && status < 300, async json() { return data; } }; }
 async function dashboard(fetch, { authenticated = false, loginStatus = 200, search = '' } = {}) {
-  const [html, script] = await Promise.all(['chats.html', 'chats.js'].map(file => fs.readFile(path.resolve(__dirname, '../src/admin', file), 'utf8')));
-  const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map(match => [match[1], new Element()]));
-  elements.get('workspace').hidden = true;
+  const [html, script] = await Promise.all(['chats.html', 'chats.js'].map(file => file.endsWith('.html') ? renderAdminPage('chats') : fs.readFile(path.resolve(__dirname, '../src/admin', file), 'utf8')));
+  const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map(match => [match[1], new MockElement()]));
+  if (elements.has('workspace')) elements.get('workspace').hidden = true;
   const tags = [];
-  const document = {
-    getElementById(id) { assert.ok(elements.has(id), 'Unknown chat element: ' + id); return elements.get(id); },
-    createElement(tag) { tags.push(tag); return new Element(tag); },
-  };
-  Object.defineProperty(document, 'cookie', { get() { throw new Error('Cookie access is forbidden'); }, set() { throw new Error('Cookie storage is forbidden'); } });
-  const window = new Element();
+  const document = createMockDocument(elements, tags);
+  const window = new MockElement();
   window.location = { search };
   const requests = [];
   const context = { document, window, URLSearchParams, async fetch(url, options) {
     requests.push({ url, options });
-    if (url === '/api/admin/session') return response({ authenticated });
-    if (url === '/api/admin/login') return response({ authenticated: loginStatus === 200 }, loginStatus);
+    if (url === '/api/admin/session') return response({ authenticated, role: 'admin', roles: ['admin', 'books'] });
+    if (url === '/api/admin/login') return response({ authenticated: loginStatus === 200, role: 'admin', roles: ['admin', 'books'] }, loginStatus);
     if (url === '/api/admin/logout') return response({ authenticated: false });
     return fetch(url, options);
   } };

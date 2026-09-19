@@ -12,7 +12,7 @@ function sample(overrides = {}) {
   return { id: randomUUID(), whatsapp_message_id: 'wamid.synthetic-api', sender_phone: '+971551234567', conversation_id: '+971551234567',
     original_message: 'Synthetic company requires AC maintenance.',
     ...Object.fromEntries(fields.map(field => [field, null])), company_name: 'Synthetic company',
-    extraction_status: 'completed', validation_status: 'valid', zoho_status: 'pending', zoho_lead_id: null,
+    extraction_status: 'completed', validation_status: 'valid', zoho_status: 'pending', zoho_lead_id: null, attachment_status: null,
     validation_result: { valid: true, missing_fields: [], errors: [] }, error_stage: null, error_code: null,
     created_at: '2026-09-12T10:00:00.000Z', updated_at: '2026-09-12T10:00:00.000Z', ...overrides };
 }
@@ -200,7 +200,7 @@ test('the public dashboard shell and local assets expose no data or credentials 
   assert.match(html, /id="username"/);
   assert.match(html, /id="password"/);
   assert.doesNotMatch(html, /id="token"/);
-  assert.doesNotMatch(html, /<script\b[^>]*>[\s\S]*?\S[\s\S]*?<\/script>|on(?:click|load)=|https?:\/\//i);
+  assert.doesNotMatch(html, /<script\b[^>]*>(?!\s*<\/script>)[\s\S]*?<\/script>|on(?:click|load)=|https?:\/\//i);
   assert.match(response.headers.get('content-security-policy'), /script-src 'self'/);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   for (const asset of ['/admin/leads.css', '/admin/leads.js']) {

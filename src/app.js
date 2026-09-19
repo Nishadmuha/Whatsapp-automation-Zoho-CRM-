@@ -9,19 +9,23 @@ const { createMessageStore } = require('./database');
 const { requestLogger } = require('./middleware/requestLogger');
 const { errorHandler } = require('./middleware/errorHandler');
 const { createWebhookRouter } = require('./routes/webhook');
-const { createLeadsRouter, createLeadsDashboardRouter } = require('./routes/leads');
-const { createChatsRouter, createChatsDashboardRouter } = require('./routes/chats');
+const { createLeadsRouter } = require('./routes/leads');
+const { createChatsRouter } = require('./routes/chats');
+const { createBooksRouter } = require('./routes/books');
+const { createAdminPagesRouter } = require('./routes/adminPages');
+const { createBillStore } = require('./database/billStore');
 const { createAdminAccess } = require('./middleware/adminAuth');
 const { createIncomingTriggerGate } = require('./services/whatsapp/incomingTriggerGate');
 
-function createApp({ env = process.env, config = readConfig(env), logger = createLogger(env), store } = {}) {
+function createApp({ env = process.env, config = readConfig(env), logger = createLogger(env), store, billStore } = {}) {
   store ||= createMessageStore({ databaseUrl: config.databaseUrl, logger });
+  billStore ||= createBillStore({ store, logger });
   const ready = Promise.resolve().then(() => store.init());
   ready.catch(() => logger.error({ event: 'database_initialization_failed' }));
   const app = express();
-  const adminAccess = createAdminAccess(config);
+  const adminAccess = createAdminAccess({ ...config, cookiePath: '/' });
   const triggerGate = createIncomingTriggerGate({ logger });
-  Object.assign(app.locals, { store, ready, config, triggerGate });
+  Object.assign(app.locals, { store, billStore, ready, config, triggerGate });
   app.disable('x-powered-by');
   app.set('query parser', 'simple');
   app.set('trust proxy', config.trustProxy);
@@ -102,16 +106,31 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
     }
   });
   app.use('/webhook', createWebhookRouter({ config, store, ready, logger, triggerGate,
-    onNewMessage: message => app.locals.onNewMessage?.(message) }));
+    onNewMessage: message => app.locals.onNewMessage?.(message),
+    billStore: { getActiveBillSession: (p) => app.locals.billStore?.getActiveBillSession(p) } }));
   app.use('/api/admin', adminAccess.router);
-  app.use('/api/leads', createLeadsRouter({ config, store, ready, logger, env, requireAuth: adminAccess.requireAuth, whatsapp: app.locals.whatsapp }));
-  app.use('/api/chats', createChatsRouter({ config, store, ready, logger, env, requireAuth: adminAccess.requireAuth, whatsapp: app.locals.whatsapp }));
-  app.use('/admin', createLeadsDashboardRouter());
-  app.use('/admin', createChatsDashboardRouter());
+  app.use('/api/leads', createLeadsRouter({ config, store, ready, logger, env, requireAuth: adminAccess.requireLeadAuth, whatsapp: app.locals.whatsapp }));
+  app.use('/api/chats', createChatsRouter({ config, store, ready, logger, env, requireAuth: adminAccess.requireChatAuth, whatsapp: app.locals.whatsapp }));
+  app.use('/api/books', createBooksRouter({ config, billStore, store, ready, logger, env, requireAuth: adminAccess.requireBooksAuth }));
+  const adminDir = path.join(__dirname, 'admin');
+
+  // Every dashboard URL is rendered through the same admin shell. Feature
+  // routers do not serve complete HTML documents of their own.
+  app.use(createAdminPagesRouter());
+
   // Root and bare /admin redirect to the leads workspace.
   // leads.html already contains the login panel — unauthenticated users see it
   // automatically; no second auth system is introduced.
   app.get(['/', '/admin', '/admin/'], (_req, res) => res.redirect(302, '/admin/leads'));
+
+  // Static assets and direct navigation routes for overview / dashboard
+  app.use(express.static(adminDir, { index: false }));
+  app.use('/admin', express.static(adminDir, { index: false }));
+
+  // Dashboard & login convenience routes
+  app.get(['/login', '/admin/login'], (_req, res) => res.sendFile(path.join(adminDir, 'login.html')));
+  app.get(['/bills/login', '/admin/bills-login'], (_req, res) => res.sendFile(path.join(adminDir, 'bills-login.html')));
+
   app.use((_req, res) => res.status(404).json({ success: false, message: 'Route not found' }));
 
   app.use(errorHandler(logger));

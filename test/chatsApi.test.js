@@ -247,7 +247,7 @@ test('chat shell and local assets contain no private data, inline scripts or ext
   assert.match(html, /src="\/admin\/chats\.js" defer/);
   assert.match(html, /id="username"/);
   assert.match(html, /id="password"/);
-  assert.doesNotMatch(html, /<script\b[^>]*>[\s\S]*?\S[\s\S]*?<\/script>|on(?:click|load)=|https?:\/\//i);
+  assert.doesNotMatch(html, /<script\b[^>]*>(?!\s*<\/script>)[\s\S]*?<\/script>|on(?:click|load)=|https?:\/\//i);
   assert.match(response.headers.get('content-security-policy'), /script-src 'self'/);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   for (const asset of ['/admin/chats.js', '/admin/chats.css']) assert.equal((await h.request(asset, null)).status, 200);

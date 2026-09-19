@@ -21,10 +21,12 @@ async function startServer() {
   // Replies and optional internal boss extraction run here. CRM writes stay disconnected.
   let worker;
   let extractionWorker;
+  let booksWorker;
   let server;
   const stopWorkers = () => Promise.allSettled([
     Promise.resolve().then(() => worker?.stop()),
     Promise.resolve().then(() => extractionWorker?.stop()),
+    Promise.resolve().then(() => booksWorker?.stop()),
     Promise.resolve().then(() => app.locals.outgoingMessages?.stop()),
   ]);
   const closeDatabases = () => Promise.allSettled([
@@ -41,17 +43,46 @@ async function startServer() {
       const outgoingMessages = createOutgoingMessages({ store, whatsapp, config, logger, triggerGate });
       app.locals.outgoingMessages = outgoingMessages;
       app.locals.whatsapp = whatsapp;
+      let billStore = null;
+      if (config.booksSenders?.size) {
+        const { createBillStore } = require('./database/billStore');
+        billStore = app.locals.billStore || createBillStore({ store, logger });
+        await billStore.init();
+        app.locals.billStore = billStore;
+      }
       app.locals.onNewMessage = async (message) => {
-        if ((config.fastAck || process.env.FAST_ACKNOWLEDGEMENT === 'true') && config.bossSenders?.has(message.senderPhone)) {
+        if (billStore && config.booksSenders?.has(message.senderPhone)) {
+          const isGreeting = /^(hi|hello|hey|salaam)[.!?]*$/i.test((message.text || '').trim());
+          const isCustomerSelection = Boolean(message.interactiveId);
+          if (message.mediaId || (!isGreeting && !isCustomerSelection)) {
+            try { await outgoingMessages.acknowledge(message, { isBooks: true }); }
+            catch { logger.warn({ event: 'books_ack_unavailable', message_id: message.messageId }); }
+          }
+          await billStore.enqueueBillExtraction({
+              messageId: message.messageId,
+              workerPhone: message.senderPhone,
+              maxAttempts: config.maxAttempts,
+              payload: {
+                message_id: message.messageId,
+                message_text: message.text,
+                message_type: message.messageType,
+                media_id: message.mediaId || null,
+                media_mime_type: message.mediaMimeType || null,
+                media_filename: message.mediaFilename || null,
+                interactive_id: message.interactiveId || null,
+              },
+          });
+        } else if (config.bossSenders?.has(message.senderPhone)) {
           await outgoingMessages.acknowledge(message);
         }
       };
       const conversational = config.aiProvider === 'openai';
       let processor;
+      let ai = null;
       if (conversational) {
         const { createAiService } = require('./services/ai/aiService');
         const { createConversationProcessor } = require('./services/ai/conversationProcessor');
-        const ai = createAiService({ logger });
+        ai = createAiService({ logger });
         processor = createConversationProcessor({ store, config, logger, whatsapp, ai, triggerGate });
         if (config.bossSenders.size) {
           const { createBossLeadProcessor } = require('./services/ai/bossLeadProcessor');
@@ -75,6 +106,34 @@ async function startServer() {
       } else {
         const { createAutoReplyProcessor } = require('./services/whatsapp/autoReply');
         processor = createAutoReplyProcessor({ store, config, logger, whatsapp, triggerGate });
+      }
+      if (conversational && config.booksSenders?.size) {
+        const { createZohoBooksClient } = require('./services/books/zohoBooksClient');
+        const { createBillExtractionService } = require('./services/ai/billExtractionService');
+        const { createBillWorkflow } = require('./services/books/billWorkflow');
+        const { createBooksWorker } = require('./services/books/booksWorker');
+
+        const zohoBooksClient = createZohoBooksClient({ config, logger });
+        const billExtractionService = createBillExtractionService({ env: process.env, logger });
+        const billWorkflow = createBillWorkflow({
+          billStore,
+          billExtractionService,
+          zohoBooksClient,
+          whatsappService: whatsapp,
+          aiService: ai,
+          store,
+          config,
+          logger,
+        });
+
+        booksWorker = createBooksWorker({
+          billStore,
+          billWorkflow,
+          whatsapp,
+          config,
+          logger,
+          triggerGate,
+        });
       }
       worker = createWorker({
         store, processor, config, logger, triggerGate, processInbox: conversational,
@@ -119,6 +178,7 @@ async function startServer() {
     if (!config.appSecret) logger.warn({ event: 'webhook_signatures_disabled' }, 'Local development only: set META_APP_SECRET before exposing /webhook through ngrok.');
     worker?.start();
     extractionWorker?.start();
+    booksWorker?.start();
   });
   server.once('error', async (error) => {
     triggerGate?.close();

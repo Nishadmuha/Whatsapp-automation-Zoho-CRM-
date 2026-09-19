@@ -1,0 +1,495 @@
+<!-- Page Body -->
+    <div class="overview-container">
+      <!-- Title & Actions Row -->
+      <div class="command-center-header">
+        <div>
+          <h1 class="command-title">COMMAND CENTER</h1>
+          <p class="command-subtitle">Voltronix Automation Dashboard Overview</p>
+        </div>
+
+        <div class="command-actions">
+          <div class="date-indicator-badge">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+            </svg>
+            <span id="current-month-label">MAY 2024</span>
+          </div>
+
+          <button id="btn-force-sync" class="btn-force-sync" type="button">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="#FFFFFF"><path d="M13 2L3 14h7v8l10-12h-7z"/></svg>
+            <span>FORCE SYNC</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 6 KPI Row -->
+      <div class="kpi-row">
+        <!-- 1. Total Leads -->
+        <article class="kpi-card">
+          <div class="kpi-card-top">
+            <div class="kpi-icon-square">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+            </div>
+            <span class="kpi-badge badge-coral">+12.5% ↗</span>
+          </div>
+          <span class="kpi-label">TOTAL LEADS</span>
+          <span class="kpi-val" id="kpi-total-leads">—</span>
+        </article>
+
+        <!-- 2. Pending Bills -->
+        <article class="kpi-card">
+          <div class="kpi-card-top">
+            <div class="kpi-icon-square">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+              </svg>
+            </div>
+            <span class="kpi-badge badge-muted">-3.2% ↘</span>
+          </div>
+          <span class="kpi-label">PENDING BILLS</span>
+          <span class="kpi-val" id="kpi-pending-bills">—</span>
+        </article>
+
+        <!-- 3. Automation Rate -->
+        <article class="kpi-card">
+          <div class="kpi-card-top">
+            <div class="kpi-icon-square">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+              </svg>
+            </div>
+            <span class="kpi-badge badge-coral">+5.1% ↗</span>
+          </div>
+          <span class="kpi-label">VALIDATION RATE</span>
+          <span class="kpi-val" id="kpi-auto-rate">—</span>
+        </article>
+
+        <!-- 4. Sync Status -->
+        <article class="kpi-card">
+          <div class="kpi-card-top">
+            <div class="kpi-icon-square">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+              </svg>
+            </div>
+            <span class="kpi-badge badge-coral">100% ↗</span>
+          </div>
+          <span class="kpi-label">SYNC STATUS</span>
+          <span class="kpi-val" id="kpi-sync-status" style="font-size:1.35rem;line-height:1.25;">—</span>
+        </article>
+
+        <!-- 5. Avg. Extraction -->
+        <article class="kpi-card">
+          <div class="kpi-card-top">
+            <div class="kpi-icon-square">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+              </svg>
+            </div>
+            <span class="kpi-badge badge-muted">-0.4s ↘</span>
+          </div>
+          <span class="kpi-label">AVG. EXTRACTION</span>
+          <span class="kpi-val" id="kpi-avg-time">—</span>
+        </article>
+
+        <!-- 6. Monthly Volume -->
+        <article class="kpi-card">
+          <div class="kpi-card-top">
+            <div class="kpi-icon-square">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>
+              </svg>
+            </div>
+            <span class="kpi-badge badge-coral">+10.2% ↗</span>
+          </div>
+          <span class="kpi-label">MONTHLY VOLUME</span>
+          <span class="kpi-val" id="kpi-volume">—</span>
+        </article>
+      </div>
+
+      <!-- Main 2-Column Section -->
+      <div class="overview-content-grid">
+        <!-- Left Column (Tables) -->
+        <div class="column-left">
+          <!-- 1. Recent WhatsApp Leads -->
+          <div class="content-box">
+            <div class="content-box-header">
+              <div class="box-title-group">
+                <span class="box-title-icon">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                  </svg>
+                </span>
+                <h2 class="box-title-text">RECENT WHATSAPP LEADS</h2>
+              </div>
+              <a href="/admin/leads" class="box-header-action">VIEW ALL</a>
+            </div>
+
+            <table class="leads-table">
+              <thead>
+                <tr>
+                  <th>CONTACT</th>
+                  <th>PROJECT LOCATION</th>
+                  <th>LAST ACTIVITY</th>
+                  <th>STATUS</th>
+                </tr>
+              </thead>
+              <tbody id="overview-leads-rows">
+                <tr>
+                  <td class="td-contact">Downtown Site B</td>
+                  <td class="td-project">Need quote for electrical wiring</td>
+                  <td><span class="badge-new">NEW</span></td>
+                  <td>
+                    <div class="assignee-cell">
+                      <div class="assignee-avatar-img">
+                        <svg viewBox="0 0 36 36" width="28" height="28">
+                          <circle cx="18" cy="18" r="18" fill="#1E293B"/>
+                          <circle cx="18" cy="13.5" r="5.5" fill="#FCA5A5"/>
+                          <path d="M12.5 12c0-3.5 2.5-5.5 5.5-5.5s5.5 2 5.5 5.5c-1-1.2-2.8-1.8-5.5-1.8s-4.5.6-5.5 1.8z" fill="#3B2314"/>
+                          <path d="M9 31c0-5 4-8.5 9-8.5s9 3.5 9 8.5" fill="#0F172A"/>
+                          <polygon points="18,22.5 15.5,29 20.5,29" fill="#FFFFFF"/>
+                          <polygon points="18,24 17,28.5 19,28.5" fill="#DC2626"/>
+                        </svg>
+                      </div>
+                      <span class="assignee-name">John Miller</span>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="td-contact">Industrial Park</td>
+                  <td class="td-project">Schedule site visit for Monday</td>
+                  <td><span class="badge-dark-pill">IN PROGRESS</span></td>
+                  <td>
+                    <div class="assignee-cell">
+                      <div class="assignee-avatar-img">
+                        <svg viewBox="0 0 36 36" width="28" height="28">
+                          <circle cx="18" cy="18" r="18" fill="#334155"/>
+                          <circle cx="18" cy="13.5" r="5.5" fill="#FED7AA"/>
+                          <path d="M12.5 12c0-3.5 2.5-5.5 5.5-5.5s5.5 2 5.5 5.5" fill="#475569" stroke="#475569" stroke-width="2"/>
+                          <path d="M9 31c0-5 4-8.5 9-8.5s9 3.5 9 8.5" fill="#1E293B"/>
+                          <polygon points="18,22.5 16,30 20,30" fill="#FFFFFF"/>
+                          <polygon points="18,24.5 17,30 19,30" fill="#1E40AF"/>
+                        </svg>
+                      </div>
+                      <span class="assignee-name">Robert Smith</span>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="td-contact">West End Heights</td>
+                  <td class="td-project">Attached the blueprints for phase 2</td>
+                  <td><span class="badge-dark-pill">REVIEW</span></td>
+                  <td>
+                    <div class="assignee-cell">
+                      <div class="assignee-avatar-img">
+                        <svg viewBox="0 0 36 36" width="28" height="28">
+                          <circle cx="18" cy="18" r="18" fill="#78350F"/>
+                          <circle cx="18" cy="14" r="5.5" fill="#FDE68A"/>
+                          <path d="M11 16c-1-6 3-10 7-10s8 4 7 10c-2-2.5-4-3.5-7-3.5s-5 1-7 3.5z" fill="#1C1917"/>
+                          <circle cx="12.5" cy="16" r="1.2" fill="#D97706"/>
+                          <circle cx="23.5" cy="16" r="1.2" fill="#D97706"/>
+                          <path d="M9 31c0-5 4-8.5 9-8.5s9 3.5 9 8.5" fill="#4C1D95"/>
+                        </svg>
+                      </div>
+                      <span class="assignee-name">Alicia Keys</span>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="td-contact">Harbor View</td>
+                  <td class="td-project">Confirmation received</td>
+                  <td><span class="badge-dark-pill">CONTACTED</span></td>
+                  <td>
+                    <div class="assignee-cell">
+                      <div class="assignee-avatar-img">
+                        <svg viewBox="0 0 36 36" width="28" height="28">
+                          <circle cx="18" cy="18" r="18" fill="#18181B"/>
+                          <circle cx="18" cy="13.5" r="5.5" fill="#FDE047"/>
+                          <path d="M12.5 11c0-3 2.5-4.5 5.5-4.5s5.5 1.5 5.5 4.5c-1-1-2.5-1.5-5.5-1.5s-4.5.5-5.5 1.5z" fill="#09090B"/>
+                          <path d="M9 31c0-5 4-8.5 9-8.5s9 3.5 9 8.5" fill="#09090B"/>
+                          <polygon points="18,22.5 16,29 20,29" fill="#FFFFFF"/>
+                        </svg>
+                      </div>
+                      <span class="assignee-name">Michael Bay</span>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- 2. Recent Bills (Zoho Automation) -->
+          <div class="content-box">
+            <div class="content-box-header">
+              <div class="box-title-group">
+                <span class="box-title-icon">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/>
+                  </svg>
+                </span>
+                <h2 class="box-title-text">RECENT BILLS (ZOHO AUTOMATION)</h2>
+              </div>
+              <div class="box-header-btn-group">
+                <button id="btn-bills-filter" class="btn-header-tool" type="button">
+                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                  <span>FILTER</span>
+                </button>
+                <button id="btn-bills-export" class="btn-header-tool" type="button">
+                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  <span>EXPORT</span>
+                </button>
+              </div>
+            </div>
+
+            <table class="bills-table">
+              <thead>
+                <tr>
+                  <th>BILL ID</th>
+                  <th>VENDOR</th>
+                  <th>DATE</th>
+                  <th>CATEGORY</th>
+                  <th>AMOUNT (AED)</th>
+                  <th>STATUS</th>
+                </tr>
+              </thead>
+              <tbody id="overview-bills-rows">
+                <tr>
+                  <td class="td-bill-id">BILL-0021</td>
+                  <td class="td-vendor">Concrete Solutions Inc.</td>
+                  <td class="td-date">2024-05-18</td>
+                  <td><span class="cat-border-pill">MATERIALS</span></td>
+                  <td class="td-amount">—</td>
+                  <td><div class="status-dot-cell"><span class="dot-red"></span> PENDING</div></td>
+                </tr>
+                <tr>
+                  <td class="td-bill-id">BILL-0020</td>
+                  <td class="td-vendor">Steel Masters LLC</td>
+                  <td class="td-date">2024-05-17</td>
+                  <td><span class="cat-border-pill">RAW GOODS</span></td>
+                  <td class="td-amount">—</td>
+                  <td><div class="status-dot-cell"><span class="dot-black"></span> SYNCED</div></td>
+                </tr>
+                <tr>
+                  <td class="td-bill-id">BILL-0019</td>
+                  <td class="td-vendor">Power Grid Electrical</td>
+                  <td class="td-date">2024-05-17</td>
+                  <td><span class="cat-border-pill">UTILITIES</span></td>
+                  <td class="td-amount">—</td>
+                  <td><div class="status-dot-cell"><span class="dot-red"></span> REVIEW</div></td>
+                </tr>
+                <tr>
+                  <td class="td-bill-id">BILL-0018</td>
+                  <td class="td-vendor">FastenRight Ltd.</td>
+                  <td class="td-date">2024-05-16</td>
+                  <td><span class="cat-border-pill">HARDWARE</span></td>
+                  <td class="td-amount">—</td>
+                  <td><div class="status-dot-cell"><span class="dot-black"></span> SYNCED</div></td>
+                </tr>
+                <tr>
+                  <td class="td-bill-id">BILL-0017</td>
+                  <td class="td-vendor">Modern Logistics</td>
+                  <td class="td-date">2024-05-15</td>
+                  <td><span class="cat-border-pill">SHIPPING</span></td>
+                  <td class="td-amount">—</td>
+                  <td><div class="status-dot-cell"><span class="dot-red"></span> PENDING</div></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Right Column (Charts, Feed & Diagnostics) -->
+        <div class="column-right">
+          <!-- 1. Zoho Bill Overview (Bar Chart) -->
+          <div class="content-box">
+            <div class="content-box-header">
+              <div class="box-title-group">
+                <span class="box-title-icon">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                  </svg>
+                </span>
+                <h2 class="box-title-text">ZOHO BILL OVERVIEW</h2>
+              </div>
+            </div>
+
+            <div class="chart-body">
+              <div class="bar-chart-container">
+                <!-- Y-axis -->
+                <div class="y-axis-labels">
+                  <span>32</span>
+                  <span>24</span>
+                  <span>16</span>
+                  <span>8</span>
+                  <span>0</span>
+                </div>
+
+                <!-- Bars Area -->
+                <div class="chart-bars-area">
+                  <div class="chart-grid-line" style="top:0%;"></div>
+                  <div class="chart-grid-line" style="top:25%;"></div>
+                  <div class="chart-grid-line" style="top:50%;"></div>
+                  <div class="chart-grid-line" style="top:75%;"></div>
+
+                  <!-- Mon -->
+                  <div class="bar-column">
+                    <div class="bar-fill" style="height: 38%;"></div>
+                    <span class="bar-col-label">Mon</span>
+                  </div>
+                  <!-- Tue -->
+                  <div class="bar-column">
+                    <div class="bar-fill" style="height: 58%;"></div>
+                    <span class="bar-col-label">Tue</span>
+                  </div>
+                  <!-- Wed -->
+                  <div class="bar-column">
+                    <div class="bar-fill" style="height: 48%;"></div>
+                    <span class="bar-col-label">Wed</span>
+                  </div>
+                  <!-- Thu (peak) -->
+                  <div class="bar-column">
+                    <div class="bar-fill" style="height: 80%;"></div>
+                    <span class="bar-col-label">Thu</span>
+                  </div>
+                  <!-- Fri -->
+                  <div class="bar-column">
+                    <div class="bar-fill" style="height: 65%;"></div>
+                    <span class="bar-col-label">Fri</span>
+                  </div>
+                  <!-- Sat -->
+                  <div class="bar-column">
+                    <div class="bar-fill" style="height: 26%;"></div>
+                    <span class="bar-col-label">Sat</span>
+                  </div>
+                  <!-- Sun -->
+                  <div class="bar-column">
+                    <div class="bar-fill" style="height: 16%;"></div>
+                    <span class="bar-col-label">Sun</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Efficiency & Avg Time -->
+            <div class="overview-stats-split">
+              <div class="overview-stat-box">
+                <div class="stat-box-label">EFFICIENCY</div>
+                <div class="stat-box-num">98.2%</div>
+              </div>
+              <div class="overview-stat-box">
+                <div class="stat-box-label">AVG TIME</div>
+                <div class="stat-box-num">45m</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 2. System Activity Feed -->
+          <div class="content-box">
+            <div class="content-box-header">
+              <div class="box-title-group">
+                <span class="box-title-icon">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                  </svg>
+                </span>
+                <h2 class="box-title-text">SYSTEM ACTIVITY</h2>
+              </div>
+            </div>
+
+            <div id="overview-activity-list" class="activity-list">
+              <!-- Item 1 -->
+              <div class="activity-item">
+                <div class="activity-icon-box">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                </div>
+                <div class="activity-content">
+                  <span class="activity-actor">Sarah Jenkins</span> extracted data from <span class="activity-target">Invoice #9921</span>
+                  <span class="activity-time">🕒 2 MINS AGO</span>
+                </div>
+              </div>
+
+              <!-- Item 2 -->
+              <div class="activity-item">
+                <div class="activity-icon-box">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                  </svg>
+                </div>
+                <div class="activity-content">
+                  <span class="activity-actor">System Bot</span> auto-synced <span class="activity-target">Leads from WhatsApp</span>
+                  <span class="activity-time">🕒 14 MINS AGO</span>
+                </div>
+              </div>
+
+              <!-- Item 3 -->
+              <div class="activity-item">
+                <div class="activity-icon-box">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                  </svg>
+                </div>
+                <div class="activity-content">
+                  <span class="activity-actor">Admin User</span> updated settings for <span class="activity-target">Zoho Connector</span>
+                  <span class="activity-time">🕒 1 HR AGO</span>
+                </div>
+              </div>
+
+              <!-- Item 4 -->
+              <div class="activity-item">
+                <div class="activity-icon-box">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                </div>
+                <div class="activity-content">
+                  <span class="activity-actor">David Chen</span> approved <span class="activity-target">Bill #8820</span>
+                  <span class="activity-time">🕒 2 HRS AGO</span>
+                </div>
+              </div>
+
+              <!-- Item 5 -->
+              <div class="activity-item">
+                <div class="activity-icon-box icon-red">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                  </svg>
+                </div>
+                <div class="activity-content">
+                  <span class="activity-actor">System Bot</span> detected anomaly in <span class="activity-target">Vendor Steel Masters</span>
+                  <span class="activity-time">🕒 5 HRS AGO</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="load-more-container">
+              <button id="btn-load-more-activity" class="btn-load-more" type="button">LOAD MORE ACTIVITY</button>
+            </div>
+          </div>
+
+          <!-- 3. System Status & Diagnostics Widget -->
+          <div class="system-diagnostics-card">
+            <div class="status-indicator-row">
+              <div class="indicator-name">
+                <span class="indicator-pulse-dot"></span>
+                <span>WHATSAPP API STATUS</span>
+              </div>
+              <span id="diag-whatsapp-val" class="indicator-status-text">OPERATIONAL</span>
+            </div>
+
+            <div class="status-indicator-row">
+              <div class="indicator-name">
+                <span class="indicator-pulse-dot"></span>
+                <span>ZOHO BOOKS LINK</span>
+              </div>
+              <span id="diag-books-val" class="indicator-status-text">CONNECTED</span>
+            </div>
+
+            <button id="btn-diagnostics-action" class="btn-system-diagnostics" type="button">SYSTEM DIAGNOSTICS</button>
+          </div>
+        </div>
+      </div>
+    </div>

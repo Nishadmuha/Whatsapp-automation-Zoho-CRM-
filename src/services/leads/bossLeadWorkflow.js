@@ -26,7 +26,13 @@ const failure = code => Object.assign(new Error('Lead processing could not be co
 async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, force = false, whatsapp = null }) {
   const lead = await store.getLead(leadId);
   if (!lead) return { success: false, error: 'Lead not found' };
-  if (!force && (lead.zoho_status === 'saved' || lead.zoho_lead_id)) {
+  if (!lead.attachments?.length && typeof store.getLeadAttachments === 'function') {
+    try { lead.attachments = await store.getLeadAttachments(leadId); }
+    catch { return { success: false, error: 'Attachment metadata could not be loaded' }; }
+  }
+  if (!force && lead.zoho_status === 'saved' && lead.zoho_lead_id && !(lead.attachments || []).some(att =>
+    (att.zohoUploadStatus || att.zoho_upload_status) !== 'uploaded' || !att.zohoAttachmentId || att.zohoAttachmentId === 'attached'
+      || String(att.zohoLeadId) !== String(lead.zoho_lead_id))) {
     logger?.info?.({ event: 'zoho_already_saved', lead_id: leadId });
     const zohoUrl = lead.zoho_url || lead.zohoUrl || buildZohoLeadUrl(lead.zoho_lead_id);
     if (messageId) {
@@ -104,10 +110,10 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
     } else {
       let existing = null;
       if (lead.phone) {
-        existing = await zohoClient.searchLeadByPhone(lead.phone).catch(() => null);
+        existing = await zohoClient.searchLeadByPhone(lead.phone);
       }
       if (!existing && lead.email) {
-        existing = await zohoClient.searchLeadByEmail(lead.email).catch(() => null);
+        existing = await zohoClient.searchLeadByEmail(lead.email);
       }
 
       if (existing?.id) {
@@ -124,6 +130,8 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
 
     const zohoUrl = buildZohoLeadUrl(zohoLeadId);
     const nowIso = new Date().toISOString();
+    // Retain the exact returned ID even when an attachment or later step fails.
+    await store.updateLeadZohoStatus(leadId, { zohoStatus: 'creating', zohoLeadId, zohoUrl });
 
     // Upload any original image/voice attachments to the created/updated Zoho lead
     let attachments = Array.isArray(lead.attachments) ? [...lead.attachments] : [];
@@ -137,7 +145,7 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
       for (const att of attachments) {
         // Idempotency: skip if already uploaded to Zoho
         if ((att.zohoUploadStatus === 'uploaded' || att.zoho_upload_status === 'uploaded') &&
-            att.zohoAttachmentId && att.zohoAttachmentId !== 'attached') {
+            att.zohoAttachmentId && att.zohoAttachmentId !== 'attached' && String(att.zohoLeadId) === String(zohoLeadId)) {
           continue;
         }
 
@@ -197,8 +205,9 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
               mimeType,
             });
 
+            if (!uploadRes?.id || uploadRes.id === 'attached') throw new Error('Attachment upload returned no attachment ID');
             att.zohoLeadId = zohoLeadId;
-            att.zohoAttachmentId = uploadRes?.id || 'attached';
+            att.zohoAttachmentId = uploadRes.id;
             att.zohoUploadStatus = 'uploaded';
             att.zoho_upload_status = 'uploaded';
             att.uploadedAt = new Date().toISOString();
@@ -236,19 +245,23 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
       }
 
       if (typeof store.updateLeadAttachments === 'function') {
-        try {
-          await store.updateLeadAttachments(leadId, attachments);
-        } catch (err) {
-          logger?.warn?.({ event: 'failed_to_update_lead_attachments', error: err.message });
-        }
+        await store.updateLeadAttachments(leadId, attachments);
       }
     }
 
+    if (attachments.some(att => (att.zohoUploadStatus || att.zoho_upload_status) !== 'uploaded'
+        || !att.zohoAttachmentId || att.zohoAttachmentId === 'attached' || String(att.zohoLeadId) !== String(zohoLeadId))) {
+      await store.updateLeadZohoStatus(leadId, { zohoStatus: 'failed', zohoLeadId, zohoUrl, errorCode: 'ATTACHMENT_UPLOAD_INCOMPLETE', errorStage: 'attachment' });
+      if (messageId) await store.updateReplyText(messageId, `Lead saved in Zoho CRM (ID: ${zohoLeadId}), but one or more attachments failed to upload. The original files are retained for retry.\n${zohoUrl}`);
+      return { success: false, zohoLeadId, zohoUrl, attachments, error: 'ATTACHMENT_UPLOAD_INCOMPLETE' };
+    }
     await store.updateLeadZohoStatus(leadId, {
       zohoStatus: 'saved',
       zohoLeadId,
       zohoUrl,
       zohoSyncedAt: nowIso,
+      errorCode: null,
+      errorStage: null,
     });
 
     logger?.info?.({ event: 'zoho_sync_success', lead_id: leadId, zoho_lead_id: zohoLeadId, zoho_url: zohoUrl });

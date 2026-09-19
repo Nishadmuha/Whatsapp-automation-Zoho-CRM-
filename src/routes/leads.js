@@ -1,5 +1,4 @@
 'use strict';
-const path = require('node:path');
 const express = require('express');
 const { rateLimit } = require('express-rate-limit');
 
@@ -36,6 +35,9 @@ function outputRedactor(config, env) {
 
 function leadDto(row) {
   const result = Object.fromEntries(DTO_FIELDS.map(field => [field, typeof row[field] === 'string' ? row[field] : null]));
+  for (const extra of ['source', 'status', 'est_value', 'assigned_to']) {
+    if (typeof row[extra] === 'string') result[extra] = row[extra];
+  }
   if (typeof (row.attachment_status || row.attachmentStatus) === 'string') {
     result.attachment_status = row.attachment_status || row.attachmentStatus;
   }
@@ -123,6 +125,39 @@ function createLeadsRouter({ config, store, ready, logger, env = {}, requireAuth
         page: query.page, page_size: query.pageSize, total_pages: Math.ceil(total / query.pageSize) }));
     } catch { return unavailable(req, res); }
   });
+  router.post('/', async (req, res) => {
+    try {
+      await ready;
+      const { v4: uuidv4 } = require('uuid');
+      const now = new Date().toISOString();
+      const newLead = {
+        id: uuidv4(),
+        contact_name: req.body.contact_name || '',
+        company_name: req.body.company_name || '',
+        phone: req.body.phone || '',
+        sender_phone: req.body.phone || '',
+        email: req.body.email || '',
+        source: req.body.source || 'WhatsApp',
+        status: req.body.status || 'New',
+        est_value: req.body.est_value || '$12,500',
+        assigned_to: req.body.assigned_to || 'James Wilson',
+        notes: req.body.notes || '',
+        original_message: req.body.notes || 'Manual lead entry',
+        validation_status: 'valid',
+        extraction_status: 'completed',
+        zoho_status: 'pending',
+        created_at: now,
+        updated_at: now,
+        messages: [],
+        attachments: []
+      };
+      await store.col('leads').insertOne(newLead);
+      return res.status(201).json({ success: true, lead: redact(leadDto(newLead)) });
+    } catch (e) {
+      logger?.error?.({ event: 'create_lead_failed', error: e.message });
+      return res.status(500).json({ success: false, message: e.message });
+    }
+  });
   router.get('/:id', async (req, res) => {
     if (!UUID.test(req.params.id) || Object.keys(req.query).length) return invalid(res);
     try {
@@ -166,12 +201,4 @@ function createLeadsRouter({ config, store, ready, logger, env = {}, requireAuth
   return router;
 }
 
-function createLeadsDashboardRouter() {
-  const router = express.Router();
-  const directory = path.join(__dirname, '../admin');
-  router.get(['/leads', '/leads/'], (_req, res) => res.sendFile(path.join(directory, 'leads.html')));
-  for (const asset of ['leads.css', 'leads.js']) router.get('/' + asset, (_req, res) => res.sendFile(path.join(directory, asset)));
-  return router;
-}
-
-module.exports = { createLeadsRouter, createLeadsDashboardRouter, outputRedactor };
+module.exports = { createLeadsRouter, outputRedactor };

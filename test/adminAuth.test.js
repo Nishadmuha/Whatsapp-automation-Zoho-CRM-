@@ -135,7 +135,7 @@ test('successful login issues only an opaque bounded HttpOnly cookie and authori
   const h = await setup(t);
   const response = await h.login(credentials(), { Origin: h.base, 'Sec-Fetch-Site': 'same-origin' });
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { authenticated: true, username: USERNAME });
+  assert.deepEqual(await response.json(), { authenticated: true, username: USERNAME, role: 'admin', roles: ['admin', 'books'] });
   const header = response.headers.get('set-cookie');
   const cookie = cookieFrom(response);
   assert.match(cookie, new RegExp('^' + SESSION_COOKIE + '=[a-f0-9]{64}$'));
@@ -146,7 +146,7 @@ test('successful login issues only an opaque bounded HttpOnly cookie and authori
   assert.doesNotMatch(header, /; Secure(?:;|$)/);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.deepEqual(await (await h.get('/api/protected', cookie)).json(), { authorized: true });
-  assert.deepEqual(await (await h.get('/api/admin/session', cookie)).json(), { authenticated: true, username: USERNAME });
+  assert.deepEqual(await (await h.get('/api/admin/session', cookie)).json(), { authenticated: true, username: USERNAME, role: 'admin', roles: ['admin', 'books'] });
   assert.equal(JSON.stringify(h.logs).includes(cookie.split('=')[1]), false);
   assert.equal(JSON.stringify(h.logs).includes(PASSWORD), false);
 });
@@ -264,7 +264,7 @@ test('ten failed login attempts trigger a dedicated limiter without blocking ses
   assert.ok(response.headers.get('retry-after'));
   assert.equal(response.headers.get('set-cookie'), null);
   assert.equal((await h.get('/api/protected', cookie)).status, 200);
-  assert.deepEqual(await (await h.get('/api/admin/session', cookie)).json(), { authenticated: true, username: USERNAME });
+  assert.deepEqual(await (await h.get('/api/admin/session', cookie)).json(), { authenticated: true, username: USERNAME, role: 'admin', roles: ['admin', 'books'] });
   assert.equal((await h.logout(cookie)).status, 200);
 });
 
@@ -275,7 +275,7 @@ test('successful logins do not consume failure limits and session capacity evict
     assert.equal(response.status, 200);
     // Drain every response before the next of 1001 requests, so transport
     // resources are released without relying on garbage collection.
-    assert.deepEqual(await response.json(), { authenticated: true, username: USERNAME });
+    assert.deepEqual(await response.json(), { authenticated: true, username: USERNAME, role: 'admin', roles: ['admin', 'books'] });
     return cookieFrom(response);
   }
   const first = await login();

@@ -1,7 +1,7 @@
 'use strict';
 const js = require('@eslint/js');
 module.exports = [
-  { ignores: ['node_modules/**', 'data/**', '.local-postgres/**', 'coverage/**'] },
+  { ignores: ['node_modules/**', 'data/**', '.local-postgres/**', 'coverage/**', 'scratch/**'] },
   js.configs.recommended,
   {
     files: ['**/*.js'],
@@ -14,5 +14,5 @@ module.exports = [
       'no-control-regex': 'off',
     },
   },
-  { files: ['src/admin/*.js'], languageOptions: { sourceType: 'script', globals: { document: 'readonly', window: 'readonly', alert: 'readonly' } } },
+  { files: ['src/admin/*.js'], languageOptions: { sourceType: 'script', globals: { document: 'readonly', window: 'readonly', alert: 'readonly', localStorage: 'readonly', confirm: 'readonly', requestAnimationFrame: 'readonly' } } },
 ];

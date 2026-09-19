@@ -46,6 +46,16 @@ test('WhatsApp sends the configured Graph API contract with TLS verification, bo
   assert.deepEqual(logs, []);
 });
 
+test('WhatsApp sends a customer selection list with bounded row data', async () => {
+  const { service, calls } = setup();
+  await service.sendInteractiveList('+971501234567', {
+    header: 'Customer details', body: 'Select the customer from Zoho Books.', button: 'Select customer',
+    sections: [{ title: 'Customers', rows: [{ id: 'zoho-customer:cust-1', title: 'Gulf Client', description: '+971501112233' }] }],
+  });
+  assert.deepEqual(calls[0][1].interactive.action.sections[0].rows[0], { id: 'zoho-customer:cust-1', title: 'Gulf Client', description: '+971501112233' });
+  assert.equal(calls[0][1].type, 'interactive');
+});
+
 test('WhatsApp configured Graph version wins over the legacy alias and no implicit version is chosen', async () => {
   for (const [env, expected] of [
     [settings({ META_GRAPH_API_VERSION: 'v25.0', WHATSAPP_API_VERSION: 'v23.0' }), 'v25.0'],

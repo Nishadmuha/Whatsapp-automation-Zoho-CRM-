@@ -3,10 +3,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const vm = require('node:vm');
+const { renderAdminPage } = require('../src/views/adminPage');
 const { test } = require('node:test');
 
 class Element {
-  constructor(tag = 'div') { this.tagName = tag; this.children = []; this.listeners = new Map(); this.value = ''; this.hidden = false; this._text = ''; }
+  constructor(tag = 'div') { this.tagName = tag; this.children = []; this.listeners = new Map(); this.classList = { add() {} }; this.value = ''; this.hidden = false; this._text = ''; }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
   set innerHTML(_value) { throw new Error('HTML injection sink is forbidden'); }
@@ -20,7 +21,7 @@ class Element {
 
 function response(data, status = 200) { return { status, ok: status >= 200 && status < 300, async json() { return data; } }; }
 async function dashboard(fetch, { sessionAuthenticated = false, loginStatus = 200, logoutStatus = 200, logoutGate, search = '' } = {}) {
-  const [html, script] = await Promise.all(['leads.html', 'leads.js'].map(file => fs.readFile(path.resolve(__dirname, '../src/admin', file), 'utf8')));
+  const [html, script] = await Promise.all(['leads.html', 'leads.js'].map(file => file.endsWith('.html') ? renderAdminPage('leads') : fs.readFile(path.resolve(__dirname, '../src/admin', file), 'utf8')));
   const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map(match => [match[1], new Element()]));
   elements.get('workspace').hidden = true;
   elements.get('page-size').value = '20';

@@ -5,6 +5,7 @@ const { createOutgoingRepository, outgoingError } = require('../../database/outg
 const { validateTextMessage } = require('./whatsappService');
 
 const ACKNOWLEDGEMENT = 'Got it Boss \uD83D\uDC4D Processing the lead...';
+const BOOKS_ACKNOWLEDGEMENT = 'Got it \uD83D\uDC4D Processing the bill...';
 const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[1-8][a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
 const REPLY_WINDOW_MS = 23 * 60 * 60 * 1000;
 
@@ -15,6 +16,8 @@ function createOutgoingMessages({ store, whatsapp, config, logger, triggerGate, 
   const allowed = phone => !config.allowedSenders?.size || config.allowedSenders.has(phone);
   const bossActive = phone => !stopped && config.enabled && config.aiProvider === 'openai'
     && config.bossSenders?.has(phone) === true && allowed(phone);
+  const booksActive = phone => !stopped && config.enabled
+    && config.booksSenders?.has(phone) === true && allowed(phone);
   function log(level, event, row, extra = {}) {
     try { logger?.[level]?.({ event, outgoing_id: row?.id, message_id: row?.message_id, ...extra }); }
     catch { /* Delivery classification is independent of the logger. */ }
@@ -38,7 +41,7 @@ function createOutgoingMessages({ store, whatsapp, config, logger, triggerGate, 
       row = await repository.reserve(id);
       if (!row) return await repository.get(id);
       // Recheck after the asynchronous reservation and immediately before send.
-      if (stopped || (row.kind === 'ack' && (!bossActive(row.sender_phone) || !triggerGate?.allows(row.message_id)))) {
+      if (stopped || (row.kind === 'ack' && ((!bossActive(row.sender_phone) && !booksActive(row.sender_phone)) || !triggerGate?.allows(row.message_id)))) {
         return persistOutcome(row, { status: 'CANCELLED', errorCode: 'INACTIVE_TRIGGER' });
       }
       if (row.kind === 'manual') {
@@ -77,16 +80,20 @@ function createOutgoingMessages({ store, whatsapp, config, logger, triggerGate, 
 
   function schedule(id) { return track(Promise.resolve().then(() => dispatch(id))); }
 
-  async function acknowledge(message, { groupKey, leadId = null } = {}) {
+  async function acknowledge(message, { groupKey, leadId = null, isBooks = false } = {}) {
     const messageId = message.whatsapp_message_id || message.message_id || message.messageId;
     const senderPhone = message.sender_phone || message.senderPhone;
-    if (!bossActive(senderPhone) || !triggerGate?.allows(messageId)) return null;
+    const books = isBooks || message.processing_flow === 'books_bill'
+      || (config.booksSenders?.has(senderPhone) === true && !config.bossSenders?.has(senderPhone));
+    const active = books ? booksActive(senderPhone) : bossActive(senderPhone);
+    if (!active || !triggerGate?.allows(messageId)) return null;
     const group = groupKey ?? messageId;
     if (typeof group !== 'string' || !group.length || group.length > 512 || /[\u0000-\u001f\u007f]/.test(group)) {
       throw outgoingError('OUTGOING_INPUT', 'Invalid acknowledgement group.');
     }
+    const ackText = books ? BOOKS_ACKNOWLEDGEMENT : ACKNOWLEDGEMENT;
     const requestKey = 'ack:' + createHash('sha256').update(senderPhone + '\n' + group).digest('hex');
-    const result = await repository.insert({ requestKey, messageId, senderPhone, leadId, kind: 'ack', text: ACKNOWLEDGEMENT });
+    const result = await repository.insert({ requestKey, messageId, senderPhone, leadId, kind: 'ack', text: ackText });
     if (result.inserted) schedule(result.row.id);
     return result.row;
   }
@@ -125,4 +132,4 @@ function createOutgoingMessages({ store, whatsapp, config, logger, triggerGate, 
     flush, stop, repository };
 }
 
-module.exports = { createOutgoingMessages, ACKNOWLEDGEMENT };
+module.exports = { createOutgoingMessages, ACKNOWLEDGEMENT, BOOKS_ACKNOWLEDGEMENT };

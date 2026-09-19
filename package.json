@@ -11,14 +11,15 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test",
+    "test": "node scripts/run-tests.js",
     "whatsapp:test": "node scripts/whatsapp-cli.js",
     "check": "node scripts/check.js",
     "lint": "eslint .",
     "db:migrate": "node scripts/migrate.js",
     "messages": "node scripts/messages.js",
     "zoho:verify": "node scripts/zoho-auth.js",
-    "zoho:auth": "node scripts/zoho-auth.js"
+    "zoho:auth": "node scripts/zoho-auth.js",
+    "zoho:books:test": "node scripts/testZohoBooksConnection.js"
   },
   "dependencies": {
     "axios": "^1.20.0",
@@ -29,6 +30,7 @@
     "helmet": "^8.3.0",
     "libphonenumber-js": "^1.13.13",
     "mongoose": "^9.10.0",
+    "pdfkit": "^0.20.2",
     "pg": "^8.23.0",
     "pino": "^10.3.1",
     "zod": "^4.6.2"

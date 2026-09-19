@@ -1,0 +1,679 @@
+<div class="page-body-container" style="padding: 1.5rem 2.5rem 4rem; width: 100%; box-sizing: border-box;">
+
+      <!-- Visily Mode Tabs (Switch between Bills Table and Analytics Dashboard) -->
+      <div class="view-mode-tabs">
+        <button id="tab-financial-docs" class="btn-view-tab active" type="button">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          FINANCIAL DOCUMENTS
+        </button>
+        <button id="tab-bill-dashboard" class="btn-view-tab" type="button">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+          ZOHO BILL DASHBOARD
+        </button>
+      </div>
+
+      <p id="feedback" role="status" aria-live="polite"></p>
+
+      <!-- Authenticated Books Workspace -->
+      <section id="workspace" aria-label="Zoho Books workspace">
+
+        <!-- ===================================================================
+             VIEW 1: FINANCIAL DOCUMENTS / BILLS TABLE (IMAGE 5)
+             =================================================================== -->
+        <div id="view-financial-docs">
+          <div class="bills-page-header">
+            <div class="bills-header-left">
+              <h1>FINANCIAL DOCUMENTS</h1>
+              <p class="bills-subtitle">Manage and audit Zoho automation bills and vendor invoices.</p>
+            </div>
+            <div class="bills-header-right">
+              <button id="btn-export-bills-csv" class="btn-outline-action" type="button">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                EXPORT CSV
+              </button>
+              <button id="btn-upload-bill" class="btn-primary-red" type="button">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                UPLOAD BILL
+              </button>
+            </div>
+          </div>
+
+          <!-- 4 KPI Cards matching Image 5 -->
+          <div class="kpi-cards-grid">
+            <div class="kpi-card">
+              <div class="kpi-card-content">
+                <span class="kpi-label">TOTAL OUTSTANDING</span>
+                <div class="kpi-value-row">
+                  <span class="kpi-currency">AED</span>
+                  <span id="stat-outstanding" class="kpi-number">—</span>
+                </div>
+              </div>
+              <div class="kpi-icon-wrap">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              </div>
+            </div>
+
+            <div class="kpi-card accent-red">
+              <div class="kpi-card-content">
+                <span class="kpi-label">AWAITING APPROVAL</span>
+                <div class="kpi-value-row">
+                  <span id="stat-awaiting-approval" class="kpi-number">—</span>
+                  <span class="kpi-subtext">Documents</span>
+                </div>
+              </div>
+              <div class="kpi-icon-wrap">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-card-content">
+                <span class="kpi-label">SYNCED TO ZOHO</span>
+                <div class="kpi-value-row">
+                  <span id="stat-synced-total" class="kpi-number">—</span>
+                  <span class="kpi-subtext">Total</span>
+                </div>
+              </div>
+              <div class="kpi-icon-wrap">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-card-content">
+                <span class="kpi-label">SYNC SUCCESS RATE</span>
+                <div class="kpi-value-row">
+                  <span id="stat-success-rate" class="kpi-number">—</span>
+                </div>
+              </div>
+              <div class="kpi-icon-wrap">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+              </div>
+            </div>
+          </div>
+
+          <!-- Visily Table Toolbar -->
+          <div class="bills-toolbar">
+            <div class="bills-toolbar-left">
+              <div class="bills-search-box">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input id="search" name="search" type="search" placeholder="Filter by bill #, vendor or project…" autocomplete="off">
+              </div>
+
+              <div class="filter-pills-group">
+                <button type="button" class="btn-filter-pill active" data-filter="">ALL</button>
+                <button type="button" class="btn-filter-pill" data-filter="pending">PENDING</button>
+                <button type="button" class="btn-filter-pill" data-filter="synced">SYNCED</button>
+              </div>
+
+              <button id="toggle-advanced-filters" class="btn-outline-action" type="button">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                Advanced Filters
+              </button>
+            </div>
+            <div class="bills-toolbar-right">
+              <span id="bills-entries-count">Showing 1-10 of 258 entries</span>
+              <button id="refresh" class="btn-outline-action" type="button" style="padding: 0.5rem 0.75rem;">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Collapsible Filter Form (Preserves existing API options) -->
+          <form id="filters" class="filters-drawer" style="display: none; background: #FFF; border: 1px solid var(--vx-border); border-radius: 8px; padding: 1rem; margin-bottom: 1.25rem;">
+            <div>
+              <label for="status">Workflow status</label>
+              <select id="status" name="status">
+                <option value="">All statuses</option>
+                <option value="DRAFT">Draft</option>
+                <option value="PENDING_REVIEW">Pending Review</option>
+                <option value="READY_FOR_CONFIRMATION">Ready For Confirmation</option>
+                <option value="CREATING">Creating</option>
+                <option value="COMPLETED">Completed</option>
+                <option value="CANCELLED">Cancelled</option>
+                <option value="FAILED">Failed</option>
+              </select>
+            </div>
+            <div>
+              <label for="zoho-status">Zoho Books sync</label>
+              <select id="zoho-status" name="zoho_status">
+                <option value="">All sync states</option>
+                <option value="NOT_SYNCED">Not synced</option>
+                <option value="SYNCING">Syncing</option>
+                <option value="SYNCED">Synced</option>
+                <option value="FAILED">Failed</option>
+              </select>
+            </div>
+            <div>
+              <button type="submit" class="btn-primary-red" style="padding: 0.55rem 1.25rem;">Apply</button>
+            </div>
+          </form>
+
+          <!-- Visily Table -->
+          <div class="bills-table-card">
+            <div class="table-scroll">
+              <table class="bills-table">
+                <thead>
+                  <tr>
+                    <th scope="col">BILL NUMBER ↑↓</th>
+                    <th scope="col">VENDOR NAME</th>
+                    <th scope="col">CATEGORY</th>
+                    <th scope="col">ISSUE DATE</th>
+                    <th scope="col">DUE DATE</th>
+                    <th scope="col">AMOUNT (AED)</th>
+                    <th scope="col">STATUS</th>
+                    <th scope="col" style="text-align: center; width: 60px;">ACTIONS</th>
+                  </tr>
+                </thead>
+                <tbody id="bill-rows"></tbody>
+              </table>
+            </div>
+            <p id="empty" class="empty" hidden style="text-align: center; padding: 3rem; color: #6B7280;">No bills match your search criteria.</p>
+
+            <div class="pipeline-pagination" style="display: flex; justify-content: space-between; align-items: center; padding: 0.85rem 1.25rem; border-top: 1px solid var(--vx-border);">
+              <div style="font-size: 0.8rem; color: var(--vx-text-muted); font-weight: 600;">
+                ROWS PER PAGE:
+                <select id="page-size" style="padding: 0.25rem 0.5rem; border: 1px solid var(--vx-border); border-radius: 4px; font-size: 0.8rem;">
+                  <option value="10">10</option>
+                  <option value="20">20</option>
+                  <option value="50">50</option>
+                </select>
+              </div>
+              <div class="pagination-controls">
+                <button id="previous" type="button" class="btn-page-nav" disabled>PREVIOUS</button>
+                <span id="page-label" style="font-size: 0.8rem; font-weight: 700; color: #374151; padding: 0 0.5rem;">PAGE 1 OF 26</span>
+                <button id="next" type="button" class="btn-page-nav" disabled>NEXT</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Visily Bottom Two Cards (Image 5) -->
+          <div class="bills-bottom-grid">
+            <!-- Card 1: Flagged Discrepancies -->
+            <div class="flagged-card">
+              <div class="flagged-card-header">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                FLAGGED DISCREPANCIES
+              </div>
+              <div class="flagged-list">
+                <div class="flagged-item">
+                  <div class="flagged-info">
+                    <span class="flagged-dot red"></span>
+                    <div class="flagged-text-box">
+                    <strong>—</strong>
+                    <span>Live discrepancy data is not available.</span>
+                    </div>
+                  </div>
+                  <span class="flagged-action-link">—</span>
+                </div>
+                <div class="flagged-item">
+                  <div class="flagged-info">
+                    <span class="flagged-dot gray"></span>
+                    <div class="flagged-text-box">
+                    <strong>—</strong>
+                    <span>Live discrepancy data is not available.</span>
+                    </div>
+                  </div>
+                  <span class="flagged-action-link">—</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card 2: Automation Queue (Dark Obsidian) -->
+            <div class="queue-card">
+              <div>
+                <div class="queue-card-header">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                  AUTOMATION QUEUE
+                </div>
+                <p>There are <strong id="dashboard-queue-count">—</strong> documents currently being processed by AI extraction.</p>
+                <div class="queue-progress-bar">
+                  <div class="queue-progress-track"></div>
+                </div>
+              </div>
+              <button id="btn-trigger-zoho-sync" class="btn-queue-sync" type="button">
+                TRIGGER ZOHO SYNC MANUALLY
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===================================================================
+             VIEW 2: ZOHO BILL DASHBOARD / ANALYTICS (IMAGE 3)
+             =================================================================== -->
+        <div id="view-bill-dashboard" style="display: none;">
+          <div class="bills-page-header">
+            <div class="bills-header-left">
+              <h1>Zoho Bill Dashboard</h1>
+              <p class="bills-subtitle">Real-time automation monitoring and synchronization control.</p>
+            </div>
+            <div class="bills-header-right">
+              <button class="btn-outline-action" type="button">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                Export Report
+              </button>
+              <button class="btn-primary-red" type="button" id="btn-sync-now">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Sync Now
+              </button>
+            </div>
+          </div>
+
+          <!-- 4 KPI Cards matching Image 3 -->
+          <div class="kpi-cards-grid">
+            <div class="kpi-card">
+              <div class="kpi-card-content">
+                <span class="kpi-label">TOTAL BILLS PROCESSED</span>
+                <div class="kpi-value-row">
+                  <span id="dashboard-total-bills" class="kpi-number">—</span>
+                </div>
+                <span class="kpi-trend green">↗ +12.5% vs last period</span>
+              </div>
+              <div class="kpi-icon-wrap">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-card-content">
+                <span class="kpi-label">PENDING ZOHO SYNC</span>
+                <div class="kpi-value-row">
+                  <span id="dashboard-pending-sync" class="kpi-number">—</span>
+                </div>
+                <span class="kpi-trend red">↘ -5.2% vs last period</span>
+              </div>
+              <div class="kpi-icon-wrap">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-card-content">
+                <span class="kpi-label">SUCCESS RATE</span>
+                <div class="kpi-value-row">
+                  <span id="dashboard-success-rate" class="kpi-number">—</span>
+                </div>
+                <span class="kpi-trend green">↗ +0.4% vs last period</span>
+              </div>
+              <div class="kpi-icon-wrap">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              </div>
+            </div>
+
+            <div class="kpi-card">
+              <div class="kpi-card-content">
+                <span class="kpi-label">AVG. EXTRACTION TIME</span>
+                <div class="kpi-value-row">
+                  <span id="dashboard-avg-time" class="kpi-number">—</span>
+                </div>
+                <span class="kpi-trend red">↘ -0.1s vs last period</span>
+              </div>
+              <div class="kpi-icon-wrap">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              </div>
+            </div>
+          </div>
+
+          <!-- Middle Charts Row -->
+          <div class="charts-grid">
+            <!-- Left Chart: Daily Extraction Volume -->
+            <div class="chart-card">
+              <div class="chart-card-header">
+                <div>
+                  <h3>DAILY EXTRACTION VOLUME</h3>
+                  <p>Bill processing volume over the last 7 days</p>
+                </div>
+                <div class="chart-legend">
+                  <span class="legend-item"><span class="legend-box black"></span> TOTAL</span>
+                  <span class="legend-item"><span class="legend-box red"></span> SYNCED</span>
+                </div>
+              </div>
+              <div class="bar-chart-container">
+                <div class="bar-group">
+                  <div class="bars-pair"><div class="bar-pill black" style="height: 125px;"></div><div class="bar-pill red" style="height: 120px;"></div></div>
+                  <span class="bar-label">Mon</span>
+                </div>
+                <div class="bar-group">
+                  <div class="bars-pair"><div class="bar-pill black" style="height: 145px;"></div><div class="bar-pill red" style="height: 138px;"></div></div>
+                  <span class="bar-label">Tue</span>
+                </div>
+                <div class="bar-group">
+                  <div class="bars-pair"><div class="bar-pill black" style="height: 110px;"></div><div class="bar-pill red" style="height: 108px;"></div></div>
+                  <span class="bar-label">Wed</span>
+                </div>
+                <div class="bar-group">
+                  <div class="bars-pair"><div class="bar-pill black" style="height: 165px;"></div><div class="bar-pill red" style="height: 155px;"></div></div>
+                  <span class="bar-label">Thu</span>
+                </div>
+                <div class="bar-group">
+                  <div class="bars-pair"><div class="bar-pill black" style="height: 180px;"></div><div class="bar-pill red" style="height: 180px;"></div></div>
+                  <span class="bar-label">Fri</span>
+                </div>
+                <div class="bar-group">
+                  <div class="bars-pair"><div class="bar-pill black" style="height: 45px;"></div><div class="bar-pill red" style="height: 45px;"></div></div>
+                  <span class="bar-label">Sat</span>
+                </div>
+                <div class="bar-group">
+                  <div class="bars-pair"><div class="bar-pill black" style="height: 35px;"></div><div class="bar-pill red" style="height: 35px;"></div></div>
+                  <span class="bar-label">Sun</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right Chart: Sync Efficiency Ratio Donut -->
+            <div class="chart-card">
+              <div class="chart-card-header">
+                <div>
+                  <h3>SYNC EFFICIENCY RATIO</h3>
+                  <p>Current status distribution</p>
+                </div>
+              </div>
+              <div class="donut-container">
+                <svg class="donut-svg-wrap" viewBox="0 0 36 36">
+                  <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#E5E7EB" stroke-width="4.5"/>
+                  <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#E00800" stroke-width="4.5" stroke-dasharray="85, 100"/>
+                  <path d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="#111827" stroke-width="4.5" stroke-dasharray="12, 100" stroke-dashoffset="-85"/>
+                </svg>
+                <div class="donut-legend-rows">
+                  <div class="donut-legend-row">
+                    <span style="display: flex; align-items: center; gap: 0.4rem; color: #374151; font-weight: 500;">
+                      <span style="width: 8px; height: 8px; background: #E00800; border-radius: 2px;"></span> Synced
+                    </span>
+                    <strong id="dashboard-synced-percent" style="color: #111827;">—</strong>
+                  </div>
+                  <div class="donut-legend-row">
+                    <span style="display: flex; align-items: center; gap: 0.4rem; color: #374151; font-weight: 500;">
+                      <span style="width: 8px; height: 8px; background: #111827; border-radius: 2px;"></span> Pending
+                    </span>
+                    <strong id="dashboard-pending-percent" style="color: #111827;">—</strong>
+                  </div>
+                  <div class="donut-legend-row">
+                    <span style="display: flex; align-items: center; gap: 0.4rem; color: #374151; font-weight: 500;">
+                      <span style="width: 8px; height: 8px; background: #9CA3AF; border-radius: 2px;"></span> Error
+                    </span>
+                    <strong id="dashboard-error-percent" style="color: #111827;">—</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Middle Operations Row -->
+          <div class="operations-grid">
+            <!-- Integration Controls (Dark) -->
+            <div class="integration-card">
+              <h3>INTEGRATION CONTROLS</h3>
+              <p>Manage Zoho Books synchronization triggers</p>
+              <div class="sync-status-row">
+                <span>LAST SYNC STATUS</span>
+                <strong id="dashboard-last-sync-status">—</strong>
+              </div>
+              <div class="sync-pill-time">
+                <span id="dashboard-last-sync-time">Last Sync: —</span>
+                <span class="sync-active-badge">ACTIVE</span>
+              </div>
+              <div class="integration-btns-list">
+                <button type="button" class="btn-integration-op" onclick="alert('Validating vendor mappings with Zoho Books...')">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  Validate Mismatched Vendors
+                </button>
+                <button type="button" class="btn-integration-op" onclick="alert('Re-pushing 3 failed syncs...')">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                  Re-push Failed Syncs
+                </button>
+                <button type="button" class="btn-integration-op" onclick="alert('Loading Zoho integration logs...')">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                  Audit Integration Logs
+                </button>
+              </div>
+              <span class="integration-subtext">Connected to Zoho Books Organization: <span id="dashboard-organization">—</span></span>
+            </div>
+
+            <!-- Recent Sync Activity Feed -->
+            <div class="sync-activity-card">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <div>
+                  <h3 style="font-size: 0.95rem; font-weight: 800; margin: 0; text-transform: uppercase;">RECENT SYNC ACTIVITY</h3>
+                  <p style="font-size: 0.78rem; color: var(--vx-text-muted); margin: 0.2rem 0 0;">Live feed of data extraction and synchronization</p>
+                </div>
+                <button type="button" class="flagged-action-link" style="color: var(--vx-red); font-size: 0.75rem;">VIEW ALL RECORDS</button>
+              </div>
+              <table class="bills-table">
+                <thead>
+                  <tr>
+                    <th>BILL ID</th>
+                    <th>VENDOR</th>
+                    <th>AMOUNT (AED)</th>
+                    <th>DATE</th>
+                    <th>STATUS</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="bill-dashboard-activity-rows">
+                  <tr>
+                    <td class="col-bill-num" onclick="showDetail('BL-9821')">BL-9821</td>
+                    <td class="col-vendor-name">—</td>
+                    <td class="col-amount">—</td>
+                    <td style="font-size: 0.8rem; color: #6B7280;">2024-05-24</td>
+                    <td><span class="status-pill qualified" style="font-size: 0.7rem; padding: 2px 8px;">SYNCED</span></td>
+                    <td><button class="btn-action-dots" type="button">⋮</button></td>
+                  </tr>
+                  <tr>
+                    <td class="col-bill-num" onclick="showDetail('BL-9822')">BL-9822</td>
+                    <td class="col-vendor-name">—</td>
+                    <td class="col-amount">—</td>
+                    <td style="font-size: 0.8rem; color: #6B7280;">2024-05-24</td>
+                    <td><span class="status-pill pending" style="font-size: 0.7rem; padding: 2px 8px;">PENDING</span></td>
+                    <td><button class="btn-action-dots" type="button">⋮</button></td>
+                  </tr>
+                  <tr>
+                    <td class="col-bill-num" onclick="showDetail('BL-9823')">BL-9823</td>
+                    <td class="col-vendor-name">—</td>
+                    <td class="col-amount">—</td>
+                    <td style="font-size: 0.8rem; color: #6B7280;">2024-05-23</td>
+                    <td><span class="status-pill qualified" style="font-size: 0.7rem; padding: 2px 8px;">SYNCED</span></td>
+                    <td><button class="btn-action-dots" type="button">⋮</button></td>
+                  </tr>
+                  <tr>
+                    <td class="col-bill-num" onclick="showDetail('BL-9824')">BL-9824</td>
+                    <td class="col-vendor-name">—</td>
+                    <td class="col-amount">—</td>
+                    <td style="font-size: 0.8rem; color: #6B7280;">2024-05-23</td>
+                    <td><span class="status-pill failed" style="font-size: 0.7rem; padding: 2px 8px;">ERROR</span></td>
+                    <td><button class="btn-action-dots" type="button">⋮</button></td>
+                  </tr>
+                  <tr>
+                    <td class="col-bill-num" onclick="showDetail('BL-9825')">BL-9825</td>
+                    <td class="col-vendor-name">—</td>
+                    <td class="col-amount">—</td>
+                    <td style="font-size: 0.8rem; color: #6B7280;">2024-05-23</td>
+                    <td><span class="status-pill qualified" style="font-size: 0.7rem; padding: 2px 8px;">SYNCED</span></td>
+                    <td><button class="btn-action-dots" type="button">⋮</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Bottom Extraction Accuracy Monitoring -->
+          <div class="accuracy-card">
+            <div class="accuracy-header">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              EXTRACTION ACCURACY MONITORING
+            </div>
+            <div class="accuracy-grid">
+              <div class="accuracy-stat-item">
+                <div style="font-size: 0.74rem; font-weight: 700; color: #6B7280; text-transform: uppercase;">OCR CONFIDENCE SCORE</div>
+                <div><strong>—</strong> <span style="color: #6B7280; font-size: 0.75rem; font-weight: 600;">Live data unavailable</span></div>
+                <div class="accuracy-progress-bar"><div class="accuracy-progress-track green"></div></div>
+              </div>
+              <div class="accuracy-stat-item">
+                <div style="font-size: 0.74rem; font-weight: 700; color: #6B7280; text-transform: uppercase;">FIELD EXTRACTION RATE</div>
+                <div><strong>—</strong> <span style="color: #6B7280; font-size: 0.75rem; font-weight: 600;">Live data unavailable</span></div>
+                <div class="accuracy-progress-bar"><div class="accuracy-progress-track red"></div></div>
+              </div>
+              <div class="accuracy-stat-item">
+                <div style="font-size: 0.74rem; font-weight: 700; color: #6B7280; text-transform: uppercase;">MANUAL INTERVENTION</div>
+                <div><strong>—</strong> <span style="color: #6B7280; font-size: 0.75rem; font-weight: 600;">Live data unavailable</span></div>
+                <div class="accuracy-progress-bar"><div class="accuracy-progress-track gray"></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </section>
+    </div>
+    <!-- Visily Bill Audit / Bill Detail Modal (Image 4) -->
+  <dialog id="detail" class="bill-audit-dialog" aria-labelledby="detail-title">
+    <div class="audit-modal-header">
+      <div class="audit-header-left">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        <div>
+          <div id="detail-title" class="audit-header-title">BILL AUDIT: —</div>
+          <div style="font-size: 0.78rem; color: #6B7280;">Verify extracted data against the original document source.</div>
+        </div>
+      </div>
+      <div class="audit-header-actions">
+        <button id="btn-rescan-ocr" class="btn-outline-action" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          RE-SCAN OCR
+        </button>
+        <button id="btn-sync-to-zoho" class="btn-primary-red" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          CONFIRM &amp; SYNC TO ZOHO
+        </button>
+        <button id="close-detail" class="btn-action-dots" type="button" style="font-size: 1.25rem;">✕</button>
+      </div>
+    </div>
+
+    <div class="audit-modal-body">
+      <div class="audit-split-view">
+        <!-- Left: Original Document Source Viewer -->
+        <div class="doc-source-card">
+          <div class="doc-source-topbar">
+            <span>⦿ ORIGINAL DOCUMENT SOURCE</span>
+            <div style="display: flex; gap: 0.65rem; color: #4B5563;">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+            </div>
+          </div>
+          <div class="doc-source-image-wrap">
+            <img id="audit-doc-image" alt="Original Invoice">
+          </div>
+          <div class="doc-source-bottombar">
+            <span>FORMAT: PDF/A</span>
+            <span>SIZE: 1.2MB</span>
+            <span>PAGES: 1/1</span>
+            <span>OCR ENGINE: VOLT-X 2.4</span>
+          </div>
+        </div>
+
+        <!-- Right: Extraction Data & Fields -->
+        <div class="doc-fields-card">
+          <div class="doc-tabs-row">
+            <button type="button" class="doc-tab-btn active">EXTRACTION DATA</button>
+            <button type="button" class="doc-tab-btn">AUDIT TIMELINE</button>
+            <button type="button" class="doc-tab-btn">LINE ITEMS</button>
+          </div>
+
+          <div class="verified-fields-header">
+            <span class="verified-fields-title">VERIFIED BILL FIELDS</span>
+            <span class="badge-confidence">CONFIDENCE: —</span>
+          </div>
+
+          <form id="audit-fields-form" class="audit-fields-grid" autocomplete="off">
+            <div class="audit-field-item">
+              <label for="af-bill-num">BILL NUMBER</label>
+              <input id="af-bill-num" type="text" value="—">
+            </div>
+            <div class="audit-field-item">
+              <label for="af-vendor">VENDOR ENTITY</label>
+              <input id="af-vendor" type="text" value="—">
+            </div>
+            <div class="audit-field-item">
+              <label for="af-bill-date">BILL DATE</label>
+              <input id="af-bill-date" type="text" value="2024-05-12">
+            </div>
+            <div class="audit-field-item">
+              <label for="af-due-date">DUE DATE</label>
+              <input id="af-due-date" type="text" value="2024-06-12">
+            </div>
+            <div class="audit-field-item">
+              <label for="af-po-ref">PO REFERENCE</label>
+              <input id="af-po-ref" type="text" value="PO-7731-VOLT">
+            </div>
+            <div class="audit-field-item">
+              <label for="af-currency">CURRENCY</label>
+              <input id="af-currency" type="text" value="AED">
+            </div>
+            <div class="audit-field-item" style="grid-column: 1/-1;">
+              <label for="af-tax">TAX AMOUNT</label>
+              <input id="af-tax" type="text" value="1,245.00">
+            </div>
+            <div class="total-payable-box">
+              <div class="total-payable-label">TOTAL PAYABLE AMOUNT</div>
+              <div id="af-total-payable" class="total-payable-amount">AED 0.00</div>
+            </div>
+          </form>
+
+          <div class="audit-status-row">
+            <div class="status-black-card">
+              <div class="sub">STATUS</div>
+              <div id="af-status" class="val">PENDING APPROVAL</div>
+            </div>
+            <div class="auditor-card">
+              <div class="sub">ASSIGNED AUDITOR</div>
+              <div class="val">ADMIN USER</div>
+            </div>
+          </div>
+
+          <div class="audit-decision-btns">
+            <button id="btn-reject-bill" class="btn-decision reject" type="button">REJECT BILL</button>
+            <button id="btn-hold-review" class="btn-decision hold" type="button">HOLD FOR REVIEW</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom 3 Cards matching Image 4 -->
+      <div class="audit-bottom-cards">
+        <div class="audit-info-card">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          <div class="audit-info-text">
+            <strong>ZOHO DESTINATION</strong>
+            <p>Syncing to: <strong>Voltronix Contracting Main</strong></p>
+            <a href="#">CHANGE ACCOUNT ↗</a>
+          </div>
+        </div>
+        <div class="audit-info-card">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <div class="audit-info-text">
+            <strong>SECURITY AUDIT</strong>
+            <p>Document integrity: <strong>Verified</strong></p>
+            <span style="font-size: 0.65rem; color: #9CA3AF; font-family: monospace;">SIGNATURE: 38A2FA-EB40ED9C…</span>
+          </div>
+        </div>
+        <div class="audit-info-card">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          <div class="audit-info-text">
+            <strong>WORKFLOW STAGE</strong>
+            <p>Current: <strong>Awaiting Accounting Approval</strong></p>
+            <div style="width: 100%; height: 4px; background: #E5E7EB; border-radius: 2px; margin-top: 0.4rem; overflow: hidden;">
+              <div style="width: 70%; height: 100%; background: var(--vx-red);"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Image Zoom Dialog -->
+  <dialog id="media-zoom-dialog" class="media-zoom-dialog" aria-labelledby="zoom-title">
+    <div class="zoom-header">
+      <h3 id="zoom-title">Bill attachment preview</h3>
+      <button id="close-zoom" class="secondary" type="button">Close</button>
+    </div>
+    <div class="zoom-body">
+      <img id="zoom-image" src="" alt="Bill preview">
+    </div>
+  </dialog>

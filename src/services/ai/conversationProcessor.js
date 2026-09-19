@@ -56,7 +56,10 @@ function createConversationProcessor({ store, ai, whatsapp, config, logger, trig
         ? [...config.bossSenders][0]
         : (process.env.AUTHORIZED_BOSS_PHONES || process.env.BOSS_SENDER_PHONES || '+971502420957');
 
-      if (isContactNumberRequest(job.message_text)) {
+      const isBooksWorker = config.booksSenders?.has(job.sender_phone) === true;
+      if (isBooksWorker) {
+        reply = 'Please send the bill image or document.';
+      } else if (isContactNumberRequest(job.message_text)) {
         log('info', 'ai_contact_reply_direct', id);
         reply = validateReplyOutput(getBossContactReply(bossPhone));
       } else {

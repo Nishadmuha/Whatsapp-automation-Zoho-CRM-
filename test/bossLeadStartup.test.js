@@ -80,6 +80,7 @@ test(extractionFails
         whatsappFactories++;
         return { async sendTextMessage(to, text) {
           sendCalls.push({ to, text });
+          if (/Processing the lead/.test(text)) return { messages: [{ id: 'wamid.ack-' + sendCalls.length }] };
           if (to === '+971551234567') {
             const rows = await readStore.listLeads({ page: 1, pageSize: 10 });
             if (text.startsWith('Lead saved successfully')) {
@@ -161,7 +162,8 @@ test(extractionFails
         await new Promise(resolve => setTimeout(resolve, 150));
         assert.deepEqual(generationCalls, [customerText]);
         assert.deepEqual(extractionCalls, [bossText]);
-        assert.deepEqual(sendCalls.map(call => call.to).sort(), ['+971551234567', '+971561234567']);
+        assert.equal(sendCalls.filter(call => /Processing the lead/.test(call.text)).length, 1);
+        assert.deepEqual(sendCalls.filter(call => !/Processing the lead/.test(call.text)).map(call => call.to).sort(), ['+971551234567', '+971561234567']);
         if (!extractionFails) {
           const confirmation = JSON.parse(body);
           confirmation.entry[0].changes[0].value.messages = [{ id: 'wamid.confirm-boss-startup', from: '971551234567',
@@ -194,7 +196,7 @@ test(extractionFails
       }
       assert.equal(generationCalls.length, 1);
       assert.equal(extractionCalls.length, 1);
-      assert.equal(sendCalls.length, extractionFails ? 2 : 3);
+      assert.equal(sendCalls.filter(call => !/Processing the lead/.test(call.text)).length, extractionFails ? 2 : 3);
       assert.equal(forbiddenLoads, 0);
     })().catch(error => { console.error(error.message); process.exitCode = 1; });
   `;
