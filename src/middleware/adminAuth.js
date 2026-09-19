@@ -267,6 +267,17 @@ function createAdminAccess({
     };
   }
 
+  function clearLegacySessionCookie(req, res) {
+    // Older deployments scoped the same cookie name to /api. Keeping both
+    // paths makes API requests ambiguous while HTML still appears signed in.
+    if (cookiePath === '/') res.clearCookie(SESSION_COOKIE, { ...cookieOptions(req, res), path: '/api' });
+  }
+
+  function clearSessionCookies(req, res) {
+    res.clearCookie(SESSION_COOKIE, cookieOptions(req, res));
+    clearLegacySessionCookie(req, res);
+  }
+
   router.use((_req, res, next) => {
     prune();
     res.set('Cache-Control', 'no-store');
@@ -370,6 +381,7 @@ function createAdminAccess({
     sessions.set(token, sessionData);
 
     res.cookie(SESSION_COOKIE, token, { ...cookieOptions(req, res), maxAge: SESSION_TTL_MS });
+    clearLegacySessionCookie(req, res);
     if (isRootAdmin) {
       return res.json({
         authenticated: true,
@@ -395,7 +407,12 @@ function createAdminAccess({
 
   router.get('/session', (req, res) => {
     const sess = getSession(req);
-    if (!sess) return res.json({ authenticated: false });
+    if (!sess) {
+      // Continue rejecting duplicate/invalid tokens, but end the browser's
+      // login -> dashboard -> unauthenticated API -> login redirect cycle.
+      clearSessionCookies(req, res);
+      return res.json({ authenticated: false });
+    }
     if (sess.isAdmin) {
       return res.json({
         authenticated: true,
@@ -418,7 +435,7 @@ function createAdminAccess({
   router.post('/logout', sameOrigin, (req, res) => {
     const token = sessionCookie(req);
     if (token) sessions.delete(token);
-    res.clearCookie(SESSION_COOKIE, cookieOptions(req, res));
+    clearSessionCookies(req, res);
     return res.json({ authenticated: false });
   });
 
