@@ -189,16 +189,17 @@ test('lead API rate limiting includes unauthenticated attempts and remains separ
   assert.equal((await h.request('/health', null)).status, 200);
 });
 
-test('the public dashboard shell and local assets expose no data or credentials and retain CSP', async t => {
-  const h = await backend(t, { env: { ADMIN_USERNAME: '', ADMIN_PASSWORD: '' } });
-  const response = await h.request('/admin/leads', null);
+test('the protected dashboard shell and public local assets expose no data or credentials and retain CSP', async t => {
+  const h = await backend(t);
+  const guest = await h.request('/admin/leads', null);
+  assert.equal(new URL(guest.url).pathname, '/login');
+  const response = await h.request('/admin/leads');
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.match(html, /Lead overview/);
   assert.match(html, /id="workspace" hidden/);
   assert.match(html, /src="\/admin\/leads\.js" defer/);
-  assert.match(html, /id="username"/);
-  assert.match(html, /id="password"/);
+  assert.doesNotMatch(html, /id="(?:login-panel|login-form|username|password)"/);
   assert.doesNotMatch(html, /id="token"/);
   assert.doesNotMatch(html, /<script\b[^>]*>(?!\s*<\/script>)[\s\S]*?<\/script>|on(?:click|load)=|https?:\/\//i);
   assert.match(response.headers.get('content-security-policy'), /script-src 'self'/);
@@ -268,4 +269,3 @@ after(async () => {
   const mongoose = require('mongoose');
   await mongoose.disconnect().catch(() => {});
 });
-

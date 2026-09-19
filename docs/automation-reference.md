@@ -204,7 +204,7 @@ Missing information produces `NEEDS_INFORMATION`. The boss must **resend the com
 
 ## Zoho OAuth setup
 
-Create/use an OAuth client for the intended Zoho account and data center. Authorize an offline refresh token using Zoho's [access/refresh-token flow](https://www.zoho.com/crm/developer/docs/api/v8/access-refresh.html). Required scopes for this integration are `ZohoCRM.modules.leads.ALL,ZohoSearch.securesearch.READ`; the integration uses lead read, search, create, and update operations. Initial consent/token issuance remains an account setup step, not an automatic backend action.
+Create/use an OAuth client for the intended Zoho account and data center. Authorize an offline refresh token using Zoho's [access/refresh-token flow](https://www.zoho.com/crm/developer/docs/api/v8/access-refresh.html). Minimum CRM scopes are `ZohoCRM.modules.leads.READ,ZohoCRM.modules.leads.CREATE,ZohoCRM.modules.leads.UPDATE,ZohoCRM.modules.attachments.READ,ZohoCRM.modules.attachments.CREATE,ZohoSearch.securesearch.READ`. Initial consent/token issuance remains an account setup step, not an automatic backend action. See [the OAuth scope audit and reauthorization guide](zoho-oauth-scopes.md) for Books permissions, read-only verification, and exact setup commands. Neither Chart of Accounts nor a fixed expense-account ID is required.
 
 Store your real client ID, client secret, and refresh token only in environment secrets. The backend refreshes at `{ZOHO_ACCOUNTS_URL}/oauth/v2/token`, caches access tokens, refreshes before expiry, and retries a definite token rejection once. See Zoho's [refresh guide](https://www.zoho.com/crm/developer/docs/api/v8/refresh.html).
 

@@ -388,6 +388,7 @@ function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGa
 
   const dispatcher = createReplyDispatcher({
     store, whatsapp, config, logger, triggerGate, processingFlow: 'boss_lead',
+    bossReplyQuietMs: config.bossReplyQuietMs ?? 0,
     canSendReply(reply) {
       if (!active() || !authorized(reply)) return false;
       try { return validateReplyOutput(reply.text) === reply.text; } catch { return false; }

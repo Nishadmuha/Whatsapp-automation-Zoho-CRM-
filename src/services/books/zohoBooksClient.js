@@ -439,24 +439,6 @@ function createZohoBooksClient({
     return bill;
   }
 
-  async function listChartOfAccounts() {
-    const accounts = [];
-    for (let page = 1; page <= 100; page += 1) {
-      const data = await getJson('/chartofaccounts', { page, per_page: 200 });
-      const pageAccounts = data.chartofaccounts || data.chart_of_accounts || [];
-      if (!Array.isArray(pageAccounts)) throw new ZohoBooksError('CHART_OF_ACCOUNTS_INVALID', 'Zoho returned an invalid chart of accounts response.');
-      accounts.push(...pageAccounts.map(account => ({
-        accountName: account.account_name || account.name || null,
-        accountId: String(account.account_id || account.id || ''),
-        accountType: account.account_type || account.accountType || null,
-        accountStatus: account.is_active === false ? 'inactive' : account.status || 'active',
-      })));
-      if (!data.page_context?.has_more_page) break;
-      if (page === 100) throw new ZohoBooksError('CHART_OF_ACCOUNTS_INCOMPLETE', 'Chart of accounts pagination did not complete safely.');
-    }
-    return accounts;
-  }
-
   async function getBillPdf(billId) {
     if (!/^[a-zA-Z0-9_-]+$/.test(billId || '')) throw new ZohoBooksError('INVALID_INPUT', 'A bill ID is required.');
     const data = await getJson(`/bills/${billId}`);
@@ -477,7 +459,6 @@ function createZohoBooksClient({
     buildZohoBillUrl,
     validateCredentials,
     prepareBill,
-    listChartOfAccounts,
     getBillPdf,
   };
 }

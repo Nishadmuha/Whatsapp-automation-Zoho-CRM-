@@ -1558,6 +1558,10 @@ class MongoMessageStore {
           text: replyText,
           status: 'PENDING',
           lead_id: state === 'completed' ? (leadId || active?.lead_id || null) : null,
+          // Intake prompts may be superseded by a newer message from this boss.
+          // Errors and explicit save/discard responses must remain deliverable.
+          coalesce_boss_reply: !errorCode && ['details', 'greeting', 'conversation'].includes(kind)
+            && state !== 'completed' && state !== 'discarded',
           session_id: active?.id || null,
           created_at: now,
           sent_at: null,
@@ -2251,11 +2255,12 @@ class MongoMessageStore {
     return true;
   }
 
-  async claimReply({ leaseMs = 120000, replyText = null, processingFlow = null, messageIds = null } = {}) {
+  async claimReply({ leaseMs = 120000, replyText = null, processingFlow = null, messageIds = null, bossReplyQuietMs = 0 } = {}) {
     positiveInteger(leaseMs, 'leaseMs', 3600000);
     validateReplyText(replyText);
     validateProcessingFlow(processingFlow);
     validateMessageIds(messageIds);
+    if (!Number.isInteger(bossReplyQuietMs) || bossReplyQuietMs < 0 || bossReplyQuietMs > 60000) throw new TypeError('Invalid bossReplyQuietMs.');
     if (Array.isArray(messageIds) && messageIds.length === 0) return null;
 
     const now = await this._now();
@@ -2295,6 +2300,27 @@ class MongoMessageStore {
 
       if (msg.processing_flow === 'boss_lead') {
         const myReceipt = await this.col('message_receipts').findOne({ message_id: candidate.message_id });
+        if (bossReplyQuietMs > 0 && candidate.coalesce_boss_reply) {
+          if (!myReceipt) continue;
+          const siblings = await this.col('whatsapp_messages').find({
+            sender_phone: msg.sender_phone, processing_flow: 'boss_lead', authenticated: true,
+            created_at: { $gte: msg.created_at },
+            whatsapp_message_id: { $ne: candidate.message_id, ...(messageIds ? { $in: messageIds } : {}) },
+          }, { projection: { whatsapp_message_id: 1 } }).toArray();
+          const newerReceipt = siblings.length && await this.col('message_receipts').findOne({
+            message_id: { $in: siblings.map(message => message.whatsapp_message_id) },
+            sequence: { $gt: myReceipt.sequence },
+          });
+          if (newerReceipt) {
+            // Only unsent prompts are cancelled. The replacement stays tied to
+            // its own durable inbox ID, session, extraction and trigger.
+            await this.col('reply_outbox').updateOne({ id: candidate.id, status: 'PENDING' }, {
+              $set: { status: 'CANCELLED', error_message: 'SUPERSEDED_BY_BOSS_MESSAGE' },
+            });
+            continue;
+          }
+          if (new Date(now).getTime() - new Date(msg.created_at).getTime() < bossReplyQuietMs) continue;
+        }
         if (myReceipt) {
           const earlierReceiptsQuery = { sequence: { $lt: myReceipt.sequence } };
           if (messageIds) earlierReceiptsQuery.message_id = { $in: messageIds.filter(id => id !== candidate.message_id) };
@@ -2303,6 +2329,7 @@ class MongoMessageStore {
             const earlierIds = earlierReceipts.map(r => r.message_id);
             const earlierSending = await this.col('reply_outbox').countDocuments({
               message_id: { $in: earlierIds },
+              sender_phone: msg.sender_phone,
               status: { $in: ['PENDING', 'SENDING'] }
             });
             if (earlierSending > 0) continue;

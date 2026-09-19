@@ -72,8 +72,6 @@ async function startServer() {
                 interactive_id: message.interactiveId || null,
               },
           });
-        } else if (config.bossSenders?.has(message.senderPhone)) {
-          await outgoingMessages.acknowledge(message);
         }
       };
       const conversational = config.aiProvider === 'openai';

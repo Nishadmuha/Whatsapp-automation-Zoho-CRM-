@@ -9,19 +9,18 @@ const { test } = require('node:test');
 const { MockElement, createMockDocument } = require('./helpers');
 
 function response(data, status = 200) { return { status, ok: status >= 200 && status < 300, async json() { return data; } }; }
-async function dashboard(fetch, { authenticated = false, loginStatus = 200, search = '' } = {}) {
+async function dashboard(fetch, { authenticated = true, search = '' } = {}) {
   const [html, script] = await Promise.all(['chats.html', 'chats.js'].map(file => file.endsWith('.html') ? renderAdminPage('chats') : fs.readFile(path.resolve(__dirname, '../src/admin', file), 'utf8')));
   const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map(match => [match[1], new MockElement()]));
   if (elements.has('workspace')) elements.get('workspace').hidden = true;
   const tags = [];
   const document = createMockDocument(elements, tags);
   const window = new MockElement();
-  window.location = { search };
+  window.location = { search, replace(path) { this.href = path; } };
   const requests = [];
   const context = { document, window, URLSearchParams, async fetch(url, options) {
     requests.push({ url, options });
     if (url === '/api/admin/session') return response({ authenticated, role: 'admin', roles: ['admin', 'books'] });
-    if (url === '/api/admin/login') return response({ authenticated: loginStatus === 200, role: 'admin', roles: ['admin', 'books'] }, loginStatus);
     if (url === '/api/admin/logout') return response({ authenticated: false });
     return fetch(url, options);
   } };
@@ -34,11 +33,6 @@ const boss = { id: '+971551234567', sender_phone: '+971551234567', sender_name: 
   last_message: 'Is the lead complete?', last_message_type: 'text', last_message_at: '2026-09-12T10:00:00Z' };
 function page(items, page = 1, total = items.length, pageSize = 100) {
   return { items, page, page_size: pageSize, total, total_pages: Math.ceil(total / pageSize) };
-}
-function signIn(h) {
-  h.el('username').value = 'synthetic.operator';
-  h.el('password').value = 'synthetic-private-password';
-  h.el('login-form').dispatch('submit');
 }
 
 test('chats reuse existing login and safely render chronological boss/bot/media history and linked lead information', async () => {
@@ -56,8 +50,7 @@ test('chats reuse existing login and safely render chronological boss/bot/media 
         archived_sessions: [{ state: 'discarded', original_message: injected, lead: { company_name: 'Retained draft', notes: injected } }],
         leads: [{ id: 'lead-1', company_name: 'Previous customer', contact_name: 'Ahmed', phone: '+971501234567', validation_status: 'valid' }] }));
   assert.deepEqual(h.requests.map(request => request.url), ['/api/admin/session']);
-  signIn(h);
-  assert.equal(h.el('password').value, '');
+  assert.doesNotMatch(h.html, /id="(?:login-panel|login-form|username|password)"/);
   await settled();
   assert.equal(h.el('workspace').hidden, false);
   assert.match(h.el('conversation-list').textContent, /<img src=x/);
@@ -90,8 +83,7 @@ test('chats reuse existing login and safely render chronological boss/bot/media 
     assert.equal(options.headers?.Authorization, undefined);
     assert.equal(url.includes('synthetic-private-password'), false);
   }
-  const login = h.requests.find(request => request.url === '/api/admin/login');
-  assert.deepEqual(JSON.parse(login.options.body), { username: 'synthetic.operator', password: 'synthetic-private-password' });
+  assert.equal(h.requests.some(request => request.url === '/api/admin/login'), false);
   h.el('lock').dispatch('click');
   assert.equal(h.el('workspace').hidden, true);
   assert.equal(h.el('conversation-list').textContent, '');
@@ -99,6 +91,7 @@ test('chats reuse existing login and safely render chronological boss/bot/media 
   assert.equal(h.el('linked-leads').textContent, '');
   await settled();
   assert.equal(h.requests.at(-1).url, '/api/admin/logout');
+  assert.equal(h.window.location.href, '/login');
 });
 
 test('single-field saved and archived leads use available facts in chat labels', async () => {
@@ -197,18 +190,17 @@ test('changing conversations cannot replace current history with a stale earlier
   assert.doesNotMatch(h.el('message-history').textContent, /old boss history/);
 });
 
-test('expired sessions clear private chat state and incorrect logins do not request chats', async () => {
+test('expired and missing sessions redirect to the dedicated login without exposing chats', async () => {
   const expired = await dashboard(async () => response({}, 401), { authenticated: true });
   await settled();
   assert.equal(expired.el('workspace').hidden, true);
   assert.equal(expired.el('message-history').textContent, '');
   assert.equal(expired.el('feedback').textContent, 'Session expired. Please sign in again.');
-  const wrong = await dashboard(async () => { throw new Error('Chat data must not be requested'); }, { loginStatus: 401 });
-  signIn(wrong);
+  assert.equal(expired.window.location.href, '/login');
+  const wrong = await dashboard(async () => { throw new Error('Chat data must not be requested'); }, { authenticated: false });
   await settled();
   assert.equal(wrong.el('workspace').hidden, true);
-  assert.equal(wrong.el('password').value, '');
-  assert.equal(wrong.el('feedback').textContent, 'Incorrect username or password.');
+  assert.equal(wrong.window.location.href, '/login');
   assert.equal(wrong.requests.some(request => request.url.startsWith('/api/chats')), false);
 });
 
@@ -232,7 +224,7 @@ test('conversation navigation ignores malformed and duplicate identifiers and st
     await settled();
     assert.equal(h.requests.some(({ url }) => url.startsWith('/api/chats/')), false);
   }
-  const locked = await dashboard(async () => { throw new Error('Chat access must require login'); }, { search: '?conversation=' + encodeURIComponent(boss.id) });
+  const locked = await dashboard(async () => { throw new Error('Chat access must require login'); }, { authenticated: false, search: '?conversation=' + encodeURIComponent(boss.id) });
   await settled();
   assert.deepEqual(locked.requests.map(({ url }) => url), ['/api/admin/session']);
 });

@@ -86,7 +86,8 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     const rawId = incoming.interactiveId || (options[Number(incoming.text) - 1] ? `zoho-customer:${options[Number(incoming.text) - 1].id}` : '');
     const option = options.find(candidate => rawId === `zoho-customer:${candidate.id}` || rawId === candidate.id);
     if (!option) return reply(session, 'Please select one of the customers shown in the Zoho Books list.', { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION });
-    const bill = { ...session.bill_data, customer_details: { ...(session.bill_data?.customer_details || {}), customer_id: option.id, customer_name: option.name, ...(option.phone ? { customer_phone: option.phone } : {}), ...(option.email ? { customer_email: option.email } : {}) } };
+    // Zoho is authoritative, including missing values; do not retain OCR guesses.
+    const bill = { ...session.bill_data, customer_details: { ...(session.bill_data?.customer_details || {}), customer_id: option.id, customer_name: option.name, customer_phone: option.phone || null, customer_email: option.email || null } };
     await billStore.updateBill(session.bill_id, { ...bill, status: 'PENDING_REVIEW' });
     await billStore.updateBillSession(session.session_id, { state: REVIEW, bill_data: bill, customer_options: [], last_message_id: incoming.messageId });
     return reply(session, formatInitialReviewPrompt(bill), { state: REVIEW, bill });

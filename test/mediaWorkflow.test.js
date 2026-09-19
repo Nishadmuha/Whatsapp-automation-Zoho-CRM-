@@ -31,6 +31,8 @@ const providerFailure = () => Object.assign(new Error(PRIVATE_FAILURE), { respon
 // request is handled by strict injected HTTP mocks, using synthetic credentials.
 async function setup(t) {
   const { store, databaseUrl } = await temporaryStore(t);
+  let time = Date.now();
+  t.mock.method(store, '_now', async () => new Date(time).toISOString());
   const env = testEnv({
     AUTOMATION_ENABLED: 'true', AI_PROVIDER: 'openai', OPENAI_MODEL: 'gpt-6-astra',
     OPENAI_API_KEY: 'synthetic-openai-media-workflow-token',
@@ -158,8 +160,11 @@ async function setup(t) {
       return job;
     },
     async drain() {
+      time += config.bossReplyQuietMs;
       for (let count = 0; count < 20; count++) {
-        if (!(await processor.processNextReply())) return;
+        // A later worker tick revisits rows blocked by a prompt cancelled in
+        // this pass (outbox rows can share the same creation timestamp).
+        if (!(await processor.processNextReply()) && !(await processor.processNextReply())) return;
       }
       assert.fail('The reply outbox did not drain within the fixture bound.');
     },
@@ -202,6 +207,8 @@ for (const [name, types] of sequences) {
       assert.equal((await h.store.getReply(message.id)).text, CONFIRMATION_REPLY);
     }
     assert.equal(await h.processNext(), null);
+    await h.drain();
+    assert.deepEqual(h.sends, [CONFIRMATION_REPLY]);
     const save = h.make('text', { text: 'Save it', fields: {} });
     await h.post([save]);
     await h.processNext();
@@ -217,7 +224,7 @@ for (const [name, types] of sequences) {
     assert.equal(await h.processNext(), null);
     assert.equal((await h.store.listLeads()).total, 1);
     await h.drain();
-    assert.deepEqual(h.sends, [...types.map(() => CONFIRMATION_REPLY), SAVED_REPLY]);
+    assert.deepEqual(h.sends, [CONFIRMATION_REPLY, SAVED_REPLY]);
     assert.equal(h.calls.filter(call => call.kind === 'extraction').length, types.length);
     assert.equal(h.calls.filter(call => call.kind === 'media_download').length, types.filter(type => type !== 'text').length);
   });
@@ -277,7 +284,7 @@ for (const [failure, type] of [
     await h.post([message]);
     assert.equal(await h.processNext(), null);
     await h.drain();
-    assert.deepEqual(h.sends, [CONFIRMATION_REPLY, reply]);
+    assert.deepEqual(h.sends, [reply]);
     assert.doesNotMatch(JSON.stringify(h.logs), new RegExp(PRIVATE_FAILURE));
     assert.doesNotMatch(JSON.stringify(h.logs), /synthetic-(?:openai|meta)-media-workflow-token/);
     await h.post([h.make('text', { text: 'Save it', fields: {} })]);
@@ -318,5 +325,5 @@ test('signed media workflow: image OCR checkpoint survives an Astra timeout befo
   assert.equal(h.calls.filter(call => call.kind === 'extraction' && call.text === FACTS[1].text).length, 2);
   assert.equal((await h.store.listLeads()).total, 0);
   await h.drain();
-  assert.deepEqual(h.sends, [CONFIRMATION_REPLY, CONFIRMATION_REPLY, CONFIRMATION_REPLY]);
+  assert.deepEqual(h.sends, [CONFIRMATION_REPLY]);
 });

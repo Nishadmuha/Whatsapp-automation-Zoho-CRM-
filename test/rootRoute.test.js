@@ -6,12 +6,18 @@ const { test } = require('node:test');
 const { createApp } = require('../src/app');
 const { testEnv } = require('./helpers');
 
-async function createTestServer(t) {
+const protectedPages = ['/dashboard', '/overview', '/admin/dashboard', '/admin/overview', '/overview.html', '/admin/overview.html',
+  '/leads', '/leads/', '/admin/leads', '/admin/leads/', '/leads.html', '/admin/leads.html',
+  '/chats', '/chats/', '/admin/chats', '/admin/chats/', '/chats.html', '/admin/chats.html',
+  '/bills', '/bills/', '/books', '/books/', '/admin/bills', '/admin/bills/', '/admin/books', '/admin/books/', '/books.html', '/admin/books.html'];
+
+async function createTestServer(t, overrides = {}) {
   const adminUser = 'test-admin';
   const adminPass = randomBytes(24).toString('hex');
   const env = testEnv({
     ADMIN_USERNAME: adminUser,
     ADMIN_PASSWORD: adminPass,
+    ...overrides,
   });
   const store = {
     async init() {},
@@ -58,6 +64,32 @@ test('GET / followed automatically serves the dedicated admin login page', async
   assert.ok(html.includes('id="username"'), 'HTML must contain username input');
   assert.ok(html.includes('id="password"'), 'HTML must contain password input');
   assert.ok(html.includes('id="login-submit"'), 'HTML must contain login submit button');
+  assert.doesNotMatch(html, /Open your leads workspace/);
+});
+
+test('all workspace routes and HTML aliases redirect guests before rendering a dashboard', async t => {
+  const { base } = await createTestServer(t);
+  for (const page of protectedPages) {
+    const res = await fetch(base + page, { redirect: 'manual' });
+    assert.equal(res.status, 302, page);
+    assert.equal(res.headers.get('location'), '/login', page);
+    assert.doesNotMatch(await res.text(), /Open your leads workspace|id="workspace"/);
+  }
+});
+
+test('billing-only sessions retain their workspace permissions without gaining dashboard access', async t => {
+  const { base } = await createTestServer(t, { BOOKS_USERNAME: 'synthetic-books', BOOKS_PASSWORD: 'synthetic-books-password' });
+  const login = await fetch(base + '/api/admin/login-books', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'synthetic-books', password: 'synthetic-books-password' }) });
+  assert.equal(login.status, 200);
+  const headers = { Cookie: login.headers.get('set-cookie').split(';')[0] };
+  for (const path of ['/', '/dashboard', '/leads', '/chats']) {
+    const res = await fetch(base + path, { headers, redirect: 'manual' });
+    assert.equal(res.status, 302, path);
+    assert.equal(res.headers.get('location'), '/bills', path);
+  }
+  assert.equal((await fetch(base + '/bills', { headers })).status, 200);
+  assert.equal((await fetch(base + '/api/leads', { headers })).status, 403);
 });
 
 test('invalid API endpoint returns JSON 404 Route not found', async t => {
@@ -79,7 +111,7 @@ test('admin login and authentication cycle works as expected', async t => {
   assert.equal(sessData.authenticated, false);
 
   // Login
-  const loginRes = await fetch(base + '/api/admin/login', {
+  const loginRes = await fetch(base + '/api/admin/login-admin', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: adminUser, password: adminPass }),
@@ -89,6 +121,20 @@ test('admin login and authentication cycle works as expected', async t => {
   assert.equal(loginData.authenticated, true);
   const cookie = loginRes.headers.get('set-cookie');
   assert.ok(cookie);
+  const headers = { Cookie: cookie.split(';')[0] };
+  assert.match(cookie, /Path=\//);
+  const landing = await fetch(base + '/', { headers, redirect: 'manual' });
+  assert.equal(landing.headers.get('location'), '/dashboard');
+  for (const path of ['/login', '/admin/login', '/login.html', '/admin/login.html']) {
+    const page = await fetch(base + path, { headers });
+    assert.equal(new URL(page.url).pathname, '/dashboard');
+    assert.doesNotMatch(await page.text(), /id="login-form"/);
+  }
+  for (const path of protectedPages) {
+    const page = await fetch(base + path, { headers, redirect: 'manual' });
+    assert.equal(page.status, 200, path);
+    assert.doesNotMatch(await page.text(), /id="(?:login-panel|login-form|username|password)"/);
+  }
 
   // Check authenticated session
   const authSessRes = await fetch(base + '/api/admin/session', {
@@ -112,4 +158,6 @@ test('admin login and authentication cycle works as expected', async t => {
   assert.equal(postLogoutSess.status, 200);
   const postLogoutData = await postLogoutSess.json();
   assert.equal(postLogoutData.authenticated, false);
+  const afterLogout = await fetch(base + '/leads', { headers, redirect: 'manual' });
+  assert.equal(afterLogout.headers.get('location'), '/login');
 });
