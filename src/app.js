@@ -121,7 +121,14 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
   // Root and bare /admin redirect to the leads workspace.
   // leads.html already contains the login panel — unauthenticated users see it
   // automatically; no second auth system is introduced.
-  app.get(['/', '/admin', '/admin/'], (_req, res) => res.redirect(302, '/admin/leads'));
+  app.get(['/', '/admin', '/admin/'], (req, res) => {
+    const session = adminAccess.getSession(req);
+    if (!session) return res.redirect(302, '/login');
+    if (session.isAdmin || session.permittedPages?.includes('dashboard')) return res.redirect(302, '/dashboard');
+    if (session.permittedPages?.includes('bills')) return res.redirect(302, '/bills');
+    if (session.permittedPages?.includes('chats')) return res.redirect(302, '/chats');
+    return res.redirect(302, '/leads');
+  });
 
   // Static assets and direct navigation routes for overview / dashboard
   app.use(express.static(adminDir, { index: false }));

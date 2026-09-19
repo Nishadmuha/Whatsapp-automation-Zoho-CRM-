@@ -33,31 +33,31 @@ async function createTestServer(t) {
   return { base, adminUser, adminPass };
 }
 
-test('GET / redirects (302) to /admin/leads', async t => {
+test('GET / redirects unauthenticated visitors to the dedicated login page', async t => {
   const { base } = await createTestServer(t);
   const res = await fetch(base + '/', { redirect: 'manual' });
   assert.equal(res.status, 302);
-  assert.equal(res.headers.get('location'), '/admin/leads');
+  assert.equal(res.headers.get('location'), '/login');
 });
 
-test('GET /admin and /admin/ redirect (302) to /admin/leads', async t => {
+test('GET /admin and /admin/ redirect unauthenticated visitors to the login page', async t => {
   const { base } = await createTestServer(t);
   for (const path of ['/admin', '/admin/']) {
     const res = await fetch(base + path, { redirect: 'manual' });
     assert.equal(res.status, 302);
-    assert.equal(res.headers.get('location'), '/admin/leads');
+    assert.equal(res.headers.get('location'), '/login');
   }
 });
 
-test('GET / followed automatically serves admin login UI on /admin/leads', async t => {
+test('GET / followed automatically serves the dedicated admin login page', async t => {
   const { base } = await createTestServer(t);
   const res = await fetch(base + '/');
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.ok(html.includes('id="login-panel"'), 'HTML must contain login panel');
+  assert.ok(html.includes('id="login-form"'), 'HTML must contain login form');
   assert.ok(html.includes('id="username"'), 'HTML must contain username input');
   assert.ok(html.includes('id="password"'), 'HTML must contain password input');
-  assert.ok(html.includes('id="workspace"'), 'HTML must contain workspace element');
+  assert.ok(html.includes('id="login-submit"'), 'HTML must contain login submit button');
 });
 
 test('invalid API endpoint returns JSON 404 Route not found', async t => {
