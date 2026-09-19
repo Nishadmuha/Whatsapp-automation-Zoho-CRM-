@@ -66,7 +66,7 @@ function createOutgoingRepository({ store }) {
     return driver.transaction(function* () {
       const source = (yield sql('SELECT sender_phone,authenticated,processing_flow FROM whatsapp_messages WHERE whatsapp_message_id=?', messageId)).rows[0];
       if (!source || source.sender_phone !== senderPhone || ![true, 1].includes(source.authenticated)
-        || (kind === 'ack' && source.processing_flow !== 'boss_lead')) {
+        || (kind === 'ack' && !['boss_lead', 'books_bill'].includes(source.processing_flow))) {
         throw outgoingError('OUTGOING_NOT_AUTHORIZED', 'The source message does not authorize this conversation.');
       }
       if (leadId !== null) {

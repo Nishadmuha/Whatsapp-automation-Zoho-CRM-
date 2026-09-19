@@ -1,6 +1,7 @@
 'use strict';
 
 const { MongoMessageStore, createMongoMessageStore } = require('./mongoStore');
+const { BillStore, createBillStore } = require('./billStore');
 
 function createMessageStore(options = {}) {
   return createMongoMessageStore(options);
@@ -12,5 +13,7 @@ module.exports = {
   createMessageStore,
   MessageStore,
   MongoMessageStore,
-  createMongoMessageStore
+  createMongoMessageStore,
+  BillStore,
+  createBillStore,
 };

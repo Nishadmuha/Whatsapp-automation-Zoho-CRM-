@@ -1,46 +1,214 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Leads · Voltronix</title>
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/admin/leads.css">
-  <script src="/admin/leads.js" defer></script>
-</head>
-<body>
-  <header class="topbar"><a class="brand" href="/admin/leads">VOLTRONIX <span>Internal workspace</span></a><a class="subtle" href="/admin/chats">Chats</a><button id="lock" class="subtle" type="button" hidden>Sign out</button></header>
-  <main>
-    <div class="heading"><div><p class="eyebrow">WHATSAPP ENQUIRIES</p><h1>Lead overview</h1><p class="muted">Review enquiries, validation and internal processing status.</p></div><span class="notice">Zoho sync is disconnected</span></div>
-    <section id="login-panel" class="login card" aria-labelledby="login-title">
-      <span class="eyebrow">PRIVATE ACCESS</span><h2 id="login-title">Open your leads workspace</h2>
-      <p>Sign in with your administrator username and password.</p>
-      <form id="login-form"><label for="username">Username</label><input id="username" name="username" type="text" required maxlength="100" autocomplete="username" spellcheck="false" autocapitalize="off"><label for="password">Password</label><input id="password" name="password" type="password" required maxlength="256" autocomplete="current-password"><button id="login-submit" type="submit">Sign in</button></form>
-    </section>
-    <p id="feedback" role="status" aria-live="polite"></p>
-    <section id="workspace" hidden aria-label="Lead dashboard">
-      <div class="stats">
-        <article class="card"><p>Total leads</p><strong id="stat-total">—</strong></article>
-        <article class="card"><p>Valid leads</p><strong id="stat-valid">—</strong></article>
-        <article class="card"><p>Incomplete leads</p><strong id="stat-incomplete">—</strong></article>
-        <article class="card"><p>Zoho pending</p><strong id="stat-zoho_pending">—</strong></article>
-      </div>
-      <section class="card leads-card" aria-labelledby="table-title">
-        <div class="section-heading"><h2 id="table-title">All leads</h2><button id="refresh" class="secondary" type="button">Refresh</button></div>
-        <form id="filters" class="filters">
-          <div class="search"><label for="search">Search leads</label><input id="search" name="search" type="search" maxlength="200" placeholder="Company, contact, phone, email or details"></div>
-          <div><label for="validation">Validation</label><select id="validation" name="validation_status"><option value="">All statuses</option value="valid">Valid</option><option value="incomplete">Incomplete</option><option value="invalid">Invalid</option><option value="pending">Pending</option></select></div>
-          <div><label for="extraction">Extraction</label><select id="extraction" name="extraction_status"><option value="">All statuses</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="processing">Processing</option><option value="pending">Pending</option></select></div>
-          <div><label for="zoho">Zoho</label><select id="zoho" name="zoho_status"><option value="">All statuses</option><option value="not_started">Not started</option><option value="pending">Pending</option><option value="existing_found">Existing found</option><option value="creating">Creating</option><option value="updating">Updating</option><option value="saved">Saved</option><option value="failed">Failed</option></select></div>
-          <button type="submit">Apply</button>
+<main class="content-body" style="padding: 24px 32px; max-width: 1440px; margin: 0 auto; width: 100%;">
+      <!-- Unauthenticated Login Panel -->
+      <section id="login-panel" class="login-card-panel" aria-labelledby="login-title">
+        <div class="login-header">
+          <span class="eyebrow">PRIVATE ACCESS</span>
+          <h2 id="login-title">Open your leads workspace</h2>
+          <p class="login-sub">Sign in with your administrator username and password.</p>
+        </div>
+        <form id="login-form" class="login-form-body">
+          <div class="form-group">
+            <label for="username">Username</label>
+            <input id="username" name="username" type="text" required maxlength="100" autocomplete="username" spellcheck="false" autocapitalize="off" placeholder="Enter username">
+          </div>
+          <div class="form-group">
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" required maxlength="256" autocomplete="current-password" placeholder="Enter password">
+          </div>
+          <button id="login-submit" type="submit" class="btn-primary-red">Sign in</button>
         </form>
-        <div class="table-scroll"><table><caption class="sr-only">Leads, newest first. Select a lead to view full details or View chat to open its conversation.</caption><thead><tr><th scope="col">Lead</th><th scope="col">Contact</th><th scope="col">Phone</th><th scope="col">Requirement</th><th scope="col">Project location</th><th scope="col">Extraction</th><th scope="col">Validation</th><th scope="col">Zoho</th><th scope="col">Created</th><th scope="col">Conversation</th></tr></thead><tbody id="lead-rows"></tbody></table></div>
-        <p id="empty" class="empty" hidden>No leads match these filters.</p>
-        <div class="pagination"><p id="page-label">No leads loaded</p><div><label class="sr-only" for="page-size">Leads per page</label><select id="page-size"><option value="20">20 per page</option><option value="50">50 per page</option><option value="100">100 per page</option></select><button id="previous" type="button" class="secondary" disabled>Previous</button><button id="next" type="button" class="secondary" disabled>Next</button></div></div>
       </section>
-    </section>
-  </main>
-  <dialog id="detail" aria-labelledby="detail-title"><div class="detail-heading"><div><p class="eyebrow">LEAD DETAILS</p><h2 id="detail-title">Lead details</h2></div><button id="close-detail" class="secondary" type="button">Close</button></div><div id="detail-content"></div></dialog>
-  <footer>Voltronix · Internal lead review</footer>
-</body>
-</html>
+
+      <p id="feedback" role="status" aria-live="polite" class="feedback-msg"></p>
+
+      <!-- Authenticated Lead Pipeline Workspace (Image 4) -->
+      <section id="workspace" hidden aria-label="Lead dashboard">
+        <!-- Lead Pipeline Hero Header -->
+        <div class="lead-pipeline-header">
+          <div class="lead-pipeline-title-group">
+            <h1 class="lead-pipeline-title">LEAD PIPELINE</h1>
+            <p class="lead-pipeline-subtitle">
+              <span class="sr-only">Lead overview</span>
+              <svg class="team-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                <circle cx="9" cy="7" r="4"></circle>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+              </svg>
+              Managing <strong id="stat-total">—</strong> active prospects across WhatsApp &amp; Web sources.
+            </p>
+          </div>
+          <div class="lead-pipeline-actions">
+            <div class="lead-avatar-stack">
+              <span class="avatar-pill" style="background:#2563EB;color:#fff;">PM</span>
+              <span class="avatar-pill" style="background:#059669;color:#fff;">NK</span>
+              <span class="avatar-badge">+12</span>
+            </div>
+            <button type="button" class="btn-new-lead" id="btn-create-lead">
+              <span class="plus-icon">+</span> NEW LEAD
+            </button>
+          </div>
+        </div>
+
+        <!-- Stats block for test compatibility -->
+        <div class="stats lead-stats-row">
+          <article class="stat-card">
+            <span class="stat-lbl">Total Prospects</span>
+            <strong id="stat-total-display">—</strong>
+          </article>
+          <article class="stat-card stat-success">
+            <span class="stat-lbl">Valid Leads</span>
+            <strong id="stat-valid">—</strong>
+          </article>
+          <article class="stat-card stat-warning">
+            <span class="stat-lbl">Incomplete</span>
+            <strong id="stat-incomplete">—</strong>
+          </article>
+          <article class="stat-card stat-info">
+            <span class="stat-lbl">Zoho Pending</span>
+            <strong id="stat-zoho_pending">—</strong>
+          </article>
+        </div>
+
+        <!-- Toolbar (Search, Filters, Export, View toggles, Refresh) -->
+        <div class="lead-toolbar-card">
+          <form id="filters" class="lead-toolbar-form">
+            <div class="toolbar-search-box">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input id="search" name="search" type="search" maxlength="200" placeholder="Search…">
+            </div>
+
+            <div class="toolbar-btn-group">
+              <div class="filter-dropdown-container">
+                <button type="button" class="btn-toolbar" id="btn-filter-toggle">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+                  </svg>
+                  FILTERS
+                </button>
+                <div class="filter-dropdown-menu" id="filter-dropdown" hidden>
+                  <div class="filter-field">
+                    <label for="validation">Validation</label>
+                    <select id="validation" name="validation_status">
+                      <option value="">All statuses</option>
+                      <option value="valid">Valid</option>
+                      <option value="incomplete">Incomplete</option>
+                      <option value="invalid">Invalid</option>
+                      <option value="pending">Pending</option>
+                    </select>
+                  </div>
+                  <div class="filter-field">
+                    <label for="extraction">Extraction</label>
+                    <select id="extraction" name="extraction_status">
+                      <option value="">All statuses</option>
+                      <option value="completed">Completed</option>
+                      <option value="failed">Failed</option>
+                      <option value="processing">Processing</option>
+                      <option value="pending">Pending</option>
+                    </select>
+                  </div>
+                  <div class="filter-field">
+                    <label for="zoho">Zoho</label>
+                    <select id="zoho" name="zoho_status">
+                      <option value="">All statuses</option>
+                      <option value="not_started">Not started</option>
+                      <option value="pending">Pending</option>
+                      <option value="existing_found">Existing found</option>
+                      <option value="creating">Creating</option>
+                      <option value="updating">Updating</option>
+                      <option value="saved">Saved</option>
+                      <option value="failed">Failed</option>
+                    </select>
+                  </div>
+                  <button type="submit" class="btn-apply-filters">Apply Filters</button>
+                </div>
+              </div>
+
+              <button type="button" class="btn-toolbar" id="btn-export-csv">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="7 10 12 15 17 10"></polyline>
+                  <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                EXPORT CSV
+              </button>
+
+              <div class="view-mode-buttons">
+                <button type="button" class="btn-mode active" title="List view">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line>
+                    <line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line>
+                  </svg>
+                </button>
+                <button type="button" class="btn-mode" title="Grid view">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect>
+                    <rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect>
+                  </svg>
+                </button>
+              </div>
+
+              <button id="refresh" class="btn-toolbar btn-refresh-icon" type="button" title="Refresh">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                </svg>
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Table Card matching Image 4 -->
+        <section class="leads-pipeline-card" aria-labelledby="table-title">
+          <div class="pipeline-caption-bar">
+            <h2 id="table-title" class="pipeline-caption-title">Lead Pipeline, newest first</h2>
+          </div>
+          <div class="table-scroll">
+            <table class="leads-table">
+              <caption class="sr-only">Leads, newest first. Select a lead to view full details or View chat to open its conversation.</caption>
+              <thead>
+                <tr>
+                  <th scope="col">LEAD NAME <span class="sort-indicator">↑↓</span></th>
+                  <th scope="col">STATUS</th>
+                  <th scope="col">SOURCE</th>
+                  <th scope="col">EST. VALUE <span class="sort-indicator">↑↓</span></th>
+                  <th scope="col">LOCATION</th>
+                  <th scope="col">LAST ACTION</th>
+                </tr>
+              </thead>
+              <tbody id="lead-rows"></tbody>
+            </table>
+          </div>
+          <p id="empty" class="empty-leads-notice" hidden>No leads match these filters.</p>
+          <div class="pagination">
+            <p id="page-label">No leads loaded</p>
+            <div class="pagination-controls">
+              <label class="sr-only" for="page-size">Leads per page</label>
+              <select id="page-size">
+                <option value="20">20 per page</option>
+                <option value="50">50 per page</option>
+                <option value="100">100 per page</option>
+              </select>
+              <button id="previous" type="button" class="btn-page" disabled>Previous</button>
+              <button id="next" type="button" class="btn-page" disabled>Next</button>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+  <!-- Detail Dialog Modal -->
+  <dialog id="detail" class="lead-detail-modal" aria-labelledby="detail-title">
+    <div class="detail-modal-box">
+      <div class="detail-heading">
+        <div>
+          <p class="eyebrow">LEAD DETAILS</p>
+          <h2 id="detail-title">Lead details</h2>
+        </div>
+        <button id="close-detail" class="btn-close-modal" type="button">✕</button>
+      </div>
+      <div id="detail-content" class="detail-modal-body"></div>
+    </div>
+  </dialog>

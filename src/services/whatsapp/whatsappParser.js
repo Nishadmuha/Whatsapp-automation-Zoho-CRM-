@@ -45,6 +45,12 @@ function nonTextBody(message, messageType) {
   return '';
 }
 
+function interactiveReplyId(message) {
+  if (!isRecord(message?.interactive)) return '';
+  const reply = message.interactive.list_reply || message.interactive.button_reply;
+  return isRecord(reply) ? optionalId(reply.id) : '';
+}
+
 // Store valid message envelopes, including media that has no automatic reply.
 // Delivery notifications remain separate from incoming chat messages.
 function parseWhatsAppWebhook(payload, { phoneNumberId = '', allowedSenders = new Set(), now = Date.now(), onUnsupported, onIgnored } = {}) {
@@ -94,10 +100,12 @@ function parseWhatsAppWebhook(payload, { phoneNumberId = '', allowedSenders = ne
         if (time <= 0 || time > now + 300000) continue;
         const attachment = mediaTypes.has(messageType) && isRecord(message[messageType]) ? message[messageType] : null;
         if (!['text', 'image', 'audio'].includes(messageType) && typeof onUnsupported === 'function') onUnsupported({ messageType });
+        const selectionId = messageType === 'interactive' ? interactiveReplyId(message) : '';
         parsed.push({
           messageId: message.id, senderWhatsappId, senderPhone,
           senderName: names.get(senderWhatsappId) || '', timestamp: message.timestamp,
           messageType, text, phoneNumberId: destination, wabaId: optionalId(entry.id),
+          ...(selectionId ? { interactiveId: selectionId } : {}),
           ...(attachment ? {
             mediaId: typeof attachment.id === 'string' && /^\d{1,128}$/.test(attachment.id) ? attachment.id : '',
             mediaMimeType: safeMetadata(attachment.mime_type, 200),

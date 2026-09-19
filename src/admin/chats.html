@@ -1,43 +1,279 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Chats · Voltronix</title>
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/admin/leads.css">
-  <link rel="stylesheet" href="/admin/chats.css">
-  <script src="/admin/chats.js" defer></script>
-</head>
-<body>
-  <header class="topbar"><a class="brand" href="/admin/leads">VOLTRONIX <span>Internal workspace</span></a><nav aria-label="Workspace"><a href="/admin/leads">Leads</a><a href="/admin/chats" aria-current="page">Chats</a><button id="lock" class="subtle" type="button" hidden>Sign out</button></nav></header>
-  <main>
-    <div class="heading"><div><p class="eyebrow">WHATSAPP CONVERSATIONS</p><h1>Chats</h1><p class="muted">Messages, lead details and conversation status in one place.</p></div><span class="notice">Zoho sync is disconnected</span></div>
-    <section id="login-panel" class="login card" aria-labelledby="login-title">
-      <span class="eyebrow">PRIVATE ACCESS</span><h2 id="login-title">Open your chats workspace</h2>
-      <p>Sign in with your administrator username and password.</p>
-      <form id="login-form"><label for="username">Username</label><input id="username" name="username" type="text" required maxlength="100" autocomplete="username" spellcheck="false" autocapitalize="off"><label for="password">Password</label><input id="password" name="password" type="password" required maxlength="256" autocomplete="current-password"><button id="login-submit" type="submit">Sign in</button></form>
-    </section>
-    <p id="feedback" role="status" aria-live="polite"></p>
-    <section id="workspace" class="chat-layout" hidden aria-label="Chat history">
-      <aside class="card conversation-panel" aria-labelledby="conversations-title">
-        <div class="section-heading"><h2 id="conversations-title">Conversations</h2><button id="refresh" class="secondary" type="button">Refresh</button></div>
-        <form id="filters" class="chat-search"><label for="search">Search name or phone</label><div><input id="search" name="search" type="search" maxlength="200" placeholder="Name or phone"><button type="submit" class="secondary">Search</button></div></form>
-        <div id="conversation-list"></div><p id="empty" class="empty" hidden>No conversations found.</p>
-        <div class="chat-pagination"><p id="page-label">No conversations loaded</p><div><button id="previous" class="secondary" type="button" disabled>Previous</button><button id="next" class="secondary" type="button" disabled>Next</button></div></div>
-      </aside>
-      <section class="card history-panel" aria-labelledby="conversation-title">
-        <div class="history-heading"><h2 id="conversation-title">Select a conversation</h2><p id="conversation-meta" class="muted">Choose a name or phone on the left to see its message history.</p></div>
-        <div id="linked-leads" class="linked-leads" hidden></div>
-        <div id="message-history" class="message-history" aria-live="polite"></div>
-        <div id="message-pagination" class="chat-pagination" hidden><p id="message-page-label"></p><div><button id="older" class="secondary" type="button" disabled>Earlier messages</button><button id="newer" class="secondary" type="button" disabled>Later messages</button></div></div>
-        <form id="reply-form" class="chat-reply-bar" hidden aria-label="Send WhatsApp reply">
-          <input id="reply-text" name="reply-text" type="text" placeholder="Type a message to reply on WhatsApp…" maxlength="4096" autocomplete="off" required>
-          <button id="reply-submit" type="submit">Send</button>
+<main class="chat-main-content">
+
+      <!-- Sign in panel if not authenticated -->
+      <section id="login-panel" class="login card lead-login-card" aria-labelledby="login-title">
+        <div class="login-brand-header">
+          <div class="login-badge-ring">⚡</div>
+          <h2 id="login-title">Open your chats workspace</h2>
+          <p>Sign in with your administrator username and password.</p>
+        </div>
+        <form id="login-form">
+          <div class="login-field-group">
+            <label for="username">Username</label>
+            <input id="username" name="username" type="text" required maxlength="100" autocomplete="username" spellcheck="false" autocapitalize="off" placeholder="admin">
+          </div>
+          <div class="login-field-group">
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" required maxlength="256" autocomplete="current-password" placeholder="••••••••">
+          </div>
+          <button id="login-submit" type="submit" class="btn-signin-lead">Sign in</button>
         </form>
       </section>
-    </section>
-  </main>
+
+      <p id="feedback" role="status" aria-live="polite" class="dashboard-feedback"></p>
+
+      <!-- 3-Column WhatsApp Chats Workspace (Matching Image 3) -->
+      <section id="workspace" class="chat-3col-workspace" hidden aria-label="Chat history">
+        <!-- Column 1: Messages List (~280px-320px) -->
+        <aside class="chat-col-messages" aria-labelledby="conversations-title">
+          <div class="messages-header">
+            <h2 id="conversations-title" class="messages-title">Messages</h2>
+            <div class="messages-header-actions">
+              <button type="button" class="btn-chat-icon" id="btn-msg-filter" title="Filter chats">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                  <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+                </svg>
+              </button>
+              <button id="refresh" class="btn-chat-icon" type="button" title="Refresh">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="23 4 23 10 17 10"></polyline>
+                  <polyline points="1 20 1 14 7 14"></polyline>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <form id="filters" class="chat-search-bar">
+            <label for="search" class="sr-only">Search chats or contacts</label>
+            <div class="chat-search-input-box">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+              </svg>
+              <input id="search" name="search" type="search" maxlength="200" placeholder="Search chats or contacts...">
+            </div>
+          </form>
+
+          <div id="conversation-list" class="conversation-list-stream"></div>
+          <p id="empty" class="empty empty-chats" hidden>No conversations found.</p>
+
+          <div class="chat-pagination-footer">
+            <p id="page-label">No conversations loaded</p>
+            <div class="chat-page-btns">
+              <button id="previous" class="btn-page-nav" type="button" disabled>Previous</button>
+              <button id="next" class="btn-page-nav" type="button" disabled>Next</button>
+            </div>
+          </div>
+        </aside>
+
+        <!-- Column 2: Active Chat Stream (Center) -->
+        <section class="chat-col-stream" aria-labelledby="conversation-title">
+          <!-- Chat Contact Top Header -->
+          <div class="stream-header">
+            <div class="stream-contact-profile">
+              <div class="stream-avatar" id="stream-avatar">
+                <span id="stream-avatar-initials">RH</span>
+                <span class="avatar-online-dot"></span>
+              </div>
+              <div class="stream-meta-text">
+                <h2 id="conversation-title" class="stream-contact-name">Select a conversation</h2>
+                <div class="stream-status-row">
+                  <span class="status-online-dot"></span>
+                  <span class="status-text" id="stream-status-text">online</span>
+                </div>
+                <p id="conversation-meta" class="sr-only">Choose a name or phone on the left to see its message history.</p>
+              </div>
+            </div>
+            <div class="stream-header-actions">
+              <button type="button" class="btn-stream-action" title="Call">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path>
+                </svg>
+              </button>
+              <button type="button" class="btn-stream-action" title="Video">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="23 7 16 12 23 17 23 7"></polygon>
+                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+                </svg>
+              </button>
+              <button type="button" class="btn-stream-action" title="Options">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="#334155">
+                  <circle cx="12" cy="12" r="2"></circle>
+                  <circle cx="12" cy="5" r="2"></circle>
+                  <circle cx="12" cy="19" r="2"></circle>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Message History Stream -->
+          <div class="stream-history-container">
+            <div class="date-divider-pill">
+              <span>TODAY</span>
+            </div>
+
+            <div id="linked-leads" class="linked-leads" hidden></div>
+            <div id="message-history" class="message-history" aria-live="polite"></div>
+
+            <!-- AI Billing Discrepancy Alert Banner (from Image 3) -->
+            <div class="ai-alert-banner" id="ai-alert-banner">
+              <div class="ai-alert-icon-circle">!</div>
+              <span class="ai-alert-text">AI Agent identified a billing discrepancy for this contact. Check Zoho Dashboard.</span>
+            </div>
+
+            <div id="message-pagination" class="chat-pagination message-pagination-bar" hidden>
+              <p id="message-page-label"></p>
+              <div class="chat-page-btns">
+                <button id="older" class="btn-page-nav" type="button" disabled>Earlier messages</button>
+                <button id="newer" class="btn-page-nav" type="button" disabled>Later messages</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- AI Smart Replies Section (from Image 3) -->
+          <div class="ai-smart-replies-container">
+            <div class="ai-smart-header">
+              <span class="ai-sparkle-icon">✨</span>
+              <span class="ai-header-title">AI SMART REPLIES</span>
+            </div>
+            <div class="ai-replies-list" id="ai-smart-replies-list">
+              <button type="button" class="ai-reply-card" data-reply="I've confirmed the procurement. Delivery can proceed tomorrow.">
+                <span class="reply-text">I've confirmed the procurement. Delivery can proceed tomorrow.</span>
+                <span class="reply-check">✓</span>
+              </button>
+              <button type="button" class="ai-reply-card" data-reply="Please send the HVAC billing document for immediate review.">
+                <span class="reply-text">Please send the HVAC billing document for immediate review.</span>
+                <span class="reply-check">✓</span>
+              </button>
+              <button type="button" class="ai-reply-card" data-reply="Meeting scheduled to discuss the Silicon Oasis delivery. Link follows.">
+                <span class="reply-text">Meeting scheduled to discuss the Silicon Oasis delivery. Link follows.</span>
+                <span class="reply-check">✓</span>
+              </button>
+              <button type="button" class="ai-reply-card" data-reply="All bills for Phase 2 are currently under audit. Expect update by EOD.">
+                <span class="reply-text">All bills for Phase 2 are currently under audit. Expect update by EOD.</span>
+                <span class="reply-check">✓</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Message Reply Form -->
+          <form id="reply-form" class="chat-composer-bar" hidden aria-label="Send WhatsApp reply">
+            <button type="button" class="btn-composer-icon" id="btn-attach" title="Attach file">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+              </svg>
+            </button>
+            <button type="button" class="btn-composer-icon" id="btn-mic" title="Voice note">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="23"></line>
+                <line x1="8" y1="23" x2="16" y2="23"></line>
+              </svg>
+            </button>
+            <div class="composer-input-wrapper">
+              <input id="reply-text" name="reply-text" type="text" placeholder="Type your message..." maxlength="4096" autocomplete="off" required>
+              <span class="composer-clock-icon" title="Schedule">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+              </span>
+            </div>
+            <button id="reply-submit" type="submit" class="btn-composer-send" title="Send message">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2" fill="#ffffff"></polygon>
+              </svg>
+            </button>
+          </form>
+
+          <!-- Sub-footer Bar -->
+          <div class="stream-sub-footer">
+            <div class="sub-footer-left">
+              <button type="button" class="btn-quick-footer" id="btn-attach-bill">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                  <polyline points="14 2 14 8 20 8"></polyline>
+                </svg>
+                ATTACH ZOHO BILL
+              </button>
+              <button type="button" class="btn-quick-footer" id="btn-schedule-followup">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                  <line x1="16" y1="2" x2="16" y2="6"></line>
+                  <line x1="8" y1="2" x2="8" y2="6"></line>
+                  <line x1="3" y1="10" x2="21" y2="10"></line>
+                </svg>
+                SCHEDULE FOLLOW-UP
+              </button>
+            </div>
+            <div class="sub-footer-right">
+              <span class="encryption-tag">
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                </svg>
+                WhatsApp Encryption Active
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Column 3: Contact & Zoho Details (~260px-300px) -->
+        <aside class="chat-col-profile">
+          <div class="profile-header-card">
+            <div class="profile-avatar-large" id="contact-panel-avatar">
+              <span id="contact-avatar-initials">RH</span>
+            </div>
+            <h3 id="contact-panel-name" class="profile-contact-name">ROBERT HARRISON</h3>
+            <p id="contact-panel-phone" class="profile-contact-phone">+971 50 123 4567</p>
+            <div class="profile-tags-row">
+              <span class="profile-tag tag-outline" id="contact-tag-type">VENDOR</span>
+              <span class="profile-tag tag-filled" id="contact-tag-priority">PRIORITY</span>
+            </div>
+          </div>
+
+          <div class="profile-divider"></div>
+
+          <!-- Section: LINKED ZOHO ENTITIES -->
+          <div class="profile-section">
+            <h4 class="profile-section-title">LINKED ZOHO ENTITIES</h4>
+            <div class="zoho-entities-stream" id="contact-zoho-entities">
+              <div class="zoho-entity-card">
+                <div class="entity-left">
+                  <span class="entity-doc-icon">📄</span>
+                  <span class="entity-title" id="entity-inv-title">Inv #VOLT-2024</span>
+                </div>
+                <span class="entity-status-badge badge-warning" id="entity-inv-status">Sync Pending</span>
+              </div>
+              <div class="zoho-entity-card">
+                <div class="entity-left">
+                  <span class="entity-doc-icon">📄</span>
+                  <span class="entity-title" id="entity-proj-title">Project: Oasis 2.0</span>
+                </div>
+                <span class="entity-status-badge badge-success" id="entity-proj-status">Active</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section: SYSTEM NOTES -->
+          <div class="profile-section">
+            <h4 class="profile-section-title">SYSTEM NOTES</h4>
+            <div class="system-notes-card">
+              <p id="contact-system-notes">"Contact preferred communication via WhatsApp. Responds best to mid-morning updates. Accounting point of contact for BuildTech sub-contracts."</p>
+            </div>
+          </div>
+
+          <button type="button" class="btn-lead-profile-action" id="btn-view-lead-profile">
+            VIEW FULL LEAD PROFILE
+          </button>
+        </aside>
+      </section>
+    </main>
+
+  <!-- Media zoom dialog -->
   <dialog id="media-zoom-dialog" class="media-zoom-dialog" aria-labelledby="zoom-title">
     <div class="zoom-header">
       <h3 id="zoom-title">Image preview</h3>
@@ -47,6 +283,5 @@
       <img id="zoom-image" src="" alt="Full size preview">
     </div>
   </dialog>
-  <footer>Voltronix · Internal workspace</footer>
-</body>
-</html>
+
+  <footer class="sr-only">Voltronix · Internal workspace</footer>

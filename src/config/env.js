@@ -55,6 +55,13 @@ function readConfig(env = process.env) {
       && bossValues.some((s) => !/^\+?[1-9]\d{6,14}$/.test(s)))) {
     throw new Error(`${bossKey} must contain comma-separated valid sender phone numbers.`);
   }
+  const booksKey = env.AUTHORIZED_BOOKS_PHONES !== undefined ? 'AUTHORIZED_BOOKS_PHONES' : 'BOOKS_WORKER_PHONES';
+  const booksValues = (env[booksKey] || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const booksSenders = booksValues.map(normalizeSenderPhone);
+  if (booksSenders.some((s) => !s) || (booksKey === 'BOOKS_WORKER_PHONES'
+      && booksValues.some((s) => !/^\+?[1-9]\d{6,14}$/.test(s)))) {
+    throw new Error(`${booksKey} must contain comma-separated valid sender phone numbers.`);
+  }
   const adminUsername = (env.ADMIN_USERNAME || '').trim();
   const adminPassword = env.ADMIN_PASSWORD || '';
   const adminApiToken = env.ADMIN_API_TOKEN || '';
@@ -70,6 +77,18 @@ function readConfig(env = process.env) {
   if (adminPassword && (!adminPassword.trim() || adminPassword.length < 8 || adminPassword.length > 256 || /[\u0000-\u001f\u007f-\u009f]/.test(adminPassword))) {
     throw new Error('ADMIN_PASSWORD must contain 8 to 256 characters without control characters.');
   }
+  const booksUsername = (env.BOOKS_USERNAME || '').trim();
+  const booksPassword = env.BOOKS_PASSWORD || '';
+  const adminBooksAccess = env.ADMIN_BOOKS_ACCESS !== 'false';
+  if (Boolean(booksUsername) !== Boolean(booksPassword)) {
+    throw new Error('Set both BOOKS_USERNAME and BOOKS_PASSWORD to enable Zoho Books login.');
+  }
+  if (booksUsername && !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(booksUsername)) {
+    throw new Error('BOOKS_USERNAME must contain 1 to 64 letters, numbers, dots, underscores or hyphens.');
+  }
+  if (booksPassword && (!booksPassword.trim() || booksPassword.length < 8 || booksPassword.length > 256 || /[\u0000-\u001f\u007f-\u009f]/.test(booksPassword))) {
+    throw new Error('BOOKS_PASSWORD must contain 8 to 256 characters without control characters.');
+  }
   const phoneNumberId = (env.WHATSAPP_PHONE_NUMBER_ID || env.PHONE_NUMBER_ID || '').trim();
   if (phoneNumberId && !/^\d+$/.test(phoneNumberId)) {
     throw new Error('WHATSAPP_PHONE_NUMBER_ID must be numeric when configured.');
@@ -81,8 +100,10 @@ function readConfig(env = process.env) {
   }
   return {
     production, enabled, aiProvider, verifyToken, appSecret, mongoUri, databaseUrl, databaseName, phoneNumberId, graphVersion, adminUsername, adminPassword, adminApiToken,
+    booksUsername, booksPassword, adminBooksAccess,
     allowedSenders: new Set(allowedSenders.map((s) => `+${s.replace(/^\+/, '')}`)),
     bossSenders: new Set(bossSenders),
+    booksSenders: new Set(booksSenders),
     port: integer(env.PORT, 5000, 1, 65535, 'PORT'),
     host: env.HOST || (production ? '0.0.0.0' : '127.0.0.1'),
     pollMs: integer(env.WORKER_POLL_MS, 1000, 50, 60000, 'WORKER_POLL_MS'),

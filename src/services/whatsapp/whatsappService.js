@@ -100,6 +100,31 @@ function createWhatsAppService({ env = process.env, http = axios, logger = creat
     validateTextMessage(to, text);
     return send({ messaging_product: 'whatsapp', to, type: 'text', text: { body: text } });
   }
+  async function sendInteractiveList(to, { header = '', body, footer = '', button = 'Select', sections = [] } = {}) {
+    validateRecipient(to);
+    const cleanText = value => typeof value === 'string' ? value.trim() : '';
+    const cleanBody = cleanText(body);
+    if (!cleanBody || Array.from(cleanBody).length > 1024 || Array.from(cleanText(header)).length > 60
+        || Array.from(cleanText(footer)).length > 60 || Array.from(cleanText(button)).length > 20
+        || !Array.isArray(sections) || !sections.length || sections.length > 10) {
+      throw failure('A valid interactive customer list is required.', 'ERR_WHATSAPP_INPUT');
+    }
+    const cleanSections = sections.map(section => ({
+      title: cleanText(section.title).slice(0, 24),
+      rows: Array.isArray(section.rows) ? section.rows.slice(0, 10).map(row => ({
+        id: cleanText(row.id).slice(0, 200), title: cleanText(row.title).slice(0, 24),
+        ...(cleanText(row.description) ? { description: cleanText(row.description).slice(0, 72) } : {}),
+      })).filter(row => row.id && row.title) : [],
+    })).filter(section => section.rows.length);
+    if (!cleanSections.length) throw failure('A valid interactive customer list is required.', 'ERR_WHATSAPP_INPUT');
+    return send({ messaging_product: 'whatsapp', to, type: 'interactive', interactive: {
+      type: 'list',
+      ...(cleanText(header) ? { header: { type: 'text', text: cleanText(header).slice(0, 60) } } : {}),
+      body: { text: cleanBody },
+      ...(cleanText(footer) ? { footer: { text: cleanText(footer).slice(0, 60) } } : {}),
+      action: { button: cleanText(button).slice(0, 20), sections: cleanSections },
+    } });
+  }
   async function sendTemplateMessage(to, templateName, languageCode) {
     validateTemplateMessage(to, templateName, languageCode);
     return send({
@@ -161,6 +186,28 @@ function createWhatsAppService({ env = process.env, http = axios, logger = creat
       throw failure('WhatsApp media could not be read.', 'ERR_WHATSAPP_MEDIA');
     }
   }
-  return { sendTextMessage, sendTemplateMessage, downloadMedia };
+  async function sendDocument(to, { buffer, filename, caption = '' } = {}) {
+    validateRecipient(to);
+    if (!Buffer.isBuffer(buffer) || buffer.subarray(0, 5).toString() !== '%PDF-' || buffer.length > 20 * 1024 * 1024
+        || typeof filename !== 'string' || !filename.endsWith('.pdf') || filename.length > 200 || caption.length > 1024) {
+      throw failure('A valid PDF document is required.', 'ERR_WHATSAPP_INPUT');
+    }
+    const { accessToken, phoneNumberId, apiVersion } = readWhatsAppSendConfig(env);
+    const form = new globalThis.FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('type', 'application/pdf');
+    form.append('file', new globalThis.Blob([buffer], { type: 'application/pdf' }), filename);
+    let mediaId;
+    try {
+      const response = await http.post(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/media`, form, {
+        headers: { Authorization: 'Bearer ' + accessToken }, timeout: 30000, maxRedirects: 0,
+        httpsAgent, proxy: false, maxContentLength: 1024 * 1024, maxBodyLength: 21 * 1024 * 1024,
+      });
+      mediaId = response?.data?.id;
+      if (response?.data?.error || !/^\d{1,128}$/.test(mediaId || '')) throw new Error();
+    } catch { throw failure('PDF upload failed; no document message was sent.', 'ERR_WHATSAPP_MEDIA'); }
+    return send({ messaging_product: 'whatsapp', to, type: 'document', document: { id: mediaId, filename, caption } });
+  }
+  return { sendTextMessage, sendInteractiveList, sendTemplateMessage, downloadMedia, sendDocument };
 }
 module.exports = { createWhatsAppService, readWhatsAppSendConfig, validateTextMessage, validateTemplateMessage };

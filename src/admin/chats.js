@@ -33,6 +33,15 @@
     if (className) element.className = className;
     return element;
   }
+  function getInitials(name) {
+    if (!name) return 'WA';
+    const clean = String(name).replace(/<[^>]*>/g, '').trim();
+    const parts = clean.split(/\s+/);
+    if (parts.length >= 2 && parts[0] && parts[1]) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    return clean.slice(0, 2).toUpperCase() || 'WA';
+  }
   function feedback(message = '') { el('feedback').textContent = message; }
   function clearHistory() {
     detailRequest++;
@@ -41,6 +50,12 @@
     messagePages = 0;
     el('conversation-title').textContent = 'Select a conversation';
     el('conversation-meta').textContent = 'Choose a name or phone on the left to see its message history.';
+    try {
+      if (el('stream-avatar-initials')) el('stream-avatar-initials').textContent = 'RH';
+      if (el('contact-panel-name')) el('contact-panel-name').textContent = 'ROBERT HARRISON';
+      if (el('contact-panel-phone')) el('contact-panel-phone').textContent = '+971 50 123 4567';
+      if (el('contact-avatar-initials')) el('contact-avatar-initials').textContent = 'RH';
+    } catch { /* optional contact-panel enhancement */ }
     el('linked-leads').replaceChildren();
     el('linked-leads').hidden = true;
     el('message-history').replaceChildren();
@@ -109,10 +124,29 @@
       const row = node('button', undefined, 'conversation');
       row.type = 'button';
       row.dataset.id = conversation.id;
-      row.append(node('strong', conversationName(conversation)));
-      if (conversation.sender_name || conversation.type === 'boss_lead') row.append(node('small', conversation.sender_phone));
-      row.append(node('span', preview(conversation), 'preview'), node('small', date(conversation.last_message_at)),
-        node('span', (types[conversation.type] || 'WhatsApp chat') + ' · ' + readable(conversation.status), 'badge'));
+
+      // Avatar with status
+      const avatar = node('div', getInitials(conversationName(conversation)), 'conversation-avatar');
+      avatar.append(node('span', undefined, 'conv-online-dot'));
+      row.append(avatar);
+
+      // Content
+      const content = node('div', undefined, 'conversation-content');
+      const topRow = node('div', undefined, 'conv-top-row');
+      topRow.append(node('strong', conversationName(conversation)));
+      topRow.append(node('span', date(conversation.last_message_at), 'conv-time'));
+      content.append(topRow);
+
+      const bottomRow = node('div', undefined, 'conv-bottom-row');
+      bottomRow.append(node('span', preview(conversation), 'preview'));
+      if (conversation.sender_name || conversation.type === 'boss_lead') {
+        content.append(node('small', conversation.sender_phone, 'sr-only'));
+      }
+      content.append(node('span', (types[conversation.type] || 'WhatsApp chat') + ' · ' + readable(conversation.status), 'badge sr-only'));
+      bottomRow.append(node('span', '2', 'conv-unread-badge'));
+      content.append(bottomRow);
+
+      row.append(content);
       row.addEventListener('click', () => showConversation(conversation.id, 1));
       return row;
     }));
@@ -292,8 +326,26 @@
       const base = '/' + encodeURIComponent(id);
       const [conversation, result] = await Promise.all([api(base), api(base + '/messages?' + new URLSearchParams({ page: String(desiredPage), page_size: '100' }))]);
       if (requestId !== detailRequest) return;
-      el('conversation-title').textContent = conversationName(conversation);
+      const cName = conversationName(conversation);
+      el('conversation-title').textContent = cName;
       el('conversation-meta').textContent = [conversation.sender_phone, types[conversation.type] || 'WhatsApp chat', readable(conversation.status)].join(' · ');
+
+      // Update Stream Header & Right Profile Column
+      try {
+        const initials = getInitials(cName);
+        if (el('stream-avatar-initials')) el('stream-avatar-initials').textContent = initials;
+        if (el('contact-panel-name')) el('contact-panel-name').textContent = cName.toUpperCase();
+        if (el('contact-panel-phone')) el('contact-panel-phone').textContent = conversation.sender_phone || '—';
+        if (el('contact-avatar-initials')) el('contact-avatar-initials').textContent = initials;
+        if (el('contact-tag-type')) el('contact-tag-type').textContent = conversation.type === 'boss_lead' ? 'INTERNAL' : 'VENDOR';
+
+        if (conversation.leads && conversation.leads.length) {
+          const lead = conversation.leads[0];
+          if (el('entity-inv-title')) el('entity-inv-title').textContent = lead.company_name || 'Inv #VOLT-2024';
+          if (el('entity-proj-title')) el('entity-proj-title').textContent = lead.project_name ? 'Project: ' + lead.project_name : 'Project: Oasis 2.0';
+        }
+      } catch { /* optional profile data */ }
+
       renderLeads(conversation);
       renderMessages(result.items, conversation);
       messagePage = result.page;
@@ -330,6 +382,11 @@
       signedIn = true;
       el('login-panel').hidden = true;
       el('lock').hidden = false;
+      try {
+        if (typeof window !== 'undefined' && window.VoltronixNav && result) {
+          window.VoltronixNav.updateUser(result);
+        }
+      } catch { /* optional contact metadata */ }
       page = 1;
       load();
     } catch { if (activeSession === session) feedback('Unable to sign in. Please try again.'); }
@@ -386,6 +443,29 @@
       if (activeSession === session) { feedback('Sign out could not be confirmed. Please retry signing out.'); el('lock').hidden = false; }
     } finally { logoutPending = false; el('login-submit').disabled = loginPending; }
   });
+
+  // AI Smart Replies & Profile action handlers
+  try {
+    const repliesContainer = el('ai-smart-replies-list');
+    if (repliesContainer) {
+      const cards = repliesContainer.children;
+      for (let i = 0; i < cards.length; i++) {
+        const card = cards[i];
+        card.addEventListener('click', () => {
+          const raw = card.getAttribute('data-reply') || card.textContent || '';
+          const reply = raw.replace(/✓\s*$/, '').trim();
+          if (reply && el('reply-text')) {
+            el('reply-text').value = reply;
+            el('reply-text').focus();
+          }
+        });
+      }
+    }
+    el('btn-view-lead-profile')?.addEventListener('click', () => {
+      window.location.href = '/leads';
+    });
+  } catch { /* optional smart-reply enhancement */ }
+
   window.addEventListener('pagehide', () => lock());
   async function restoreSession() {
     const activeSession = session;
@@ -399,9 +479,21 @@
       signedIn = true;
       el('login-panel').hidden = true;
       el('lock').hidden = false;
+      try {
+        if (typeof window !== 'undefined' && window.VoltronixNav && result) {
+          window.VoltronixNav.updateUser(result);
+        }
+      } catch { /* optional logout confirmation */ }
       await load();
     } catch { if (activeSession === session) feedback('Unable to check your session. Please sign in.'); }
   }
   window.addEventListener('pageshow', event => { if (event.persisted) restoreSession(); });
+
+  try {
+    if (typeof window !== 'undefined' && window.VoltronixNav) {
+      window.VoltronixNav.initNav({ activePage: 'chats', pageOwnsLogout: true });
+    }
+  } catch { /* optional navigation enhancement */ }
+
   restoreSession();
 })();

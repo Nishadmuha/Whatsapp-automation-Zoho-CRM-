@@ -71,18 +71,25 @@ function createWebhookRouter({ config, store, ready, logger, onNewMessage, trigg
       // Bound each transaction to the existing repository batch size.
       for (let offset = 0; offset < messages.length; offset += 1000) {
         const batch = messages.slice(offset, offset + 1000);
-        const result = await store.enqueueMany(batch.map((message) => ({
-          whatsapp_message_id: message.messageId, sender_phone: message.senderPhone,
-          message_text: message.text, message_type: message.messageType,
-          sender_name: message.senderName || null,
-          media_id: message.mediaId || null,
-          media_mime_type: message.mediaMimeType || null,
-          media_filename: message.mediaFilename || null,
-          received_at: new Date(Number(message.timestamp) * 1000).toISOString(),
-          authenticated: Boolean(config.appSecret),
-          request_lead_workflow: config.enabled && config.aiProvider === 'openai'
-            && config.bossSenders?.has(message.senderPhone) === true,
-        })), {
+        const preparedBatch = await Promise.all(batch.map(async (message) => {
+          const isBooks = config.enabled && config.booksSenders?.has(message.senderPhone) === true;
+          const isBoss = !isBooks && config.enabled && config.aiProvider === 'openai'
+            && config.bossSenders?.has(message.senderPhone) === true;
+          return {
+            whatsapp_message_id: message.messageId, sender_phone: message.senderPhone,
+            message_text: message.text, message_type: message.messageType,
+            sender_name: message.senderName || null,
+            media_id: message.mediaId || null,
+            media_mime_type: message.mediaMimeType || null,
+            media_filename: message.mediaFilename || null,
+            interactive_id: message.interactiveId || null,
+            received_at: new Date(Number(message.timestamp) * 1000).toISOString(),
+            authenticated: Boolean(config.appSecret),
+            request_lead_workflow: isBoss,
+            request_books_workflow: isBooks,
+          };
+        }));
+        const result = await store.enqueueMany(preparedBatch, {
           includeInsertedIds: true,
           replyText: config.enabled && config.aiProvider !== 'openai' ? AUTO_REPLY_TEXT : null,
           processingFlow: config.enabled && config.aiProvider === 'openai' ? 'conversation' : null,
@@ -99,7 +106,8 @@ function createWebhookRouter({ config, store, ready, logger, onNewMessage, trigg
           // Admission follows the durable unique-ID insert. A replay can never
           // reactivate an old job or add an ID to this process's trigger list.
           const hasAutomation = config.enabled && (message.messageType === 'text'
-            || (config.aiProvider === 'openai' && config.bossSenders?.has(message.senderPhone)));
+            || (config.aiProvider === 'openai' && config.bossSenders?.has(message.senderPhone))
+            || (config.booksSenders?.has(message.senderPhone)));
           if (hasAutomation && !triggerGate.admit(message.messageId, message.timestamp)) {
             logger.info({ event: 'webhook_ignored', request_id: req.requestId, reason: 'expired', message_id: message.messageId },
               '[WEBHOOK] Ignored expired message trigger');
@@ -114,8 +122,8 @@ function createWebhookRouter({ config, store, ready, logger, onNewMessage, trigg
             timestamp: message.timestamp,
           }, '[WEBHOOK] Processing new incoming message: WhatsApp message received');
           if (hasAutomation && triggerGate.allows(message.messageId) && onNewMessage) {
-            // Only this successfully inserted, admitted receipt may schedule an
-            // acknowledgement. The callback does not run media, AI or CRM work.
+            // Only this successfully inserted, admitted receipt may schedule
+            // follow-up work. The callback does not run media, AI or CRM work.
             try { await onNewMessage(message); }
             catch { logger.error({ event: 'crm_intake_queue_failed', message_id: message.messageId }); }
           }

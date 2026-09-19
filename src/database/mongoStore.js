@@ -83,7 +83,7 @@ function hasLeadInformation(result) {
 }
 
 function validateProcessingFlow(value) {
-  if (value !== null && value !== 'conversation' && value !== 'boss_lead') throw new TypeError('Invalid processing flow.');
+  if (value !== null && value !== 'conversation' && value !== 'boss_lead' && value !== 'books_bill') throw new TypeError('Invalid processing flow.');
 }
 
 function workflowCode(value) {
@@ -543,6 +543,7 @@ class MongoMessageStore {
       authenticated: message.authenticated === true,
       requestLeadExtraction: message.request_lead_extraction === true,
       requestLeadWorkflow: message.request_lead_workflow === true,
+      requestBooksWorkflow: message.request_books_workflow === true || message.requestBooksWorkflow === true,
       senderName: string(message.sender_name ?? null, 'sender_name', 200, true),
       mediaId: string(message.media_id ?? null, 'media_id', 512, true),
       mediaMimeType: string(message.media_mime_type ?? null, 'media_mime_type', 200, true),
@@ -557,7 +558,8 @@ class MongoMessageStore {
     for (const message of prepared) {
       const eligible = message.authenticated && message.type === 'text' && Boolean(message.text.trim());
       const workflow = message.authenticated && message.requestLeadWorkflow && (message.type !== 'text' || Boolean(message.text.trim()));
-      const flow = workflow ? 'boss_lead' : eligible && processingFlow !== 'boss_lead' ? processingFlow : null;
+      const booksWorkflow = message.authenticated && message.requestBooksWorkflow && (message.type !== 'text' || Boolean(message.text.trim()));
+      const flow = booksWorkflow ? 'books_bill' : workflow ? 'boss_lead' : eligible && processingFlow !== 'boss_lead' && processingFlow !== 'books_bill' ? processingFlow : null;
 
       const doc = {
         whatsapp_message_id: message.id,
@@ -1572,7 +1574,7 @@ class MongoMessageStore {
     return true;
   }
 
-  async updateLeadZohoStatus(id, { zohoStatus, zohoLeadId = null, errorCode = null, errorStage = null, zohoUrl = null, zohoSyncedAt = null }) {
+  async updateLeadZohoStatus(id, { zohoStatus, zohoLeadId, errorCode, errorStage, zohoUrl, zohoSyncedAt }) {
     if (typeof id !== 'string' || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id)) throw new TypeError('Invalid lead id.');
     const now = await this._now();
     const update = {

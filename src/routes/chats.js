@@ -1,5 +1,4 @@
 'use strict';
-const path = require('node:path');
 const express = require('express');
 const { rateLimit } = require('express-rate-limit');
 const { outputRedactor } = require('./leads');
@@ -158,12 +157,4 @@ function createChatsRouter({ config, store, ready, logger, env = {}, requireAuth
   return router;
 }
 
-function createChatsDashboardRouter() {
-  const router = express.Router();
-  const directory = path.join(__dirname, '../admin');
-  router.get(['/chats', '/chats/'], (_req, res) => res.sendFile(path.join(directory, 'chats.html')));
-  for (const asset of ['chats.css', 'chats.js']) router.get('/' + asset, (_req, res) => res.sendFile(path.join(directory, asset)));
-  return router;
-}
-
-module.exports = { createChatsRouter, createChatsDashboardRouter };
+module.exports = { createChatsRouter };

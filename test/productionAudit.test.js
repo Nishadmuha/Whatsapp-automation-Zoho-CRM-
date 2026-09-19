@@ -496,7 +496,7 @@ test('AUDIT 19: Server restart with pending session preserves state in MongoDB',
 });
 
 // 20. Missing attachment
-test('AUDIT 20: Missing media buffer handles safely and does not abort lead creation', async t => {
+test('AUDIT 20: Missing media preserves created lead ID but does not claim attachment success', async t => {
   const { store, zoho, sendBossMessage } = await setupProductionAuditFlow(t);
   await sendBossMessage('Apex Falcon Contracting, Rashid 0501112233, Dubai South');
   await sendBossMessage('', {
@@ -509,7 +509,8 @@ test('AUDIT 20: Missing media buffer handles safely and does not abort lead crea
   assert.equal(zoho.calls.create, 1, 'Lead creation must succeed even if attachment fails');
 
   const leads = (await store.listLeads()).items;
-  assert.equal(leads[0].zoho_status, 'saved');
+  assert.equal(leads[0].zoho_status, 'failed');
+  assert.ok(leads[0].zoho_lead_id);
 });
 
 // 21. Invalid media

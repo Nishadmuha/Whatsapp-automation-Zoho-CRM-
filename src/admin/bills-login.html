@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Billing Login · Voltronix Automation Dashboard</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/login.css">
+  <script src="/bills-login.js" defer></script>
+</head>
+<body>
+
+  <!-- Main Login UI -->
+  <main class="login-wrapper">
+    <div class="login-glass-card" style="animation-delay: 0s;"> <!-- No splash screen here -->
+      <div class="login-header">
+        <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="var(--voltronix-red)" stroke-width="2" style="margin-bottom: 1rem;">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+        <h1 class="login-title">SECURE BILLING PORTAL</h1>
+        <p class="login-subtitle">Zoho Books & Finance Access</p>
+      </div>
+
+      <form id="login-form" class="login-form">
+        <div id="login-error" class="login-error" hidden></div>
+
+        <div class="form-group">
+          <label for="username">Billing ID</label>
+          <div class="input-icon-wrapper">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" class="input-icon">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+            </svg>
+            <input type="text" id="username" name="username" placeholder="Enter Billing ID" required autocomplete="username" autofocus>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="password">Passcode</label>
+          <div class="input-icon-wrapper">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" class="input-icon">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            <input type="password" id="password" name="password" placeholder="Enter secure passcode" required autocomplete="current-password">
+            <button type="button" id="toggle-password" class="btn-toggle-password" aria-label="Toggle password visibility">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" id="login-submit" class="btn-primary-login">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+          <span>AUTHORIZE ACCESS</span>
+        </button>
+      </form>
+    </div>
+  </main>
+
+</body>
+</html>

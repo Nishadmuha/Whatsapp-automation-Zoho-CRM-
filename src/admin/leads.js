@@ -19,6 +19,8 @@
   let page = 1;
   let totalPages = 0;
   let activeFilters = {};
+  const initialSearch = new URLSearchParams(window.location?.search || '').get('search');
+  if (initialSearch) { activeFilters.search = initialSearch; el('search').value = initialSearch; }
   const linkedLead = new URLSearchParams(window.location?.search || '').getAll('lead');
   let requestedLead = linkedLead.length === 1 && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(linkedLead[0])
     ? linkedLead[0] : null;
@@ -87,18 +89,38 @@
     const rows = items.map(lead => {
       const row = node('tr');
       const company = node('td');
-      const open = node('button', leadName(lead), 'lead-link');
+      const open = node('button', leadName(lead), 'lead-name-btn');
       open.type = 'button';
       open.addEventListener('click', () => showDetail(lead.id));
       company.append(open);
       row.append(company);
-      for (const field of ['contact_name', 'phone', 'requirement', 'project_location']) row.append(node('td', lead[field]));
-      for (const field of ['extraction_status', 'validation_status', 'zoho_status']) {
-        const cell = node('td'); cell.append(badge(lead[field])); row.append(cell);
-      }
-      row.append(node('td', date(lead.created_at)));
+
+      // Col 2: STATUS
+      const statusCell = node('td');
+      statusCell.append(badge(lead.validation_status || lead.extraction_status || 'new'));
+      row.append(statusCell);
+
+      // Col 3: SOURCE
+      const sourceVal = lead.source || (lead.phone ? 'WhatsApp (' + lead.phone + ')' : (lead.contact_name ? 'Direct Contact' : 'WhatsApp Inquiry'));
+      row.append(node('td', sourceVal));
+
+      // Col 4: EST. VALUE
+      const estVal = lead.est_value || lead.requirement || '—';
+      row.append(node('td', estVal));
+
+      // Col 5: LOCATION
+      const locVal = lead.project_location || lead.address || 'Dubai, UAE';
+      row.append(node('td', locVal));
+
+      // Col 6: LAST ACTION (View chat link)
       const conversation = node('td');
-      conversation.append(conversationLink(lead, 'View chat') || node('span', '—'));
+      const chatLink = conversationLink(lead, 'View chat');
+      if (chatLink) {
+        chatLink.classList.add('btn-view-chat');
+        conversation.append(chatLink);
+      } else {
+        conversation.append(node('span', '—'));
+      }
       row.append(conversation);
       return row;
     });
@@ -117,6 +139,7 @@
       totalPages = result.total_pages;
       renderRows(result.items);
       for (const name of ['total', 'valid', 'incomplete', 'zoho_pending']) el('stat-' + name).textContent = text(stats[name]);
+      try { if (el('stat-total-display')) el('stat-total-display').textContent = text(stats.total); } catch { /* optional dashboard counter */ }
       el('page-label').textContent = result.total ? `${result.total} leads · Page ${page} of ${Math.max(1, totalPages)}` : '0 leads';
       el('previous').disabled = page <= 1;
       el('next').disabled = page >= totalPages;
@@ -375,6 +398,7 @@
       if (activeSession !== session) return;
       if (result.authenticated !== true) throw new Error('Unable to sign in. Please try again.');
       signedIn = true;
+      window.VoltronixNav?.updateUser(result);
       el('login-panel').hidden = true;
       el('lock').hidden = false;
       page = 1;
@@ -424,11 +448,17 @@
       const result = await response.json();
       if (activeSession !== session || result.authenticated !== true) return;
       signedIn = true;
+      window.VoltronixNav?.updateUser(result);
       el('login-panel').hidden = true;
       el('lock').hidden = false;
       await load();
     } catch { if (activeSession === session) feedback('Unable to check your session. Please sign in.'); }
   }
   window.addEventListener('pageshow', event => { if (event.persisted) restoreSession(); });
+  try {
+    if (typeof window !== 'undefined' && window.VoltronixNav) {
+      window.VoltronixNav.initNav({ activePage: 'leads', pageOwnsLogout: true });
+    }
+  } catch { /* optional navigation enhancement */ }
   restoreSession();
 })();
