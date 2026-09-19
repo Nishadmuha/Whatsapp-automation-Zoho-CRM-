@@ -11,7 +11,6 @@
   const knownStatuses = new Set(['pending', 'processing', 'completed', 'failed', 'valid', 'incomplete', 'invalid',
     'not_started', 'existing_found', 'creating', 'updating', 'saved']);
   let signedIn = false;
-  let loginPending = false;
   let logoutPending = false;
   let session = 0;
   let listing = 0;
@@ -51,8 +50,6 @@
     session++;
     listing++;
     detailRequest++;
-    el('password').value = '';
-    el('login-panel').hidden = false;
     el('workspace').hidden = true;
     el('lock').hidden = true;
     el('lead-rows').replaceChildren();
@@ -79,7 +76,11 @@
     const activeSession = session;
     const response = await request('/api/leads' + path);
     if (activeSession !== session) throw new Error('SESSION_CHANGED');
-    if (response.status === 401) { lock('Session expired. Please sign in again.'); throw new Error('SESSION_CHANGED'); }
+    if (response.status === 401) {
+      lock('Session expired. Please sign in again.');
+      window.location.replace('/login');
+      throw new Error('SESSION_CHANGED');
+    }
     if (!response.ok) throw new Error(failureMessage(response.status));
     const data = await response.json();
     if (activeSession !== session) throw new Error('SESSION_CHANGED');
@@ -143,7 +144,6 @@
       el('page-label').textContent = result.total ? `${result.total} leads · Page ${page} of ${Math.max(1, totalPages)}` : '0 leads';
       el('previous').disabled = page <= 1;
       el('next').disabled = page >= totalPages;
-      el('login-panel').hidden = true;
       el('workspace').hidden = false;
       el('lock').hidden = false;
       feedback();
@@ -380,32 +380,6 @@
       if (request === detailRequest && error.message !== 'SESSION_CHANGED') el('detail-content').replaceChildren(node('p', error.message));
     }
   }
-  el('login-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    if (loginPending || logoutPending) return;
-    const credentials = { username: el('username').value.trim(), password: el('password').value };
-    el('password').value = '';
-    const activeSession = ++session;
-    loginPending = true;
-    el('login-submit').disabled = true;
-    feedback('Signing in…');
-    try {
-      const response = await request('/api/admin/login', { method: 'POST', body: credentials });
-      if (activeSession !== session) return;
-      if (response.status === 401) { feedback('Incorrect username or password.'); return; }
-      if (!response.ok) { feedback(failureMessage(response.status)); return; }
-      const result = await response.json();
-      if (activeSession !== session) return;
-      if (result.authenticated !== true) throw new Error('Unable to sign in. Please try again.');
-      signedIn = true;
-      window.VoltronixNav?.updateUser(result);
-      el('login-panel').hidden = true;
-      el('lock').hidden = false;
-      page = 1;
-      load();
-    } catch { if (activeSession === session) feedback('Unable to sign in. Please try again.'); }
-    finally { loginPending = false; el('login-submit').disabled = logoutPending; }
-  });
   el('filters').addEventListener('submit', event => {
     event.preventDefault();
     activeFilters = {};
@@ -423,18 +397,17 @@
     if (logoutPending) return;
     logoutPending = true;
     lock();
-    el('username').value = '';
-    el('login-submit').disabled = true;
     const activeSession = session;
     try {
       const response = await request('/api/admin/logout', { method: 'POST', body: {} });
       if (!response.ok) throw new Error('LOGOUT_FAILED');
+      if (activeSession === session) window.location.replace('/login');
     } catch {
       if (activeSession === session) {
         feedback('Sign out could not be confirmed. Please retry signing out.');
         el('lock').hidden = false;
       }
-    } finally { logoutPending = false; el('login-submit').disabled = loginPending; }
+    } finally { logoutPending = false; }
   });
   el('close-detail').addEventListener('click', () => { detailRequest++; el('detail').close(); });
   window.addEventListener('pagehide', () => lock());
@@ -443,16 +416,16 @@
     try {
       const response = await request('/api/admin/session');
       if (activeSession !== session) return;
-      if (response.status === 401) return;
+      if (response.status === 401) return window.location.replace('/login');
       if (!response.ok) throw new Error('SESSION_UNAVAILABLE');
       const result = await response.json();
-      if (activeSession !== session || result.authenticated !== true) return;
+      if (activeSession !== session) return;
+      if (result.authenticated !== true) return window.location.replace('/login');
       signedIn = true;
       window.VoltronixNav?.updateUser(result);
-      el('login-panel').hidden = true;
       el('lock').hidden = false;
       await load();
-    } catch { if (activeSession === session) feedback('Unable to check your session. Please sign in.'); }
+    } catch { if (activeSession === session) feedback('Unable to check your session. Please reload the page to retry.'); }
   }
   window.addEventListener('pageshow', event => { if (event.persisted) restoreSession(); });
   try {

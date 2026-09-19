@@ -85,13 +85,7 @@ test('duplicate check follows all pages and rejects provider errors', async () =
   } });
   assert.equal((await client.checkDuplicateBill({ billNumber: 'INV-100', vendorId: 'v1' })).found, true); assert.deepEqual(pages, [1, 2]);
 });
-test('chart of accounts read maps name, ID, type and status without a write method', async () => {
-  const client = createZohoBooksClient({ ...credentials, env: {}, http: {
-    async post() { return { data: { access_token: 'synthetic', expires_in: 3600 } }; },
-    async get(url, options) {
-      assert.ok(url.endsWith('/chartofaccounts')); assert.equal(options.params.organization_id, 'org1');
-      return { data: { code: 0, chartofaccounts: [{ account_id: 'a1', account_name: 'Site expenses', account_type: 'expense', is_active: true }], page_context: { has_more_page: false } } };
-    },
-  } });
-  assert.deepEqual(await client.listChartOfAccounts(), [{ accountName: 'Site expenses', accountId: 'a1', accountType: 'expense', accountStatus: 'active' }]);
+test('Books client has no obsolete Chart of Accounts integration', () => {
+  const client = createZohoBooksClient({ ...credentials, env: {} });
+  assert.equal(client.listChartOfAccounts, undefined);
 });

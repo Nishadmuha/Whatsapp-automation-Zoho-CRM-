@@ -31,7 +31,8 @@ async function setup(t, { store: suppliedStore, extract, download } = {}) {
   const env = testEnv({ AUTOMATION_ENABLED: 'true', AI_PROVIDER: 'openai',
     META_APP_SECRET: 'synthetic-trigger-signature', WHATSAPP_ACCESS_TOKEN: 'synthetic-trigger-token',
     WHATSAPP_PHONE_NUMBER_ID: PHONE_ID, META_GRAPH_API_VERSION: 'v25.0', AUTHORIZED_BOSS_PHONES: BOSS,
-    OPENAI_API_KEY: 'synthetic-trigger-ai-key', OPENAI_MODEL: 'synthetic-model', WORKER_POLL_MS: '50' });
+    OPENAI_API_KEY: 'synthetic-trigger-ai-key', OPENAI_MODEL: 'synthetic-model', WORKER_POLL_MS: '50',
+    BOSS_REPLY_QUIET_MS: '100' });
   const app = createApp({ env, store, logger });
   await app.locals.ready;
   const { config, triggerGate } = app.locals;
@@ -260,6 +261,8 @@ test('each fresh text, image and voice message merges into one draft and explici
   assert.equal((await h.store.listLeads()).total, 0);
   assert.equal((await h.store.getMessage('image-fact')).extracted_text, 'Contact person is Ahmed');
   assert.equal((await h.store.getMessage('voice-fact')).transcription, 'Quantity is 5');
+  await h.poll();
+  assert.deepEqual(h.sends.map(reply => reply.text), [CONFIRMATION_REPLY]);
   const save = h.message('fresh-confirmation', 'Save it');
   await h.post(envelope([save]));
   await h.process();
@@ -269,7 +272,7 @@ test('each fresh text, image and voice message merges into one draft and explici
   assert.deepEqual(h.calls, ['Al Noor Contracting', 'Contact person is Ahmed', 'Quantity is 5']);
   assert.deepEqual(h.downloads, ['10001', '10002']);
   assert.deepEqual(h.analyses, ['image', 'audio']);
-  assert.deepEqual(h.sends.map(reply => reply.text), [CONFIRMATION_REPLY, CONFIRMATION_REPLY, CONFIRMATION_REPLY, SAVED_REPLY]);
+  assert.deepEqual(h.sends.map(reply => reply.text), [CONFIRMATION_REPLY, SAVED_REPLY]);
   const leads = await h.store.listLeads();
   assert.equal(leads.total, 1);
   assert.equal(leads.items[0].quantity, '5');

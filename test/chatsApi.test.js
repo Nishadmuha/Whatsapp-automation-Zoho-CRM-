@@ -240,13 +240,14 @@ test('database failures return safe errors and chat APIs retain rate limiting', 
 
 test('chat shell and local assets contain no private data, inline scripts or external resources', async t => {
   const h = await backend(t);
-  const response = await h.request('/admin/chats', null);
+  const guest = await h.request('/admin/chats', null);
+  assert.equal(new URL(guest.url).pathname, '/login');
+  const response = await h.request('/admin/chats');
   const html = await response.text();
   assert.equal(response.status, 200);
   assert.match(html, /id="workspace"[^>]*hidden/);
   assert.match(html, /src="\/admin\/chats\.js" defer/);
-  assert.match(html, /id="username"/);
-  assert.match(html, /id="password"/);
+  assert.doesNotMatch(html, /id="(?:login-panel|login-form|username|password)"/);
   assert.doesNotMatch(html, /<script\b[^>]*>(?!\s*<\/script>)[\s\S]*?<\/script>|on(?:click|load)=|https?:\/\//i);
   assert.match(response.headers.get('content-security-policy'), /script-src 'self'/);
   assert.equal(response.headers.get('cache-control'), 'no-store');

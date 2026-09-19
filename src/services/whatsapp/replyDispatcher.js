@@ -3,9 +3,11 @@
 // Shared outbox delivery keeps the same failure and reconciliation guarantees
 // for the fixed reply flow and the preserved lead-processing code.
 function createReplyDispatcher({ store, whatsapp, config, logger, replyText = null, processingFlow = null, triggerGate,
+  bossReplyQuietMs = 0,
   canSendReply = (reply) => config.allowedSenders.has(reply.sender_phone) }) {
   async function processNextReply() {
     const reply = await store.claimReply({ leaseMs: config.leaseMs,
+      ...(bossReplyQuietMs ? { bossReplyQuietMs } : {}),
       ...(triggerGate ? { messageIds: triggerGate.messageIds() } : {}),
       ...(replyText === null ? {} : { replyText }), ...(processingFlow === null ? {} : { processingFlow }) });
     if (!reply) return false;

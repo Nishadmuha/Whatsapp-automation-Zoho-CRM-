@@ -9,7 +9,6 @@
     interactive: 'Interactive message', button: 'Button response', reaction: 'Reaction', unsupported: 'Media / unsupported message' };
   const types = { boss_lead: 'Boss lead intake', conversation: 'Customer chat', other: 'WhatsApp chat' };
   let signedIn = false;
-  let loginPending = false;
   let logoutPending = false;
   let session = 0;
   let listing = 0;
@@ -67,8 +66,6 @@
     signedIn = false;
     session++;
     listing++;
-    el('password').value = '';
-    el('login-panel').hidden = false;
     el('workspace').hidden = true;
     el('lock').hidden = true;
     el('conversation-list').replaceChildren();
@@ -92,7 +89,11 @@
     const activeSession = session;
     const response = await request('/api/chats' + path);
     if (activeSession !== session) throw new Error('SESSION_CHANGED');
-    if (response.status === 401) { lock('Session expired. Please sign in again.'); throw new Error('SESSION_CHANGED'); }
+    if (response.status === 401) {
+      lock('Session expired. Please sign in again.');
+      window.location.replace('/login');
+      throw new Error('SESSION_CHANGED');
+    }
     if (!response.ok) throw new Error(failureMessage(response.status));
     const data = await response.json();
     if (activeSession !== session) throw new Error('SESSION_CHANGED');
@@ -166,7 +167,6 @@
       el('page-label').textContent = result.total ? `${result.total} conversations · Page ${page} of ${totalPages}` : '0 conversations';
       el('previous').disabled = page <= 1;
       el('next').disabled = page >= totalPages;
-      el('login-panel').hidden = true;
       el('workspace').hidden = false;
       el('lock').hidden = false;
       feedback();
@@ -362,36 +362,6 @@
       }
     }
   }
-  el('login-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    if (loginPending || logoutPending) return;
-    const credentials = { username: el('username').value.trim(), password: el('password').value };
-    el('password').value = '';
-    const activeSession = ++session;
-    loginPending = true;
-    el('login-submit').disabled = true;
-    feedback('Signing in…');
-    try {
-      const response = await request('/api/admin/login', { method: 'POST', body: credentials });
-      if (activeSession !== session) return;
-      if (response.status === 401) { feedback('Incorrect username or password.'); return; }
-      if (!response.ok) { feedback(failureMessage(response.status)); return; }
-      const result = await response.json();
-      if (activeSession !== session) return;
-      if (result.authenticated !== true) throw new Error('LOGIN_FAILED');
-      signedIn = true;
-      el('login-panel').hidden = true;
-      el('lock').hidden = false;
-      try {
-        if (typeof window !== 'undefined' && window.VoltronixNav && result) {
-          window.VoltronixNav.updateUser(result);
-        }
-      } catch { /* optional contact metadata */ }
-      page = 1;
-      load();
-    } catch { if (activeSession === session) feedback('Unable to sign in. Please try again.'); }
-    finally { loginPending = false; el('login-submit').disabled = logoutPending; }
-  });
   el('filters').addEventListener('submit', event => { event.preventDefault(); search = el('search').value; page = 1; clearHistory(); load(); });
   el('previous').addEventListener('click', () => { if (page > 1) { page--; clearHistory(); load(); } });
   el('next').addEventListener('click', () => { if (page < totalPages) { page++; clearHistory(); load(); } });
@@ -433,15 +403,14 @@
     if (logoutPending) return;
     logoutPending = true;
     lock();
-    el('username').value = '';
-    el('login-submit').disabled = true;
     const activeSession = session;
     try {
       const response = await request('/api/admin/logout', { method: 'POST', body: {} });
       if (!response.ok) throw new Error('LOGOUT_FAILED');
+      if (activeSession === session) window.location.replace('/login');
     } catch {
       if (activeSession === session) { feedback('Sign out could not be confirmed. Please retry signing out.'); el('lock').hidden = false; }
-    } finally { logoutPending = false; el('login-submit').disabled = loginPending; }
+    } finally { logoutPending = false; }
   });
 
   // AI Smart Replies & Profile action handlers
@@ -472,12 +441,12 @@
     try {
       const response = await request('/api/admin/session');
       if (activeSession !== session) return;
-      if (response.status === 401) return;
+      if (response.status === 401) return window.location.replace('/login');
       if (!response.ok) throw new Error('SESSION_UNAVAILABLE');
       const result = await response.json();
-      if (activeSession !== session || result.authenticated !== true) return;
+      if (activeSession !== session) return;
+      if (result.authenticated !== true) return window.location.replace('/login');
       signedIn = true;
-      el('login-panel').hidden = true;
       el('lock').hidden = false;
       try {
         if (typeof window !== 'undefined' && window.VoltronixNav && result) {
@@ -485,7 +454,7 @@
         }
       } catch { /* optional logout confirmation */ }
       await load();
-    } catch { if (activeSession === session) feedback('Unable to check your session. Please sign in.'); }
+    } catch { if (activeSession === session) feedback('Unable to check your session. Please reload the page to retry.'); }
   }
   window.addEventListener('pageshow', event => { if (event.persisted) restoreSession(); });
 

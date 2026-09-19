@@ -20,7 +20,7 @@ class Element {
 }
 
 function response(data, status = 200) { return { status, ok: status >= 200 && status < 300, async json() { return data; } }; }
-async function dashboard(fetch, { sessionAuthenticated = false, loginStatus = 200, logoutStatus = 200, logoutGate, search = '' } = {}) {
+async function dashboard(fetch, { sessionAuthenticated = true, logoutStatus = 200, logoutGate, search = '' } = {}) {
   const [html, script] = await Promise.all(['leads.html', 'leads.js'].map(file => file.endsWith('.html') ? renderAdminPage('leads') : fs.readFile(path.resolve(__dirname, '../src/admin', file), 'utf8')));
   const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map(match => [match[1], new Element()]));
   elements.get('workspace').hidden = true;
@@ -32,12 +32,11 @@ async function dashboard(fetch, { sessionAuthenticated = false, loginStatus = 20
   };
   Object.defineProperty(document, 'cookie', { get() { throw new Error('Cookie access is forbidden'); }, set() { throw new Error('Cookie storage is forbidden'); } });
   const window = new Element();
-  window.location = { search };
+  window.location = { search, replace(path) { this.href = path; } };
   const requests = [];
   const context = { document, window, URLSearchParams, async fetch(url, options) {
     requests.push({ url, options });
     if (url === '/api/admin/session') return response({ authenticated: sessionAuthenticated });
-    if (url === '/api/admin/login') return response({ authenticated: loginStatus === 200, username: 'synthetic.operator' }, loginStatus);
     if (url === '/api/admin/logout') { await logoutGate; return response({ authenticated: false }, logoutStatus); }
     return fetch(url, options);
   } };
@@ -48,13 +47,7 @@ async function dashboard(fetch, { sessionAuthenticated = false, loginStatus = 20
   return { el: id => elements.get(id), tags, window, requests, html };
 }
 async function settled() { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); }
-function signIn(h) {
-  h.el('username').value = 'synthetic.operator';
-  h.el('password').value = 'synthetic-test-password';
-  h.el('login-form').dispatch('submit');
-}
-
-test('dashboard signs in once with credentials in a JSON body and renders untrusted lead content as text', async () => {
+test('dashboard reuses the admin session without a second login and renders untrusted lead content as text', async () => {
   const injected = '<img src=x onerror="globalThis.injected=true">';
   const lead = { id: '346770a3-ef6b-4d87-bf45-54a64246a17a', company_name: injected, contact_name: 'Synthetic contact',
     phone: '+971501234567', conversation_id: '+971551234567', address: 'Business Bay ' + injected, trn_no: '104249196700003',
@@ -68,12 +61,9 @@ test('dashboard signs in once with credentials in a JSON body and renders untrus
     return { status: 200, ok: true, async json() { return result; } };
   });
   assert.deepEqual(h.requests.map(request => request.url), ['/api/admin/session']);
-  assert.match(h.html, /id="username"[^>]*autocomplete="username"/);
-  assert.match(h.html, /id="password"[^>]*autocomplete="current-password"/);
+  assert.doesNotMatch(h.html, /id="(?:login-panel|login-form|username|password)"/);
   assert.match(h.html, /rel="icon" href="\/favicon.svg"/);
   assert.doesNotMatch(h.html, /id="token"|Admin access token|synthetic-test-password/);
-  signIn(h);
-  assert.equal(h.el('password').value, '');
   await settled();
   assert.equal(h.el('workspace').hidden, false);
   assert.match(h.el('lead-rows').textContent, /<img src=x/);
@@ -92,10 +82,7 @@ test('dashboard signs in once with credentials in a JSON body and renders untrus
   assert.equal(h.tags.includes('img'), false);
   assert.equal(h.tags.includes('script'), false);
   const logins = h.requests.filter(request => request.url === '/api/admin/login');
-  assert.equal(logins.length, 1);
-  assert.equal(logins[0].options.method, 'POST');
-  assert.deepEqual(JSON.parse(logins[0].options.body), { username: 'synthetic.operator', password: 'synthetic-test-password' });
-  assert.equal(logins[0].options.headers['Content-Type'], 'application/json');
+  assert.equal(logins.length, 0);
   for (const { url, options } of h.requests) {
     assert.ok(url.startsWith('/api/leads') || url.startsWith('/api/admin/'));
     assert.equal(url.includes('synthetic-test-password'), false);
@@ -115,6 +102,7 @@ test('dashboard signs in once with credentials in a JSON body and renders untrus
   assert.equal(logout.url, '/api/admin/logout');
   assert.equal(logout.options.method, 'POST');
   assert.deepEqual(JSON.parse(logout.options.body), {});
+  assert.equal(h.window.location.href, '/login');
 });
 
 test('lead detail refuses external or injected conversation links', async () => {
@@ -158,9 +146,6 @@ test('chat lead links open the specific saved lead after authentication even out
       : { id, company_name: 'Linked company', email: 'procurement@example.test', notes: injected }),
   { search: '?lead=' + id });
   await settled();
-  assert.deepEqual(h.requests.map(({ url }) => url), ['/api/admin/session']);
-  signIn(h);
-  await settled();
   assert.equal(h.el('detail').open, true);
   assert.equal(h.el('detail-title').textContent, 'Linked company');
   assert.ok(h.el('detail-content').textContent.includes(injected));
@@ -191,7 +176,6 @@ test('signing out clears the dashboard immediately and invalidates late lead res
       ? { total: 1, valid: 1, incomplete: 0, zoho_pending: 1 }
       : { items: [{ id: 'test', company_name: 'late-private-company' }], total: 1, page: 1, total_pages: 1 }; } };
   });
-  signIn(h);
   await settled();
   assert.equal(h.requests.some(request => request.url.startsWith('/api/leads')), true);
   h.el('lock').dispatch('click');
@@ -200,19 +184,15 @@ test('signing out clears the dashboard immediately and invalidates late lead res
   assert.equal(h.el('workspace').hidden, true);
   assert.equal(h.el('lead-rows').textContent, '');
   assert.equal(h.el('stat-total').textContent, '—');
-  assert.equal(h.el('password').value, '');
+  assert.equal(h.window.location.href, '/login');
   assert.equal(h.requests.some(request => request.url === '/api/admin/logout'), true);
 });
 
-test('incorrect credentials show a safe login error without requesting lead data', async () => {
-  const h = await dashboard(async () => { throw new Error('Lead data should not be requested'); }, { loginStatus: 401 });
-  signIn(h);
+test('missing sessions redirect to the dedicated login without requesting lead data', async () => {
+  const h = await dashboard(async () => { throw new Error('Lead data should not be requested'); }, { sessionAuthenticated: false });
   await settled();
   assert.equal(h.el('workspace').hidden, true);
-  assert.equal(h.el('login-panel').hidden, false);
-  assert.equal(h.el('password').value, '');
-  assert.equal(h.el('login-submit').disabled, false);
-  assert.equal(h.el('feedback').textContent, 'Incorrect username or password.');
+  assert.equal(h.window.location.href, '/login');
   assert.equal(h.requests.some(request => request.url.startsWith('/api/leads')), false);
 });
 
@@ -221,7 +201,7 @@ test('a saved server session restores dashboard access on reload without resendi
     : { items: [], total: 0, page: 1, total_pages: 0 }), { sessionAuthenticated: true });
   await settled();
   assert.equal(h.el('workspace').hidden, false);
-  assert.equal(h.el('login-panel').hidden, true);
+  assert.equal(h.window.location.href, undefined);
   assert.equal(h.requests.some(request => request.url === '/api/admin/login'), false);
   assert.equal(h.requests.every(request => request.options.body === undefined), true);
 });
@@ -230,12 +210,12 @@ test('an expired session clears private results and asks the operator to sign in
   const h = await dashboard(async () => response({}, 401), { sessionAuthenticated: true });
   await settled();
   assert.equal(h.el('workspace').hidden, true);
-  assert.equal(h.el('login-panel').hidden, false);
+  assert.equal(h.window.location.href, '/login');
   assert.equal(h.el('lead-rows').textContent, '');
   assert.equal(h.el('feedback').textContent, 'Session expired. Please sign in again.');
 });
 
-test('logout failures remain visible and block a new login until logout has finished', async () => {
+test('logout failures remain visible and duplicate logout is blocked until the first finishes', async () => {
   let release;
   const gate = new Promise(resolve => { release = resolve; });
   const h = await dashboard(async url => response(url.endsWith('/stats') ? { total: 0, valid: 0, incomplete: 0, zoho_pending: 0 }
@@ -243,13 +223,13 @@ test('logout failures remain visible and block a new login until logout has fini
   await settled();
   h.el('lock').dispatch('click');
   assert.equal(h.el('workspace').hidden, true);
-  assert.equal(h.el('login-submit').disabled, true);
-  signIn(h);
-  assert.equal(h.requests.some(request => request.url === '/api/admin/login'), false);
+  h.el('lock').dispatch('click');
+  assert.equal(h.requests.filter(request => request.url === '/api/admin/logout').length, 1);
+  assert.equal(h.window.location.href, undefined);
   release();
   await settled();
   assert.equal(h.el('lock').hidden, false);
-  assert.equal(h.el('login-submit').disabled, false);
+  assert.equal(h.window.location.href, undefined);
   assert.match(h.el('feedback').textContent, /Sign out could not be confirmed/);
 });
 
@@ -264,7 +244,6 @@ test('dashboard search and status filters combine with pagination and reset the 
       page: Number(query.get('page')), page_size: Number(query.get('page_size')), total_pages: Math.ceil(55 / Number(query.get('page_size'))),
     }; } };
   });
-  signIn(h);
   await settled();
   h.el('search').value = 'Al Noor & Sons %_';
   h.el('validation').value = 'incomplete';

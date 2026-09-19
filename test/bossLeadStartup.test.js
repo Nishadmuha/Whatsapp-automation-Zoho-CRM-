@@ -23,7 +23,6 @@ test(extractionFails
     const assert = require('node:assert/strict');
     const Module = require('node:module');
     const path = require('node:path');
-    const net = require('node:net');
     const { once } = require('node:events');
     const { createHmac } = require('node:crypto');
     const root = process.argv[1];
@@ -40,6 +39,7 @@ test(extractionFails
     const forbiddenProcessor = path.join(root, 'services/leads/leadProcessor.js');
     const aiModule = path.join(root, 'services/ai/aiService.js');
     const whatsappModule = path.join(root, 'services/whatsapp/whatsappService.js');
+    const configModule = path.join(root, 'config/env.js');
     let aiFactories = 0;
     let whatsappFactories = 0;
     let forbiddenLoads = 0;
@@ -57,6 +57,10 @@ test(extractionFails
         throw new Error('Unexpected legacy lead or Zoho module load');
       }
       const loaded = originalLoad.apply(this, arguments);
+      // Let the OS bind an unused port atomically, without a reserve/release
+      // race against other test servers running in parallel.
+      if (filename === configModule) return { ...loaded,
+        readConfig: (...args) => ({ ...loaded.readConfig(...args), port: 0 }) };
       if (filename === aiModule) return { ...loaded, createAiService() {
         aiFactories++;
         return {
@@ -103,11 +107,6 @@ test(extractionFails
       return loaded;
     };
     (async () => {
-      const reserved = net.createServer();
-      reserved.listen(0, '127.0.0.1');
-      await once(reserved, 'listening');
-      process.env.PORT = String(reserved.address().port);
-      await new Promise((resolve, reject) => reserved.close(error => error ? reject(error) : resolve()));
       const { startServer } = require(path.join(root, 'server.js'));
       const { createMessageStore } = require(path.join(root, 'database'));
       const server = await startServer();
@@ -162,7 +161,7 @@ test(extractionFails
         await new Promise(resolve => setTimeout(resolve, 150));
         assert.deepEqual(generationCalls, [customerText]);
         assert.deepEqual(extractionCalls, [bossText]);
-        assert.equal(sendCalls.filter(call => /Processing the lead/.test(call.text)).length, 1);
+        assert.equal(sendCalls.filter(call => /Processing the lead/.test(call.text)).length, 0);
         assert.deepEqual(sendCalls.filter(call => !/Processing the lead/.test(call.text)).map(call => call.to).sort(), ['+971551234567', '+971561234567']);
         if (!extractionFails) {
           const confirmation = JSON.parse(body);
@@ -205,6 +204,7 @@ test(extractionFails
       ...process.env,
       NODE_ENV: 'test', HOST: '127.0.0.1', PORT: '5000', NODE_TLS_REJECT_UNAUTHORIZED: '1',
       AUTOMATION_ENABLED: 'true', DATABASE_URL: databaseUrl, MONGODB_URI: '', WORKER_POLL_MS: '50', WORKER_LEASE_MS: '30000',
+      BOSS_REPLY_QUIET_MS: '100',
       PROCESSING_MAX_ATTEMPTS: '3', WEBHOOK_VERIFY_TOKEN: randomBytes(32).toString('hex'),
       META_APP_SECRET: randomBytes(32).toString('hex'), WHATSAPP_APP_SECRET: '',
       WHATSAPP_ACCESS_TOKEN: 'mock-boss-startup-whatsapp-token', WHATSAPP_PHONE_NUMBER_ID: '1234567890',
