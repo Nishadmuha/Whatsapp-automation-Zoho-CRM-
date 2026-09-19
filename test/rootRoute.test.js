@@ -5,6 +5,7 @@ const { once } = require('node:events');
 const { test } = require('node:test');
 const { createApp } = require('../src/app');
 const { testEnv } = require('./helpers');
+const { SESSION_COOKIE } = require('../src/middleware/adminAuth');
 
 const protectedPages = ['/dashboard', '/overview', '/admin/dashboard', '/admin/overview', '/overview.html', '/admin/overview.html',
   '/leads', '/leads/', '/admin/leads', '/admin/leads/', '/leads.html', '/admin/leads.html',
@@ -99,6 +100,76 @@ test('invalid API endpoint returns JSON 404 Route not found', async t => {
   assert.equal(res.headers.get('content-type')?.includes('application/json'), true);
   const body = await res.json();
   assert.deepEqual(body, { success: false, message: 'Route not found' });
+});
+
+// Keep same-name cookies separated by Path, as a real browser does after an upgrade.
+function browserCookies() {
+  const values = new Map();
+  return {
+    set(path, value) { values.set(path, `${SESSION_COOKIE}=${value}`); },
+    apply(response) {
+      for (const header of response.headers.getSetCookie()) {
+        const path = /; Path=([^;]+)/.exec(header)?.[1];
+        if (!header.startsWith(SESSION_COOKIE + '=') || !path) continue;
+        if (/; Max-Age=0(?:;|$)|; Expires=Thu, 01 Jan 1970/i.test(header)) values.delete(path);
+        else values.set(path, header.split(';')[0]);
+      }
+    },
+    headers(path) {
+      const Cookie = [...values].filter(([prefix]) => path === prefix || path.startsWith(prefix.endsWith('/') ? prefix : prefix + '/'))
+        .sort((a, b) => b[0].length - a[0].length).map(([, value]) => value).join('; ');
+      return Cookie ? { Cookie } : {};
+    },
+  };
+}
+
+test('login removes legacy /api cookies so HTML and API agree after deployment', async t => {
+  const { base, adminUser, adminPass } = await createTestServer(t);
+  const jar = browserCookies();
+  jar.set('/api', 'a'.repeat(64));
+  const login = await fetch(base + '/api/admin/login-admin', {
+    method: 'POST', headers: { ...jar.headers('/api/admin/login-admin'), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: adminUser, password: adminPass }),
+  });
+  assert.equal(login.status, 200);
+  jar.apply(login);
+  assert.equal((await fetch(base + '/dashboard', { headers: jar.headers('/dashboard'), redirect: 'manual' })).status, 200);
+  const session = await fetch(base + '/api/admin/session', { headers: jar.headers('/api/admin/session') });
+  assert.equal((await session.json()).authenticated, true);
+});
+
+test('ambiguous cookies fail closed and are cleared so login cannot bounce back to dashboard', async t => {
+  const { base, adminUser, adminPass } = await createTestServer(t);
+  const jar = browserCookies();
+  jar.apply(await fetch(base + '/api/admin/login-admin', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: adminUser, password: adminPass }),
+  }));
+  // A pre-upgrade browser may already have both cookies before loading any page.
+  jar.set('/api', 'b'.repeat(64));
+  assert.equal((await fetch(base + '/dashboard', { headers: jar.headers('/dashboard'), redirect: 'manual' })).status, 200);
+  assert.equal((await fetch(base + '/api/leads', { headers: jar.headers('/api/leads') })).status, 401);
+  const session = await fetch(base + '/api/admin/session', { headers: jar.headers('/api/admin/session') });
+  assert.deepEqual(await session.json(), { authenticated: false });
+  jar.apply(session);
+  const login = await fetch(base + '/login', { headers: jar.headers('/login'), redirect: 'manual' });
+  assert.equal(login.status, 200, 'Invalid API session must end at login, not redirect to the authenticated dashboard again');
+  assert.match(await login.text(), /id="login-form"/);
+  assert.deepEqual(jar.headers('/api/admin/session'), {});
+});
+
+test('logout expires both current and legacy cookie paths', async t => {
+  const { base, adminUser, adminPass } = await createTestServer(t);
+  const jar = browserCookies();
+  jar.apply(await fetch(base + '/api/admin/login-admin', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: adminUser, password: adminPass }),
+  }));
+  jar.set('/api', 'c'.repeat(64));
+  const logout = await fetch(base + '/api/admin/logout', { method: 'POST', headers: jar.headers('/api/admin/logout') });
+  assert.equal(logout.status, 200);
+  jar.apply(logout);
+  assert.deepEqual(jar.headers('/api/admin/session'), {});
 });
 
 test('admin login and authentication cycle works as expected', async t => {

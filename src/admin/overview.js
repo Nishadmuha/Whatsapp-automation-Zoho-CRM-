@@ -13,7 +13,7 @@
 
   function fetchJson(path) {
     return fetch(path, { credentials: 'same-origin', cache: 'no-store' }).then(response => {
-      if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+      if (!response.ok) throw Object.assign(new Error(`Request failed: ${response.status}`), { status: response.status });
       return response.json();
     });
   }
@@ -184,15 +184,32 @@
   }
 
   async function checkSession() {
+    const feedback = el('overview-feedback');
+    if (feedback) { feedback.textContent = ''; feedback.hidden = true; }
     try {
       const body = await fetchJson('/api/admin/session');
-      if (!body.authenticated) return window.location.href = '/login';
+      if (body?.authenticated === false) {
+        window.location.replace('/login');
+        return false;
+      }
+      if (body?.authenticated !== true) throw new Error('SESSION_UNAVAILABLE');
       setText('topbar-username', body.username || 'Admin User');
       setText('setting-val-user', body.username || 'Admin User');
       setText('setting-val-role', (body.roles || [body.role]).filter(Boolean).join(', ').toUpperCase());
       window.VoltronixNav?.updateUser(body);
       await loadLiveMetrics();
-    } catch { window.location.href = '/login'; }
+      return true;
+    } catch (error) {
+      if (error.status === 401) {
+        window.location.replace('/login');
+      } else if (feedback) {
+        // Network/server/rendering errors are not evidence of an expired
+        // session. Redirecting here sends valid users straight back again.
+        feedback.textContent = 'Unable to load the dashboard. Use Force Sync to retry.';
+        feedback.hidden = false;
+      }
+      return false;
+    }
   }
 
   const forceSyncBtn = el('btn-force-sync');
@@ -200,7 +217,11 @@
     const originalText = forceSyncBtn.innerHTML;
     forceSyncBtn.disabled = true;
     forceSyncBtn.textContent = 'SYNCING…';
-    await loadLiveMetrics();
+    if (!await checkSession()) {
+      forceSyncBtn.innerHTML = originalText;
+      forceSyncBtn.disabled = false;
+      return;
+    }
     forceSyncBtn.textContent = 'SYNCED ✓';
     setTimeout(() => { forceSyncBtn.innerHTML = originalText; forceSyncBtn.disabled = false; }, 2000);
   });
