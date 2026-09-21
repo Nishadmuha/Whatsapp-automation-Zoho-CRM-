@@ -302,6 +302,7 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
 
 function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGate, zoho }) {
   const service = createLeadService({ store, ai, config, resolveMessageContent: async (job, { assertLease }) => {
+    if (job.batch_unreadable) throw new Error('Unreadable media batch.');
     const { resolveLeadMessageContent } = require('./leadMedia');
     return resolveLeadMessageContent({ message: job, whatsapp, ai, assertActive: assertLease, store });
   } });
@@ -315,41 +316,102 @@ function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGa
 
   async function processIncomingWhatsAppMessage(job) {
     if (!active()) return;
-    const id = job.message_id || job.whatsapp_message_id;
-    if (triggerGate && !triggerGate.beginProcessing(id)) {
+    let batchItems = job.batch_items || [job];
+    const anchorClaim = batchItems.at(-1);
+    const id = anchorClaim.message_id || anchorClaim.whatsapp_message_id;
+    if (triggerGate && !batchItems.every(item => {
+      const itemId = item.message_id || item.whatsapp_message_id;
+      const started = triggerGate.beginProcessing(itemId);
+      return started;
+    })) {
       log('info', 'ai_trigger_ignored', id, { reason: 'inactive_or_already_processed' });
       return;
     }
-    let token = job.lease_token;
+    let token = anchorClaim.lease_token;
     let leaseLost = false;
     let renewal;
     async function renewLease() {
       try {
-        if (!(await store.heartbeatLeadExtraction(id, token, config.leaseMs))) leaseLost = true;
+        const renewed = await Promise.all(batchItems.map(item =>
+          store.heartbeatLeadExtraction(item.message_id || item.whatsapp_message_id, item.lease_token, config.leaseMs)));
+        if (renewed.some(value => !value)) leaseLost = true;
       } catch { leaseLost = true; }
     }
     async function assertLease() {
-      if (!active() || leaseLost || (triggerGate && !triggerGate.allows(id))) throw failure('LEASE_LOST');
-      if (!authorized(job)) throw failure('MESSAGE_NOT_AUTHORIZED');
+      if (!active() || leaseLost || (triggerGate && batchItems.some(item => !triggerGate.allows(item.message_id || item.whatsapp_message_id)))) throw failure('LEASE_LOST');
+      if (batchItems.some(item => !authorized(item))) throw failure('MESSAGE_NOT_AUTHORIZED');
       await renewLease();
-      if (leaseLost || !active() || (triggerGate && !triggerGate.allows(id))) throw failure('LEASE_LOST');
-      if (!authorized(job)) throw failure('MESSAGE_NOT_AUTHORIZED');
+      if (leaseLost || !active() || (triggerGate && batchItems.some(item => !triggerGate.allows(item.message_id || item.whatsapp_message_id)))) throw failure('LEASE_LOST');
+      if (batchItems.some(item => !authorized(item))) throw failure('MESSAGE_NOT_AUTHORIZED');
     }
     try {
-      if (!authorized(job)) throw failure('MESSAGE_NOT_AUTHORIZED');
-      try { token = await store.beginLeadExtractionProcessing(id, token, config.leaseMs); }
+      if (batchItems.some(item => !authorized(item))) throw failure('MESSAGE_NOT_AUTHORIZED');
+      let executionTokens;
+      try {
+        executionTokens = await Promise.all(batchItems.map(item => store.beginLeadExtractionProcessing(
+          item.message_id || item.whatsapp_message_id, item.lease_token, config.leaseMs)));
+      }
       catch { throw Object.assign(failure('LEAD_WORKFLOW_PERSISTENCE_FAILED'), { retryable: true }); }
-      if (!token) throw failure('LEASE_LOST');
+      if (executionTokens.some(value => !value)) throw failure('LEASE_LOST');
+      batchItems = batchItems.map((item, index) => ({ ...item, lease_token: executionTokens[index] }));
+      const anchor = batchItems.at(-1);
+      token = anchor.lease_token;
       // Keep the caller's claim unchanged so replaying that same object cannot
       // inherit this invocation's exclusive execution token.
-      job = { ...job, lease_token: token };
+      job = { ...anchor, lease_token: token };
       await assertLease();
       renewal = setInterval(() => { void renewLease(); }, Math.max(1, Math.floor(config.leaseMs / 3)));
       renewal.unref();
-      log('info', 'boss_lead_processing_started', id, { attempt: job.attempts });
+      log('info', 'boss_lead_processing_started', id, { attempt: job.attempts, batch_size: batchItems.length });
+
+      let failedMessageIds = [];
+      if (batchItems.length > 1) {
+        const { resolveLeadMessageContent } = require('./leadMedia');
+        const settled = await Promise.allSettled(batchItems.map(async item => {
+          if (item.message_type === 'text') return { text: item.message_text || '' };
+          const content = await resolveLeadMessageContent({ message: item, whatsapp, ai, assertActive: assertLease, store });
+          const media = {
+            transcription: content.transcription ?? (item.message_type === 'audio' ? content.text : null),
+            extractedText: content.extractedText ?? (item.message_type === 'audio' ? null : content.text),
+            storageReference: content.storageReference ?? item.storage_reference ?? null,
+            storageUrl: content.storageUrl ?? item.storage_url ?? null,
+          };
+          if (!(await store.checkpointLeadMedia(item.message_id || item.whatsapp_message_id, item.lease_token, media))) {
+            throw failure('LEASE_LOST');
+          }
+          return { text: content.text };
+        }));
+        const chunks = [];
+        for (let index = 0; index < settled.length; index += 1) {
+          const outcome = settled[index];
+          if (outcome.status === 'fulfilled' && outcome.value.text?.trim()) chunks.push(outcome.value.text.trim());
+          else {
+            const failedItem = batchItems[index];
+            failedMessageIds.push(failedItem.message_id || failedItem.whatsapp_message_id);
+            if (failedItem.message_text?.trim()) chunks.push(failedItem.message_text.trim());
+          }
+        }
+        job = chunks.length
+          ? { ...job, message_type: 'text', message_text: chunks.join('\n') }
+          : { ...job, batch_unreadable: true };
+      }
+
       const { result, validation, state, kind, leadId } = await service.saveIncomingLead(job, { assertLease, maxAttempts: triggerGate ? 1 : config.maxAttempts });
+      const siblingItems = batchItems.slice(0, -1).map(item => ({
+        messageId: item.message_id || item.whatsapp_message_id,
+        leaseToken: item.lease_token,
+      }));
+      if (siblingItems.length) {
+        const session = await store.getActiveLeadSession(job.sender_phone);
+        await store.completeLeadBatchMembers(siblingItems, {
+          result, state, kind, sessionId: session?.id || null,
+          failedMessageIds: failedMessageIds.filter(failedId => failedId !== id),
+        });
+        for (const sibling of siblingItems) triggerGate?.finish(sibling.messageId);
+      }
       log('info', state === 'completed' ? 'boss_lead_saved' : 'boss_conversation_processed', id, {
         is_lead: result.is_lead, session_state: state, message_kind: kind,
+        batch_size: batchItems.length,
         validation_status: result.is_lead ? validation.valid ? 'valid' : 'incomplete' : 'invalid',
       });
       if (state === 'completed' && kind === 'confirmation' && leadId) {
@@ -376,6 +438,15 @@ function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGa
         });
         log('error', persisted ? 'boss_lead_workflow_failed' : 'boss_lead_failure_persistence_failed', id,
           { code, stage, retry_scheduled: persisted && retry });
+        const siblings = batchItems.slice(0, -1).map(item => ({
+          messageId: item.message_id || item.whatsapp_message_id, leaseToken: item.lease_token,
+        }));
+        if (siblings.length) {
+          await store.completeLeadBatchMembers(siblings, {
+            state: 'collecting', kind: 'details', failedMessageIds: siblings.map(item => item.messageId),
+          });
+          for (const sibling of siblings) triggerGate?.finish(sibling.messageId);
+        }
       } catch {
         // A live lease remains recoverable when the database returns. No
         // confirmation can be sent without an atomic durable outbox write.

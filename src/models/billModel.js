@@ -170,6 +170,8 @@ const BillExtractionSchema = new mongoose.Schema({
   last_error: { type: String, default: null },
   result: { type: mongoose.Schema.Types.Mixed, default: null },
   payload: { type: mongoose.Schema.Types.Mixed, default: {} },
+  reply_status: { type: String, default: null },
+  reply_provider_message_id: { type: String, default: null },
 }, {
   timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
   collection: 'bill_extractions',

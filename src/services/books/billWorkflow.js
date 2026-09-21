@@ -92,7 +92,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     await billStore.updateBillSession(session.session_id, { state: REVIEW, bill_data: bill, customer_options: [], last_message_id: incoming.messageId });
     return reply(session, formatInitialReviewPrompt(bill), { state: REVIEW, bill });
   }
-  async function readInput(incoming) {
+  async function readSingleInput(incoming) {
     const media = Boolean(incoming.mediaId || incoming.mediaBuffer || ['image', 'document', 'pdf', 'audio'].includes(incoming.messageType));
     if (!media) return { text: incoming.text || '', attachment: null };
     let buffer = incoming.mediaBuffer;
@@ -112,12 +112,32 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     if (typeof extracted !== 'string' || !extracted.trim()) throw new Error('MEDIA_UNREADABLE');
     return { text: [extracted, incoming.text].filter(Boolean).join('\n'), attachment: { storage_reference: storageReference, original_filename: filename, mime_type: mimeType, media_id: incoming.mediaId, message_id: incoming.messageId } };
   }
+  async function readInput(incoming) {
+    const items = Array.isArray(incoming.items) && incoming.items.length ? incoming.items : [incoming];
+    const settled = await Promise.allSettled(items.map(readSingleInput));
+    const text = [];
+    const attachments = [];
+    const failedMessageIds = [];
+    for (let index = 0; index < settled.length; index += 1) {
+      const outcome = settled[index];
+      if (outcome.status === 'fulfilled') {
+        if (outcome.value.text?.trim()) text.push(outcome.value.text.trim());
+        if (outcome.value.attachment) attachments.push(outcome.value.attachment);
+      } else {
+        failedMessageIds.push(items[index].messageId);
+        if (items[index].text?.trim()) text.push(items[index].text.trim());
+      }
+    }
+    if (!text.length) throw new Error('MEDIA_UNREADABLE');
+    return { text: text.join('\n'), attachment: attachments[0] || null, attachments, failedMessageIds };
+  }
   async function processUnlocked(incoming) {
     if (!incoming.senderPhone) return reply(null, 'Sender phone is required.', { success: false });
     if (config.booksSenders && !config.booksSenders.has(incoming.senderPhone)) return reply(null, null, { success: false, error: { code: 'NOT_AUTHORIZED' } });
     const session = await billStore.getActiveBillSession(incoming.senderPhone);
     const cmd = command(incoming.text);
-    const media = Boolean(incoming.mediaId || incoming.mediaBuffer || ['image', 'document', 'pdf', 'audio'].includes(incoming.messageType));
+    const sourceItems = Array.isArray(incoming.items) && incoming.items.length ? incoming.items : [incoming];
+    const media = sourceItems.some(item => Boolean(item.mediaId || item.mediaBuffer || ['image', 'document', 'pdf', 'audio'].includes(item.messageType)));
     if (session?.last_message_id === incoming.messageId && incoming.messageId) return reply(session, null, { idempotent: true });
     if (session) {
       const existing = await billStore.getBill(session.bill_id);
@@ -163,7 +183,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
         const updates = Object.fromEntries(Object.entries(edited.bill).filter(([field, value]) =>
           value != null && (field !== 'line_items' || value.length > 0)));
         const bill = validateBill(mergeWorkerDetails({ ...session.bill_data, ...updates }, incoming.text)).normalizedBill;
-        const attachments = [...(session.attachments || []), ...(input.attachment ? [input.attachment] : [])];
+        const attachments = [...(session.attachments || []), ...(input.attachments || (input.attachment ? [input.attachment] : []))];
         await billStore.updateBill(session.bill_id, { ...bill, attachments, status: 'PENDING_REVIEW' });
         await billStore.updateBillSession(session.session_id, { state: REVIEW, bill_data: bill, attachments, last_message_id: incoming.messageId });
         return reply(session, formatInitialReviewPrompt(bill), { state: REVIEW, bill });
@@ -178,8 +198,8 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       for (const [field, evidence] of Object.entries(extracted.grounding || {})) {
         if (evidence === 'inferred') grounded[field] = field === 'line_items' ? [] : null;
       }
-      const bill = validateBill(mergeWorkerDetails(mergeWorkerDetails(grounded, input.text, parseWorkerDetails(input.text, { allowShorthand: false })), incoming.text, parseWorkerDetails(incoming.text))).normalizedBill;
-      const attachments = input.attachment ? [input.attachment] : [];
+      const bill = validateBill(mergeWorkerDetails(mergeWorkerDetails(grounded, input.text, parseWorkerDetails(input.text, { allowShorthand: false })), input.text, parseWorkerDetails(input.text))).normalizedBill;
+      const attachments = input.attachments || (input.attachment ? [input.attachment] : []);
       const draft = { session_id: randomUUID(), bill_id: randomUUID(), worker_phone: incoming.senderPhone, state: REVIEW, last_message_id: incoming.messageId, bill_data: bill, attachments };
       await billStore.createBillSession(draft);
       await billStore.saveBill({ ...bill, bill_id: draft.bill_id, session_id: draft.session_id, worker_phone: draft.worker_phone, source_message_id: incoming.messageId, attachments, status: 'PENDING_REVIEW' });
