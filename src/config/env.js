@@ -104,6 +104,7 @@ function readConfig(env = process.env) {
     allowedSenders: new Set(allowedSenders.map((s) => `+${s.replace(/^\+/, '')}`)),
     bossSenders: new Set(bossSenders),
     bossReplyQuietMs: integer(env.BOSS_REPLY_QUIET_MS, 5000, 1, 60000, 'BOSS_REPLY_QUIET_MS'),
+    messageBatchQuietMs: integer(env.MESSAGE_BATCH_QUIET_MS, env.BOSS_REPLY_QUIET_MS || 5000, 100, 60000, 'MESSAGE_BATCH_QUIET_MS'),
     booksSenders: new Set(booksSenders),
     port: integer(env.PORT, 5000, 1, 65535, 'PORT'),
     host: env.HOST || (production ? '0.0.0.0' : '127.0.0.1'),

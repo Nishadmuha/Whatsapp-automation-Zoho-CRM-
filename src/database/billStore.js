@@ -152,6 +152,8 @@ class BillStore {
       lease_token: null,
       lease_until: null,
       last_error: null,
+      reply_status: null,
+      reply_provider_message_id: null,
       payload: payload || {},
       result: null,
       created_at: now,
@@ -170,10 +172,18 @@ class BillStore {
     }
   }
 
-  async claimBillExtraction({ leaseMs = 120000, maxAttempts = null, workerPhone = null } = {}) {
+  async claimBillExtraction({ leaseMs = 120000, maxAttempts = null, workerPhone = null,
+    batchQuietMs = 0, batchBoundary = null } = {}) {
+    if (!Number.isInteger(batchQuietMs) || batchQuietMs < 0 || batchQuietMs > 60000) {
+      throw new BillStoreError('INVALID_INPUT', 'batchQuietMs is invalid.');
+    }
+    if (batchBoundary !== null && typeof batchBoundary !== 'function') {
+      throw new BillStoreError('INVALID_INPUT', 'batchBoundary is invalid.');
+    }
     const now = new Date();
 
     const candidateFilter = {
+      reply_status: null,
       $expr: { $lt: ['$attempts', '$max_attempts'] },
       $or: [
         { status: 'PENDING' },
@@ -196,7 +206,45 @@ class BillStore {
       .limit(10)
       .toArray();
 
+    const deferredWorkers = new Set();
     for (const candidate of candidates) {
+      if (deferredWorkers.has(candidate.worker_phone)) continue;
+      let batchCandidates = [candidate];
+      if (batchQuietMs > 0) {
+        const sameWorker = candidates.filter(item => item.worker_phone === candidate.worker_phone);
+        const start = sameWorker.findIndex(item => item.job_id === candidate.job_id);
+        let closedByBoundary = false;
+        if (!batchBoundary?.(candidate.payload || {})) {
+          batchCandidates = [];
+          for (const item of sameWorker.slice(start)) {
+            const previous = batchCandidates.at(-1);
+            if (previous && new Date(item.created_at).getTime() - new Date(previous.created_at).getTime() >= batchQuietMs) {
+              closedByBoundary = true;
+              break;
+            }
+            if (batchCandidates.length && batchBoundary?.(item.payload || {})) {
+              closedByBoundary = true;
+              break;
+            }
+            batchCandidates.push(item);
+          }
+          const newestCreated = Math.max(...batchCandidates.map(item => new Date(item.created_at).getTime()));
+          if (!closedByBoundary && now.getTime() - newestCreated < batchQuietMs) {
+            deferredWorkers.add(candidate.worker_phone);
+            continue;
+          }
+        }
+
+        const active = await this.col('bill_extractions').countDocuments({
+          worker_phone: candidate.worker_phone,
+          status: 'PROCESSING',
+          lease_until: { $gt: now },
+        });
+        if (active) {
+          deferredWorkers.add(candidate.worker_phone);
+          continue;
+        }
+      }
       const leaseToken = randomUUID();
       const leaseUntil = new Date(Date.now() + leaseMs);
 
@@ -221,8 +269,31 @@ class BillStore {
 
       const job = claimed?.value || claimed;
       if (job) {
-        return cleanDoc(job);
+        const batchItems = [cleanDoc(job)];
+        for (const sibling of batchCandidates.slice(1)) {
+          const siblingToken = randomUUID();
+          const siblingClaim = await this.col('bill_extractions').findOneAndUpdate(
+            {
+              job_id: sibling.job_id,
+              status: sibling.status,
+              attempts: sibling.attempts,
+              $expr: { $lt: ['$attempts', '$max_attempts'] },
+            },
+            {
+              $set: {
+                status: 'PROCESSING', lease_token: siblingToken,
+                lease_until: leaseUntil, updated_at: now,
+              },
+              $inc: { attempts: 1 },
+            },
+            { returnDocument: 'after' }
+          );
+          const siblingJob = siblingClaim?.value || siblingClaim;
+          if (siblingJob) batchItems.push(cleanDoc(siblingJob));
+        }
+        return cleanDoc({ ...job, ...(batchQuietMs > 0 ? { batch_items: batchItems } : {}) });
       }
+      if (batchQuietMs > 0) deferredWorkers.add(candidate.worker_phone);
     }
 
     return null;
@@ -273,6 +344,28 @@ class BillStore {
       }
     );
 
+    return res.matchedCount === 1;
+  }
+
+  async reserveBillReply(jobId, leaseToken) {
+    if (!jobId || !leaseToken) return false;
+    const now = new Date();
+    const res = await this.col('bill_extractions').updateOne({
+      job_id: jobId, lease_token: leaseToken, status: 'PROCESSING',
+      lease_until: { $gt: now }, reply_status: null,
+    }, { $set: { reply_status: 'SENDING', updated_at: now } });
+    return res.matchedCount === 1;
+  }
+
+  async finishBillReply(jobId, leaseToken, { status, providerMessageId = null } = {}) {
+    if (!jobId || !leaseToken || !['ACCEPTED', 'FAILED', 'UNKNOWN'].includes(status)) return false;
+    const res = await this.col('bill_extractions').updateOne({
+      job_id: jobId, lease_token: leaseToken, reply_status: 'SENDING',
+    }, { $set: {
+      reply_status: status,
+      reply_provider_message_id: typeof providerMessageId === 'string' ? providerMessageId : null,
+      updated_at: new Date(),
+    } });
     return res.matchedCount === 1;
   }
 

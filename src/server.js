@@ -39,8 +39,10 @@ async function startServer() {
       const { createWhatsAppService } = require('./services/whatsapp/whatsappService');
       const { createWorker } = require('./worker');
       const { createOutgoingMessages } = require('./services/whatsapp/outgoingMessages');
+      const { createAcknowledgementBatcher, isBossBatchBoundary, isBooksBatchBoundary } = require('./services/whatsapp/messageBatching');
       const whatsapp = createWhatsAppService({ logger });
       const outgoingMessages = createOutgoingMessages({ store, whatsapp, config, logger, triggerGate });
+      const acknowledgementBatches = createAcknowledgementBatcher({ quietMs: config.messageBatchQuietMs });
       app.locals.outgoingMessages = outgoingMessages;
       app.locals.whatsapp = whatsapp;
       let billStore = null;
@@ -51,11 +53,15 @@ async function startServer() {
         app.locals.billStore = billStore;
       }
       app.locals.onNewMessage = async (message) => {
-        if (billStore && config.booksSenders?.has(message.senderPhone)) {
+        const isBooks = Boolean(billStore && config.booksSenders?.has(message.senderPhone));
+        const isBoss = !isBooks && config.bossSenders?.has(message.senderPhone);
+        const boundary = isBooks ? isBooksBatchBoundary(message) : isBoss ? isBossBatchBoundary(message) : false;
+        const groupKey = (isBooks || isBoss) ? acknowledgementBatches.groupFor(message, { boundary }) : null;
+        if (isBooks) {
           const isGreeting = /^(hi|hello|hey|salaam)[.!?]*$/i.test((message.text || '').trim());
           const isCustomerSelection = Boolean(message.interactiveId);
           if (message.mediaId || (!isGreeting && !isCustomerSelection)) {
-            try { await outgoingMessages.acknowledge(message, { isBooks: true }); }
+            try { await outgoingMessages.acknowledge(message, { isBooks: true, groupKey }); }
             catch { logger.warn({ event: 'books_ack_unavailable', message_id: message.messageId }); }
           }
           await billStore.enqueueBillExtraction({
@@ -72,6 +78,9 @@ async function startServer() {
                 interactive_id: message.interactiveId || null,
               },
           });
+        } else if (isBoss && !boundary) {
+          try { await outgoingMessages.acknowledge(message, { groupKey }); }
+          catch { logger.warn({ event: 'boss_ack_unavailable', message_id: message.messageId }); }
         }
       };
       const conversational = config.aiProvider === 'openai';
@@ -90,7 +99,8 @@ async function startServer() {
           // A second instance of the existing worker runs independently in this
           // same process, so extraction cannot block customer reply processing.
           extractionWorker = createWorker({
-            store: { claimNext: (options) => store.claimLeadExtraction(options) },
+            store: { claimNext: (options) => store.claimLeadExtraction({ ...options,
+              batchQuietMs: config.messageBatchQuietMs, batchBoundary: isBossBatchBoundary }) },
             processor: {
               processIncomingWhatsAppMessage(job) {
                 return job.processing_flow === 'boss_lead'

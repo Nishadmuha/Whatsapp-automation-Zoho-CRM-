@@ -660,10 +660,13 @@ class MongoMessageStore {
     return decode(doc);
   }
 
-  async claimLeadExtraction({ leaseMs = 120000, maxAttempts = 3, messageIds = null } = {}) {
+  async claimLeadExtraction({ leaseMs = 120000, maxAttempts = 3, messageIds = null,
+    batchQuietMs = 0, batchBoundary = null } = {}) {
     positiveInteger(leaseMs, 'leaseMs', 3600000);
     positiveInteger(maxAttempts, 'maxAttempts', 100);
     validateMessageIds(messageIds);
+    if (!Number.isInteger(batchQuietMs) || batchQuietMs < 0 || batchQuietMs > 60000) throw new TypeError('Invalid batchQuietMs.');
+    if (batchBoundary !== null && typeof batchBoundary !== 'function') throw new TypeError('Invalid batchBoundary.');
     if (Array.isArray(messageIds) && messageIds.length === 0) return null;
 
     const now = await this._now();
@@ -743,8 +746,49 @@ class MongoMessageStore {
     const validCandidates = candidates.filter(c => messageMap.has(c.message_id) && receiptMap.has(c.message_id));
     validCandidates.sort((a, b) => (receiptMap.get(a.message_id) || 0) - (receiptMap.get(b.message_id) || 0));
 
+    const deferredSenders = new Set();
     for (const candidate of validCandidates) {
       const msg = messageMap.get(candidate.message_id);
+      if (deferredSenders.has(msg.sender_phone)) continue;
+      let batchCandidates = [candidate];
+      if (batchQuietMs > 0 && msg.processing_flow === 'boss_lead') {
+        const sameSender = validCandidates.filter(item => messageMap.get(item.message_id)?.sender_phone === msg.sender_phone);
+        const start = sameSender.findIndex(item => item.message_id === candidate.message_id);
+        let closedByBoundary = false;
+        if (!batchBoundary?.(decode(msg))) {
+          batchCandidates = [];
+          for (const item of sameSender.slice(start)) {
+            const itemMessage = messageMap.get(item.message_id);
+            const previousMessage = batchCandidates.length ? messageMap.get(batchCandidates.at(-1).message_id) : null;
+            if (previousMessage && new Date(itemMessage.received_at).getTime() - new Date(previousMessage.received_at).getTime() >= batchQuietMs) {
+              closedByBoundary = true;
+              break;
+            }
+            if (batchCandidates.length && batchBoundary?.(decode(itemMessage))) {
+              closedByBoundary = true;
+              break;
+            }
+            batchCandidates.push(item);
+          }
+          const newestCreated = Math.max(...batchCandidates.map(item => new Date(messageMap.get(item.message_id).created_at).getTime()));
+          if (!closedByBoundary && new Date(now).getTime() - newestCreated < batchQuietMs) {
+            deferredSenders.add(msg.sender_phone);
+            continue;
+          }
+        }
+
+        const senderMessages = await this.col('whatsapp_messages').find({
+          sender_phone: msg.sender_phone, processing_flow: 'boss_lead', authenticated: true,
+        }, { projection: { whatsapp_message_id: 1 } }).toArray();
+        const activeCount = senderMessages.length ? await this.col('lead_extractions').countDocuments({
+          message_id: { $in: senderMessages.map(item => item.whatsapp_message_id) },
+          processing_status: 'PROCESSING', lease_expires_at: { $gt: now },
+        }) : 0;
+        if (activeCount) {
+          deferredSenders.add(msg.sender_phone);
+          continue;
+        }
+      }
       if (msg.processing_flow === 'boss_lead') {
         const mySeq = receiptMap.get(candidate.message_id);
         const earlierMessages = await this.col('whatsapp_messages').find({
@@ -802,8 +846,37 @@ class MongoMessageStore {
           { whatsapp_message_id: candidate.message_id, extraction_status: { $ne: 'completed' }, zoho_status: 'not_started', zoho_lead_id: null },
           { $set: { extraction_status: 'processing', validation_status: 'pending', validation_result: null, error_stage: null, error_code: null, updated_at: now } }
         );
-        return decode({ ...msg, ...job });
+        const batchItems = [decode({ ...msg, ...job })];
+        for (const sibling of batchCandidates.slice(1)) {
+          const siblingMessage = messageMap.get(sibling.message_id);
+          const siblingToken = randomUUID();
+          const siblingClaim = await this.col('lead_extractions').findOneAndUpdate(
+            {
+              message_id: sibling.message_id,
+              attempts: sibling.attempts,
+              processing_status: sibling.processing_status,
+            },
+            {
+              $set: {
+                processing_status: 'PROCESSING', lease_token: siblingToken,
+                lease_expires_at: leaseExpiresAt, next_attempt_at: null,
+              },
+              $inc: { attempts: 1 },
+            },
+            { returnDocument: 'after' }
+          );
+          const siblingJob = siblingClaim?.value || siblingClaim;
+          if (!siblingJob) continue;
+          await this.col('leads').updateOne(
+            { whatsapp_message_id: sibling.message_id, extraction_status: { $ne: 'completed' }, zoho_status: 'not_started', zoho_lead_id: null },
+            { $set: { extraction_status: 'processing', validation_status: 'pending', validation_result: null,
+              error_stage: null, error_code: null, updated_at: now } }
+          );
+          batchItems.push(decode({ ...siblingMessage, ...siblingJob }));
+        }
+        return decode({ ...msg, ...job, ...(batchQuietMs > 0 ? { batch_items: batchItems } : {}) });
       }
+      if (batchQuietMs > 0) deferredSenders.add(msg.sender_phone);
     }
 
     return null;
@@ -1576,6 +1649,50 @@ class MongoMessageStore {
     }
 
     return true;
+  }
+
+  async completeLeadBatchMembers(members, { result = null, state = null, kind = 'details', sessionId = null,
+    failedMessageIds = [] } = {}) {
+    if (!Array.isArray(members) || members.length > 1000 || !Array.isArray(failedMessageIds)) {
+      throw new TypeError('Invalid lead batch members.');
+    }
+    const failed = new Set(failedMessageIds);
+    const prepared = result === null ? null : workflowResult(result);
+    const now = await this._now();
+    let completed = 0;
+    for (const member of members) {
+      const messageId = string(member?.messageId, 'messageId', 512);
+      const leaseToken = string(member?.leaseToken, 'leaseToken', 128);
+      const mediaFailed = failed.has(messageId);
+      const extractionStatus = mediaFailed ? 'FAILED' : prepared?.is_lead ? 'SUCCESS' : 'IRRELEVANT';
+      const owned = await this.col('lead_extractions').updateOne({
+        message_id: messageId, lease_token: leaseToken, processing_status: 'PROCESSING', lease_expires_at: { $gt: now },
+      }, { $set: {
+        processing_status: extractionStatus,
+        result: mediaFailed ? null : prepared,
+        error_message: mediaFailed ? 'BATCH_MEDIA_UNREADABLE' : null,
+        processed_at: now,
+        next_attempt_at: null,
+        lease_token: null,
+        lease_expires_at: null,
+      } });
+      if (owned.matchedCount !== 1) continue;
+      await this.col('whatsapp_messages').updateOne(
+        { whatsapp_message_id: messageId, processing_flow: 'boss_lead' },
+        { $set: {
+          processing_status: mediaFailed ? 'FAILED' : ['collecting', 'awaiting_confirmation'].includes(state) ? 'NEEDS_INFORMATION' : 'SUCCESS',
+          error_message: mediaFailed ? 'BATCH_MEDIA_UNREADABLE' : null,
+          processed_at: now,
+          next_attempt_at: null,
+          lease_token: null,
+          lease_expires_at: null,
+          session_id: sessionId,
+          conversation_kind: kind,
+        } }
+      );
+      completed += 1;
+    }
+    return completed;
   }
 
   async updateLeadZohoStatus(id, { zohoStatus, zohoLeadId, errorCode, errorStage, zohoUrl, zohoSyncedAt }) {

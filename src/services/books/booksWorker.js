@@ -1,4 +1,5 @@
 'use strict';
+const { isBooksBatchBoundary } = require('../whatsapp/messageBatching');
 
 function createBooksWorker({
   billStore,
@@ -25,7 +26,8 @@ function createBooksWorker({
     running = (async () => {
       let heartbeatTimer = null;
       let claimedJob = null;
-      let leaseToken = null;
+      let claimedJobs = [];
+      let replyReserved = false;
 
       try {
         const leaseMs = config.leaseMs || 120000;
@@ -34,36 +36,52 @@ function createBooksWorker({
         claimedJob = await billStore.claimBillExtraction({
           leaseMs,
           maxAttempts,
+          batchQuietMs: config.messageBatchQuietMs || 0,
+          batchBoundary: isBooksBatchBoundary,
         });
 
         if (!claimedJob) return;
 
-        leaseToken = claimedJob.lease_token;
-        const jobId = claimedJob.job_id;
-        const messageId = claimedJob.message_id;
-
-        // Verify trigger gate admission if enabled
-        if (triggerGate && !triggerGate.allows(messageId)) {
-          log('info', 'books_job_trigger_not_allowed', { jobId, messageId });
-          await billStore.failBillExtraction(jobId, leaseToken, { error: 'TRIGGER_NOT_ALLOWED' });
-          return;
+        claimedJobs = claimedJob.batch_items || [claimedJob];
+        const activeJobs = [];
+        for (const job of claimedJobs) {
+          if (!triggerGate || triggerGate.allows(job.message_id)) activeJobs.push(job);
+          else {
+            log('info', 'books_job_trigger_not_allowed', { jobId: job.job_id, messageId: job.message_id });
+            await billStore.failBillExtraction(job.job_id, job.lease_token, { error: 'TRIGGER_NOT_ALLOWED' });
+          }
         }
+        if (!activeJobs.length) return;
+        claimedJobs = activeJobs;
+        const anchor = activeJobs.at(-1);
+        const jobId = anchor.job_id;
+        const messageId = anchor.message_id;
 
         // Setup lease heartbeat during asynchronous processing
         const heartbeatIntervalMs = Math.max(5000, Math.floor(leaseMs / 3));
         heartbeatTimer = setInterval(async () => {
-          try {
-            await billStore.heartbeatBillExtraction(jobId, leaseToken, leaseMs);
-          } catch (hbErr) {
-            log('warn', 'books_job_heartbeat_failed', { jobId, error: hbErr.message });
-          }
+          await Promise.allSettled(activeJobs.map(async job => {
+            try { await billStore.heartbeatBillExtraction(job.job_id, job.lease_token, leaseMs); }
+            catch (hbErr) { log('warn', 'books_job_heartbeat_failed', { jobId: job.job_id, error: hbErr.message }); }
+          }));
         }, heartbeatIntervalMs);
         heartbeatTimer.unref();
 
-        const payload = claimedJob.payload || {};
+        const payload = anchor.payload || {};
+        const items = activeJobs.map(job => ({
+          messageId: job.message_id,
+          senderPhone: job.worker_phone,
+          messageType: job.payload?.message_type || 'text',
+          text: job.payload?.message_text || '',
+          mediaId: job.payload?.media_id || null,
+          mediaMimeType: job.payload?.media_mime_type || null,
+          mediaFilename: job.payload?.media_filename || null,
+          mediaBuffer: job.payload?.media_buffer || null,
+          interactiveId: job.payload?.interactive_id || null,
+        }));
         const incoming = {
           messageId,
-          senderPhone: claimedJob.worker_phone,
+          senderPhone: anchor.worker_phone,
           messageType: payload.message_type || 'text',
           text: payload.message_text || '',
           mediaId: payload.media_id || null,
@@ -71,64 +89,84 @@ function createBooksWorker({
           mediaFilename: payload.media_filename || null,
           mediaBuffer: payload.media_buffer || null,
           interactiveId: payload.interactive_id || null,
+          items,
         };
 
         const result = await billWorkflow.processMessage(incoming);
 
         let replyDelivery = 'NOT_REQUIRED';
-        if (result?.replyInteractive && whatsapp && typeof whatsapp.sendInteractiveList === 'function') {
+        let providerMessageId = null;
+        const hasReply = Boolean(result?.replyInteractive || result?.replyText);
+        if (hasReply && typeof billStore.reserveBillReply === 'function') {
+          const reservations = await Promise.all(activeJobs.map(job =>
+            billStore.reserveBillReply(job.job_id, job.lease_token)));
+          replyReserved = reservations.every(Boolean);
+          if (!replyReserved) {
+            replyDelivery = 'DUPLICATE_SUPPRESSED';
+            await Promise.allSettled(activeJobs.map((job, index) => reservations[index]
+              ? billStore.finishBillReply(job.job_id, job.lease_token, { status: 'UNKNOWN' })
+              : Promise.resolve()));
+          }
+        } else if (hasReply) replyReserved = true;
+
+        if (replyReserved && result?.replyInteractive && whatsapp && typeof whatsapp.sendInteractiveList === 'function') {
           try {
-            await whatsapp.sendInteractiveList(claimedJob.worker_phone, result.replyInteractive);
+            const sent = await whatsapp.sendInteractiveList(anchor.worker_phone, result.replyInteractive);
+            providerMessageId = sent?.messages?.[0]?.id || null;
             replyDelivery = 'ACCEPTED';
           } catch (sendErr) {
             replyDelivery = sendErr.deliveryState || 'UNKNOWN';
             log('error', 'books_interactive_reply_send_failed', { jobId, deliveryState: replyDelivery });
           }
-        } else if (result?.replyText && whatsapp && typeof whatsapp.sendTextMessage === 'function') {
+        } else if (replyReserved && result?.replyText && whatsapp && typeof whatsapp.sendTextMessage === 'function') {
           try {
-            await whatsapp.sendTextMessage(claimedJob.worker_phone, result.replyText);
+            const sent = await whatsapp.sendTextMessage(anchor.worker_phone, result.replyText);
+            providerMessageId = sent?.messages?.[0]?.id || null;
             replyDelivery = 'ACCEPTED';
           } catch (sendErr) {
             replyDelivery = sendErr.deliveryState || 'UNKNOWN';
             log('error', 'books_reply_send_failed', { jobId, deliveryState: replyDelivery });
           }
         }
+        if (replyReserved && typeof billStore.finishBillReply === 'function') {
+          const replyStatus = replyDelivery === 'ACCEPTED' ? 'ACCEPTED'
+            : ['NOT_ATTEMPTED', 'ATTEMPTED_FAILED'].includes(replyDelivery) ? 'FAILED' : 'UNKNOWN';
+          await Promise.all(activeJobs.map(job => billStore.finishBillReply(job.job_id, job.lease_token, {
+            status: replyStatus, providerMessageId,
+          })));
+        }
 
         if (result?.success) {
-          await billStore.completeBillExtraction(jobId, leaseToken, {
-            sessionId: result.sessionId,
-            state: result.state,
-            billId: result.billId,
-            replyText: result.replyText,
-            replyDelivery,
-          });
+          await Promise.all(activeJobs.map(job => billStore.completeBillExtraction(job.job_id, job.lease_token, {
+            sessionId: result.sessionId, state: result.state, billId: result.billId,
+            replyText: job.job_id === jobId ? result.replyText : null,
+            replyDelivery: job.job_id === jobId ? replyDelivery : 'BATCHED',
+          })));
           log('info', 'books_job_completed', {
             jobId,
+            batchSize: activeJobs.length,
             sessionId: result.sessionId,
             state: result.state,
           });
         } else {
           const errMsg = result?.error?.message || result?.replyText || 'EXTRACTION_PROCESSING_FAILED';
-          await billStore.failBillExtraction(jobId, leaseToken, { error: errMsg });
+          await Promise.all(activeJobs.map(job => billStore.failBillExtraction(job.job_id, job.lease_token, { error: errMsg })));
           log('warn', 'books_job_processing_failed', { jobId, error: result?.error });
         }
       } catch (err) {
         log('error', 'books_job_unhandled_error', { jobId: claimedJob?.job_id, error: err.message });
-        if (claimedJob && leaseToken) {
-          try {
-            await billStore.failBillExtraction(claimedJob.job_id, leaseToken, { error: err.message });
-          } catch {
-            /* Safe failure persistence */
-          }
+        if (replyReserved) {
+          await Promise.allSettled(claimedJobs.map(job => billStore.completeBillExtraction(job.job_id, job.lease_token, {
+            state: 'REPLY_RECONCILIATION_REQUIRED', replyDelivery: 'UNKNOWN', error: 'WORKER_COMPLETION_FAILED',
+          })));
+        } else {
+          await Promise.allSettled(claimedJobs.map(job =>
+            billStore.failBillExtraction(job.job_id, job.lease_token, { error: err.message })));
         }
       } finally {
         if (heartbeatTimer) clearInterval(heartbeatTimer);
-        if (claimedJob && triggerGate) {
-          try {
-            triggerGate.finish(claimedJob.message_id);
-          } catch {
-            /* Safe gate finish */
-          }
+        if (triggerGate) for (const job of claimedJobs) {
+          try { triggerGate.finish(job.message_id); } catch { /* Safe gate finish */ }
         }
       }
     })();
