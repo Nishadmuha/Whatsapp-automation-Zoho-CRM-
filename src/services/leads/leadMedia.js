@@ -10,7 +10,7 @@ function mediaError(code) {
   return Object.assign(new Error(code === 'LEAD_MEDIA_UNSUPPORTED' ? UNSUPPORTED_MEDIA_REPLY : MEDIA_RESEND_REPLY), { code });
 }
 
-async function resolveLeadMessageContent({ message, whatsapp, ai, assertActive, store }) {
+async function resolveLeadMessageContent({ message, whatsapp, ai, assertActive, store, logger = null }) {
   if (message.message_type === 'text') return { text: message.message_text, transcription: null, extractedText: null };
   if (!['image', 'audio', 'document'].includes(message.message_type)) throw mediaError('LEAD_MEDIA_UNSUPPORTED');
   const declaredMimeType = normalizeMediaMimeType(message.media_mime_type);
@@ -18,6 +18,7 @@ async function resolveLeadMessageContent({ message, whatsapp, ai, assertActive, 
     throw mediaError('LEAD_MEDIA_UNSUPPORTED');
   }
   try {
+    const mediaStartedAt = Date.now();
     // Reuse the durable checkpoint on extraction retries. A caption alone is
     // never treated as already-processed OCR/transcription.
     let extracted = message.message_type === 'audio' ? message.transcription : message.extracted_text;
@@ -32,24 +33,36 @@ async function resolveLeadMessageContent({ message, whatsapp, ai, assertActive, 
       const matchesType = kind === message.message_type || (message.message_type === 'document' && kind === 'image');
       if (!matchesType || (declaredMimeType && declaredMimeType !== mimeType)) throw new Error();
 
-      if (store && typeof store.saveMediaFile === 'function' && attachment.buffer) {
-        try {
-          const saved = await store.saveMediaFile({
-            messageId: message.whatsapp_message_id || message.message_id,
-            mediaId: message.media_id,
-            buffer: attachment.buffer,
-            mimeType,
-            filename: message.media_filename
-          });
-          if (saved) {
-            storageReference = saved.storageReference;
-            storageUrl = saved.storageUrl;
-          }
-        } catch { /* Continue safely */ }
-      }
-
       await assertActive?.();
-      extracted = await ai.extractMediaText({ ...attachment, mimeType, type: message.message_type });
+      const savePromise = store && typeof store.saveMediaFile === 'function' && attachment.buffer
+        ? Promise.resolve().then(() => store.saveMediaFile({
+          messageId: message.whatsapp_message_id || message.message_id,
+          mediaId: message.media_id,
+          buffer: attachment.buffer,
+          mimeType,
+          filename: message.media_filename,
+        })).catch(() => null)
+        : Promise.resolve(null);
+      // Media persistence and provider extraction use the same downloaded bytes
+      // but do not depend on each other. Await both so persistence remains
+      // durable while their latency overlaps.
+      const [saved, extractedText] = await Promise.all([
+        savePromise,
+        ai.extractMediaText({ ...attachment, mimeType, type: message.message_type }),
+      ]);
+      if (saved) {
+        storageReference = saved.storageReference;
+        storageUrl = saved.storageUrl;
+      }
+      extracted = extractedText;
+      try {
+        logger?.info?.({
+          event: 'lead_media_ready',
+          message_id: message.whatsapp_message_id || message.message_id,
+          message_type: message.message_type,
+          duration_ms: Math.max(0, Date.now() - mediaStartedAt),
+        });
+      } catch { /* Timing logs never affect processing. */ }
     }
     validateLeadInput(extracted);
     if (isUnreadableMediaText(extracted)) throw new Error();

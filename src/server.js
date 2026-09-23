@@ -60,11 +60,12 @@ async function startServer() {
         if (isBooks) {
           const isGreeting = /^(hi|hello|hey|salaam)[.!?]*$/i.test((message.text || '').trim());
           const isCustomerSelection = Boolean(message.interactiveId);
-          if (message.mediaId || (!isGreeting && !isCustomerSelection)) {
-            try { await outgoingMessages.acknowledge(message, { isBooks: true, groupKey }); }
-            catch { logger.warn({ event: 'books_ack_unavailable', message_id: message.messageId }); }
-          }
-          await billStore.enqueueBillExtraction({
+          const acknowledgement = message.mediaId || (!isGreeting && !isCustomerSelection)
+            ? outgoingMessages.acknowledge(message, { isBooks: true, groupKey }).catch(() => {
+              logger.warn({ event: 'books_ack_unavailable', message_id: message.messageId });
+            })
+            : Promise.resolve();
+          const extraction = billStore.enqueueBillExtraction({
               messageId: message.messageId,
               workerPhone: message.senderPhone,
               maxAttempts: config.maxAttempts,
@@ -78,6 +79,7 @@ async function startServer() {
                 interactive_id: message.interactiveId || null,
               },
           });
+          await Promise.all([acknowledgement, extraction]);
         } else if (isBoss && !boundary) {
           try { await outgoingMessages.acknowledge(message, { groupKey }); }
           catch { logger.warn({ event: 'boss_ack_unavailable', message_id: message.messageId }); }
@@ -108,7 +110,11 @@ async function startServer() {
                   : legacyExtraction.processIncomingWhatsAppMessage(job);
               },
               processNextReply: leadWorkflow.processNextReply,
-            }, config, logger, triggerGate,
+            },
+            config,
+            logger,
+            triggerGate,
+            concurrency: 4,
           });
         }
       } else {
@@ -146,6 +152,7 @@ async function startServer() {
       worker = createWorker({
         store, processor, config, logger, triggerGate, processInbox: conversational,
         inboxClaimOptions: conversational ? { processingFlow: 'conversation' } : {},
+        concurrency: conversational ? 4 : 1,
       });
     }
     server = app.listen(config.port, config.host);

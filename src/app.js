@@ -43,7 +43,14 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
       mongoStatus = 'DISCONNECTED';
     }
 
-    const whatsappHealthy = Boolean(config.accessToken && config.phoneNumberId);
+    let whatsappHealthy = false;
+    try {
+      const { readWhatsAppSendConfig } = require('./services/whatsapp/whatsappService');
+      readWhatsAppSendConfig(env);
+      whatsappHealthy = true;
+    } catch {
+      // Health should report the same configuration validity used by the sender.
+    }
     const openaiHealthy = Boolean(config.openaiApiKey || env.OPENAI_API_KEY);
     const zohoHealthy = Boolean(config.zohoClientId || env.ZOHO_CLIENT_ID);
 

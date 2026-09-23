@@ -48,6 +48,18 @@ test('health and legacy health expose safe headers and readiness without secrets
   assert.deepEqual(await (await fetch(h.baseUrl + '/api/health')).json(), { success: true, message: 'Voltronix WhatsApp backend is running' });
   assert.deepEqual(await (await fetch(h.baseUrl + '/ready')).json(), { status: 'ready', automation: 'disabled' });
 });
+test('detailed health reports configured WhatsApp transport using sender validation', async (t) => {
+  const h = await backend(t, {
+    WHATSAPP_ACCESS_TOKEN: 'synthetic-whatsapp-token',
+    WHATSAPP_PHONE_NUMBER_ID: '1234567890',
+    META_GRAPH_API_VERSION: 'v25.0',
+  });
+  const response = await fetch(h.baseUrl + '/health/status');
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.whatsapp, 'CONFIGURED / HEALTHY');
+  assert.equal(body.checks.whatsapp_api, '🟢 CONNECTED');
+});
 test('CORS permits only configured browser origins', async (t) => {
   const h = await backend(t, { CORS_ORIGINS: 'https://dashboard.example.com' });
   for (const origin of ['https://dashboard.example.com', 'https://untrusted.example.com']) {

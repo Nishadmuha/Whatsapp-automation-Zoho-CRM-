@@ -121,8 +121,12 @@ function createAiService({ env = process.env, http = axios, logger } = {}) {
     // Logging must never turn a successful extraction into a retry or expose provider payloads.
     try { logger?.[level]?.(metadata); } catch { /* The caller owns logger availability. */ }
   }
+  function logTiming(stage, startedAt, details = {}) {
+    log('debug', { event: 'ai_timing', stage, duration_ms: Math.max(0, Date.now() - startedAt), ...details });
+  }
 
   async function extractLead(text, options = {}) {
+    const startedAt = Date.now();
     if (typeof text !== 'string' || !text.trim() || text.length > 16384 || Buffer.byteLength(text, 'utf8') > 32768) {
       throw safeError('AI_INPUT_INVALID', 'A nonempty message within the supported size limit is required.');
     }
@@ -174,15 +178,18 @@ function createAiService({ env = process.env, http = axios, logger } = {}) {
       }
       const lead = parseExtractedLead(provider === 'openai' ? openAiText(response?.data) : geminiText(response?.data));
       log('info', { event: 'ai.extraction.succeeded', provider });
+      logTiming('legacy_extraction', startedAt, { provider });
       return lead;
     } catch {
       log('error', { event: 'ai.extraction.failed', provider, code: 'AI_EXTRACTION_FAILED' });
+      logTiming('legacy_extraction', startedAt, { provider, outcome: 'failed' });
       // Never attach the original Axios/JSON/Zod error: it can contain credentials and customer data.
       throw safeError('AI_EXTRACTION_FAILED', 'Lead extraction could not be completed.');
     }
   }
 
   async function generateReply(text, options = {}) {
+    const startedAt = Date.now();
     validateReplyInput(text);
     let configuration;
     try {
@@ -234,10 +241,12 @@ function createAiService({ env = process.env, http = axios, logger } = {}) {
       throw failed(createReplyError('AI_MALFORMED_RESPONSE'));
     }
     log('info', { event: 'ai.reply.succeeded', provider: 'openai' });
+    logTiming('conversation_reply', startedAt, { provider: 'openai' });
     return reply;
   }
 
   async function extractLeadEnquiry(text, options = {}) {
+    const startedAt = Date.now();
     validateLeadInput(text);
     let configuration;
     try {
@@ -288,10 +297,12 @@ function createAiService({ env = process.env, http = axios, logger } = {}) {
       throw failed(createReplyError('AI_MALFORMED_RESPONSE'));
     }
     log('info', { event: 'ai.lead_enquiry.succeeded', provider: 'openai' });
+    logTiming('lead_enquiry', startedAt, { provider: 'openai' });
     return extraction;
   }
 
   async function extractMediaText({ buffer, mimeType: rawMimeType, type, options = {} } = {}) {
+    const startedAt = Date.now();
     const mimeType = normalizeMediaMimeType(rawMimeType);
     const kind = mediaKind(mimeType);
     const matchesType = kind === type || (type === 'document' && kind === 'image');
@@ -365,9 +376,11 @@ function createAiService({ env = process.env, http = axios, logger } = {}) {
           || /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text)) throw new Error();
       if (isUnreadableMediaText(text)) throw new Error();
       log('info', { event: 'ai.media.succeeded', provider, type });
+      logTiming('media_extraction', startedAt, { provider, type });
       return text.trim();
     } catch {
       log('error', { event: 'ai.media.failed', provider, type, code: 'AI_MEDIA_EXTRACTION_FAILED' });
+      logTiming('media_extraction', startedAt, { provider, type, outcome: 'failed' });
       throw safeError('AI_MEDIA_EXTRACTION_FAILED', 'The attachment could not be read.');
     }
   }

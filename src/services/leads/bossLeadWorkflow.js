@@ -304,7 +304,7 @@ function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGa
   const service = createLeadService({ store, ai, config, resolveMessageContent: async (job, { assertLease }) => {
     if (job.batch_unreadable) throw new Error('Unreadable media batch.');
     const { resolveLeadMessageContent } = require('./leadMedia');
-    return resolveLeadMessageContent({ message: job, whatsapp, ai, assertActive: assertLease, store });
+    return resolveLeadMessageContent({ message: job, whatsapp, ai, assertActive: assertLease, store, logger });
   } });
   const active = () => config.enabled && config.aiProvider === 'openai';
   const authorized = job => job.authenticated === true
@@ -319,6 +319,12 @@ function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGa
     let batchItems = job.batch_items || [job];
     const anchorClaim = batchItems.at(-1);
     const id = anchorClaim.message_id || anchorClaim.whatsapp_message_id;
+    const processingStartedAt = Date.now();
+    const receivedTimes = batchItems.map(item => Date.parse(item.received_at || '')).filter(Number.isFinite);
+    log('info', 'boss_batch_finalized', id, {
+      batch_size: batchItems.length,
+      ...(receivedTimes.length ? { duration_ms: Math.max(0, processingStartedAt - Math.min(...receivedTimes)) } : {}),
+    });
     if (triggerGate && !batchItems.every(item => {
       const itemId = item.message_id || item.whatsapp_message_id;
       const started = triggerGate.beginProcessing(itemId);
@@ -369,7 +375,7 @@ function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGa
         const { resolveLeadMessageContent } = require('./leadMedia');
         const settled = await Promise.allSettled(batchItems.map(async item => {
           if (item.message_type === 'text') return { text: item.message_text || '' };
-          const content = await resolveLeadMessageContent({ message: item, whatsapp, ai, assertActive: assertLease, store });
+          const content = await resolveLeadMessageContent({ message: item, whatsapp, ai, assertActive: assertLease, store, logger });
           const media = {
             transcription: content.transcription ?? (item.message_type === 'audio' ? content.text : null),
             extractedText: content.extractedText ?? (item.message_type === 'audio' ? null : content.text),
@@ -397,6 +403,11 @@ function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGa
       }
 
       const { result, validation, state, kind, leadId } = await service.saveIncomingLead(job, { assertLease, maxAttempts: triggerGate ? 1 : config.maxAttempts });
+      log('info', 'boss_reply_queued', id, {
+        stage: state === 'awaiting_confirmation' ? 'confirmation' : 'processing',
+        duration_ms: Math.max(0, Date.now() - processingStartedAt),
+        batch_size: batchItems.length,
+      });
       const siblingItems = batchItems.slice(0, -1).map(item => ({
         messageId: item.message_id || item.whatsapp_message_id,
         leaseToken: item.lease_token,

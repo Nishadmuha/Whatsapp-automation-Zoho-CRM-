@@ -92,7 +92,13 @@ function createBooksWorker({
           items,
         };
 
+        const processingStartedAt = Date.now();
         const result = await billWorkflow.processMessage(incoming);
+        log('info', 'books_reply_ready', {
+          messageId,
+          batchSize: activeJobs.length,
+          durationMs: Date.now() - processingStartedAt,
+        });
 
         let replyDelivery = 'NOT_REQUIRED';
         let providerMessageId = null;

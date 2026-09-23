@@ -162,6 +162,10 @@ function booksHarness(t, items, { failMediaId = null, holdMedia = false } = {}) 
   return { ...f, worker, completions, getMaxActiveMedia: () => maxActiveMedia };
 }
 
+function billExtractionCalls(calls) {
+  return calls.filter(call => call[0] === 'extract' || call[0] === 'vision');
+}
+
 const booksCases = [
   ['Worker text only produces one final reply', [{ text: 'typed bill facts' }], 0],
   ['Worker image only produces one final reply', [{ type: 'image', mediaId: 'image', mimeType: 'image/jpeg' }], 1],
@@ -172,7 +176,7 @@ for (const [name, items, expectedMedia] of booksCases) test(name, async t => {
   const h = booksHarness(t, items);
   await h.worker.tick();
   assert.equal(h.calls.filter(call => call[0] === 'text').length, 1);
-  assert.equal(h.calls.filter(call => call[0] === 'extract').length, 1);
+  assert.equal(billExtractionCalls(h.calls).length, 1);
   assert.equal(h.calls.filter(call => call[0] === 'ocr').length, expectedMedia);
   assert.equal(h.completions.length, items.length);
 });
@@ -226,9 +230,10 @@ test('one failed Worker media extraction retains successful content and sends on
     { type: 'audio', mediaId: 'voice', mimeType: 'audio/ogg' }];
   const h = booksHarness(t, items, { failMediaId: 'failed' });
   await h.worker.tick();
-  assert.equal(h.calls.filter(call => call[0] === 'extract').length, 1);
+  assert.equal(billExtractionCalls(h.calls).length, 1);
   assert.equal(h.calls.filter(call => call[0] === 'text').length, 1);
-  const combined = h.calls.find(call => call[0] === 'extract')[1].text;
+  const extraction = billExtractionCalls(h.calls)[0];
+  const combined = extraction[0] === 'extract' ? extraction[1].text : extraction[1].caption;
   assert.match(combined, /typed bill facts[\s\S]*voice extracted bill facts/);
 });
 
@@ -238,6 +243,6 @@ test('concurrent media extraction is parallel and concurrent worker ticks send o
   const h = booksHarness(t, items, { holdMedia: true });
   await Promise.all([h.worker.tick(), h.worker.tick(), h.worker.tick()]);
   assert.ok(h.getMaxActiveMedia() > 1);
-  assert.equal(h.calls.filter(call => call[0] === 'extract').length, 1);
+  assert.equal(billExtractionCalls(h.calls).length, 1);
   assert.equal(h.calls.filter(call => call[0] === 'text').length, 1);
 });

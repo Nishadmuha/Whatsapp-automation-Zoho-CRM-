@@ -12,6 +12,7 @@ const REPLY_WINDOW_MS = 23 * 60 * 60 * 1000;
 function createOutgoingMessages({ store, whatsapp, config, logger, triggerGate, now = Date.now }) {
   const repository = createOutgoingRepository({ store });
   const tasks = new Set();
+  const ackTimings = new Map();
   let stopped = false;
   const allowed = phone => !config.allowedSenders?.size || config.allowedSenders.has(phone);
   const bossActive = phone => !stopped && config.enabled && config.aiProvider === 'openai'
@@ -32,6 +33,7 @@ function createOutgoingMessages({ store, whatsapp, config, logger, triggerGate, 
     }
     log(saved ? 'info' : 'error', saved ? 'whatsapp_outgoing_completed' : 'whatsapp_outgoing_reconciliation_required', row,
       { status: outcome.status, ...(outcome.providerMessageId ? { provider_message_id: outcome.providerMessageId } : {}), persisted: saved });
+    ackTimings.delete(row?.id);
     try { return await repository.get(row.id); } catch { return { ...row, status: 'UNKNOWN', error_code: 'OUTGOING_PERSISTENCE_FAILED' }; }
   }
 
@@ -63,7 +65,16 @@ function createOutgoingMessages({ store, whatsapp, config, logger, triggerGate, 
           ? error.deliveryState : 'UNKNOWN';
         return persistOutcome(row, { status: state === 'UNKNOWN' ? 'UNKNOWN' : 'FAILED', errorCode: state });
       }
-      if (row.kind === 'ack') log('info', 'whatsapp_fast_acknowledgement_sent', row);
+      if (row.kind === 'ack') {
+        const timing = ackTimings.get(row.id);
+        const receivedAt = timing?.receivedAt;
+        const createdAt = Date.parse(row.created_at);
+        const acceptedAt = now();
+        log('info', 'whatsapp_fast_acknowledgement_sent', row, {
+          ...(Number.isFinite(receivedAt) ? { duration_ms: Math.max(0, acceptedAt - receivedAt) } : {}),
+          ...(Number.isFinite(createdAt) ? { queue_delay_ms: Math.max(0, acceptedAt - createdAt) } : {}),
+        });
+      }
       return persistOutcome(row, { status: 'SENT', providerMessageId });
     } catch {
       log('error', 'whatsapp_outgoing_persistence_failed', row || { id });
@@ -94,7 +105,11 @@ function createOutgoingMessages({ store, whatsapp, config, logger, triggerGate, 
     const ackText = books ? BOOKS_ACKNOWLEDGEMENT : ACKNOWLEDGEMENT;
     const requestKey = 'ack:' + createHash('sha256').update(senderPhone + '\n' + group).digest('hex');
     const result = await repository.insert({ requestKey, messageId, senderPhone, leadId, kind: 'ack', text: ackText });
-    if (result.inserted) schedule(result.row.id);
+    if (result.inserted) {
+      const receivedAt = Date.parse(message.received_at || '');
+      ackTimings.set(result.row.id, { receivedAt: Number.isFinite(receivedAt) ? receivedAt : null });
+      schedule(result.row.id);
+    }
     return result.row;
   }
 

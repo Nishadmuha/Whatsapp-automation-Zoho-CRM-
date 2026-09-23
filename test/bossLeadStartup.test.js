@@ -161,7 +161,7 @@ test(extractionFails
         await new Promise(resolve => setTimeout(resolve, 150));
         assert.deepEqual(generationCalls, [customerText]);
         assert.deepEqual(extractionCalls, [bossText]);
-        assert.equal(sendCalls.filter(call => /Processing the lead/.test(call.text)).length, 0);
+        assert.equal(sendCalls.filter(call => /Processing the lead/.test(call.text)).length, 1);
         assert.deepEqual(sendCalls.filter(call => !/Processing the lead/.test(call.text)).map(call => call.to).sort(), ['+971551234567', '+971561234567']);
         if (!extractionFails) {
           const confirmation = JSON.parse(body);
