@@ -242,12 +242,49 @@ test('7a. searchCustomer() reads Zoho Books customers without creating contacts'
     assert.ok(url.endsWith('/contacts'));
     assert.equal(options.params.organization_id, 'books_org_999');
     assert.equal(options.params.contact_type, 'customer');
+    assert.equal(options.params.page, 1);
+    assert.equal(options.params.per_page, 200);
     assert.equal(options.params.search_text, 'Gulf');
     return { status: 200, data: { code: 0, contacts: [{ contact_id: 'cust-1', contact_name: 'Gulf Client', phone: '+971501112233' }] } };
   });
   const client = createZohoBooksClient({ ...mockConfig, http });
-  assert.deepEqual(await client.searchCustomer({ searchText: 'Gulf' }), [{ id: 'cust-1', name: 'Gulf Client', companyName: null, email: null, phone: '+971501112233', status: null, raw: { contact_id: 'cust-1', contact_name: 'Gulf Client', phone: '+971501112233' } }]);
+  assert.deepEqual(await client.searchCustomer({ searchText: 'Gulf' }), [{
+    contactId: 'cust-1', contactName: 'Gulf Client', companyName: null, email: null,
+    phone: '+971501112233', mobile: null, contactType: null, status: null,
+    displayName: 'Gulf Client', id: 'cust-1', name: 'Gulf Client',
+    raw: { contact_id: 'cust-1', contact_name: 'Gulf Client', phone: '+971501112233' },
+  }]);
   assert.equal(http.calls.filter(call => call.method === 'POST' && call.url.includes('/contacts')).length, 0);
+});
+
+test('7b. customer lookup paginates and individual lookup preserves the authoritative record', async () => {
+  const http = createMockHttp();
+  http.setHandler('post', async () => ({ status: 200, data: { access_token: 'valid_token', expires_in: 3600 } }));
+  http.setHandler('get', async (url, options) => {
+    assert.equal(options.params.organization_id, 'books_org_999');
+    if (url.endsWith('/contacts')) {
+      const contacts = options.params.page === 1
+        ? [{ contact_id: 'cust-1', contact_name: 'Contact One', company_name: 'Company One', phone: '+971500000001', mobile: '+971550000001', email: 'one@example.invalid', contact_type: 'customer', status: 'active' }]
+        : [{ contact_id: 'cust-3', contact_name: 'Contact Three', company_name: 'Company Three', email: 'three@example.invalid', contact_type: 'customer', status: 'active' }];
+      return { status: 200, data: { code: 0, contacts, page_context: { has_more_page: options.params.page === 1 } } };
+    }
+    assert.ok(url.endsWith('/contacts/cust-3'));
+    return { status: 200, data: { code: 0, contact: { contact_id: 'cust-3', contact_name: 'Contact Three', company_name: 'Company Three', email: 'three@example.invalid', mobile: '+971550000003', contact_type: 'customer', status: 'active' } } };
+  });
+  const client = createZohoBooksClient({ ...mockConfig, http });
+  const customers = await client.searchCustomer();
+  assert.deepEqual(customers.map(customer => customer.contactId), ['cust-1', 'cust-3']);
+  assert.equal(customers[0].companyName, 'Company One');
+  assert.equal(customers[0].contactName, 'Contact One');
+  assert.equal(customers[0].phone, '+971500000001');
+  assert.equal(customers[0].mobile, '+971550000001');
+  assert.equal(customers[0].name, 'Company One (Contact One)');
+  const selected = await client.getCustomer('cust-3');
+  assert.equal(selected.contactId, 'cust-3');
+  assert.equal(selected.companyName, 'Company Three');
+  assert.equal(selected.contactName, 'Contact Three');
+  assert.equal(selected.mobile, '+971550000003');
+  assert.ok(http.calls.some(call => call.method === 'GET' && call.url.endsWith('/contacts/cust-3')));
 });
 
 test('8. checkDuplicateBill() sends expected bill search request and filters exact bill number', async () => {
@@ -364,6 +401,22 @@ test('9. createBill() sends the expected payload to Zoho Books', async () => {
   assert.strictEqual(created.id, 'zb_new_999');
   assert.strictEqual(created.billNumber, 'BILL-1234');
   assert.strictEqual(created.total, 500);
+});
+
+test('9a. createBill() forwards the selected Zoho contact_id as customer_id', async () => {
+  const http = createMockHttp();
+  http.setHandler('post', async (url, data) => {
+    if (url.includes('/oauth/v2/token')) return { status: 200, data: { access_token: 'valid_token', expires_in: 3600 } };
+    assert.equal(url.endsWith('/bills'), true);
+    assert.equal(data.customer_id, 'cust-789');
+    return { status: 201, data: { code: 0, bill: { bill_id: 'bill-with-customer-id' } } };
+  });
+  const client = createZohoBooksClient({ ...mockConfig, http });
+  const created = await client.createBill({
+    vendorId: 'v-1', billNumber: 'INV-1', billDate: '2026-03-15', customerId: 'cust-789',
+    lineItems: [{ name: 'Cable', quantity: 1, rate: 10 }],
+  });
+  assert.equal(created.id, 'bill-with-customer-id');
 });
 
 test('10. createBill() uses YYYY-MM-DD dates and normalizes variations', async () => {

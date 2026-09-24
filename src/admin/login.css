@@ -256,29 +256,6 @@ html, body {
   justify-content: space-between;
 }
 
-/* Top Tagline: A WISE QUOTE ------- */
-.hero-top-quote {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.hero-quote-label {
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.28em;
-  color: rgba(255, 255, 255, 0.88);
-  text-transform: uppercase;
-}
-
-.hero-quote-divider {
-  display: inline-block;
-  width: 65px;
-  height: 1.5px;
-  background-color: rgba(255, 255, 255, 0.45);
-  border-radius: 1px;
-}
-
 /* Bottom Body Typography */
 .hero-bottom-body {
   margin-top: auto;
@@ -592,6 +569,30 @@ html, body {
   text-align: center;
 }
 
+.made-in-canada-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+  padding: 7px 13px 7px 10px;
+  border: 1px solid #CBD5E1;
+  border-radius: 999px;
+  color: #334155;
+  background: #FFFFFF;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.canada-maple-leaf {
+  width: 15px;
+  height: 17px;
+  color: #E11D2A;
+  flex: 0 0 auto;
+}
+
 .signup-prompt-text {
   font-size: 0.84rem;
   color: var(--text-muted);
@@ -705,5 +706,233 @@ html, body {
 
   .welcome-heading {
     font-size: 2.1rem;
+  }
+}
+
+/* ==========================================================
+   CENTERED MONOCHROME WORKSPACE LOGIN
+   Keeps the existing form structure and auth behavior while
+   matching the centered-card reference layout.
+   ========================================================== */
+:root {
+  --workspace-ink: #3e0c10;
+  --workspace-muted: #7a3035;
+  --workspace-border: #e0c1c3;
+  --workspace-accent: #e21b23;
+}
+
+html,
+body {
+  background-color: #080808 !important;
+  color: var(--workspace-ink);
+  overflow-x: hidden;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-image: linear-gradient(rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0.72)), url('/login-bg-wave.jpg');
+  background-position: center;
+  background-size: cover;
+  filter: saturate(0.9) contrast(1.12) brightness(0.42);
+  transform: scale(1.04);
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+}
+
+.ambient-glow {
+  display: none;
+}
+
+.login-wrapper {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+  width: 100%;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 20px;
+  box-sizing: border-box;
+}
+
+.login-split-card {
+  display: block;
+  width: min(390px, calc(100% - 24px));
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.48);
+}
+
+.hero-artwork-card {
+  display: none;
+}
+
+.login-form-panel {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  padding: 34px 34px 38px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.login-form-inner {
+  width: 100%;
+  max-width: none;
+}
+
+.panel-header {
+  margin-bottom: 18px;
+  text-align: center;
+}
+
+.brand-badge-container {
+  margin: 0 auto 14px;
+  text-align: center;
+}
+
+.brand-emblem-logo {
+  width: 104px;
+  height: auto;
+  max-height: 56px;
+  object-fit: contain;
+}
+
+.welcome-heading {
+  margin: 0 0 5px;
+  color: #000000;
+  font-family: var(--font-sans);
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.welcome-subheading {
+  margin: 0;
+  color: #64181d;
+  font-family: var(--font-sans);
+  font-size: 0.88rem;
+  font-style: italic;
+  font-weight: 400;
+}
+
+.auth-form {
+  gap: 14px;
+}
+
+.form-field-group {
+  gap: 6px;
+}
+
+.field-label {
+  color: #000000;
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.field-input {
+  min-height: 48px;
+  box-sizing: border-box;
+  border: 1px solid var(--workspace-border);
+  border-radius: 8px;
+  background: #ffffff;
+  color: #000000;
+  padding: 0 16px;
+  font-size: 0.9rem;
+}
+
+.field-input:focus {
+  border-color: #d34950;
+  box-shadow: 0 0 0 2px rgba(226, 27, 35, 0.12);
+}
+
+.field-input::placeholder {
+  color: #555555;
+}
+
+.password-field-wrapper .field-input {
+  padding-right: 46px;
+}
+
+.toggle-password-btn {
+  color: #000000;
+}
+
+.form-aux-row {
+  margin-top: -4px;
+}
+
+.remember-label-text,
+.forgot-password-link {
+  color: #000000;
+  font-size: 0.86rem;
+}
+
+.forgot-password-link {
+  display: none;
+}
+
+.custom-checkbox-box {
+  border-radius: 5px;
+  border-color: #e7a2a7;
+}
+
+.remember-me-option input:checked + .custom-checkbox-box {
+  border-color: var(--workspace-accent);
+  background: var(--workspace-accent);
+}
+
+.btn-sign-in {
+  min-height: 50px;
+  margin-top: 4px;
+  border-radius: 8px;
+  background: var(--workspace-accent);
+  box-shadow: none;
+  font-size: 0.94rem;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.btn-sign-in:hover {
+  background: #b9141b;
+  box-shadow: none;
+}
+
+.panel-footer {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .login-wrapper {
+    padding: 20px 14px;
+  }
+
+  .login-form-panel {
+    padding: 36px 24px 40px;
+  }
+
+  .welcome-heading {
+    font-size: 1.5rem;
+  }
+
+  .welcome-subheading {
+    font-size: 1rem;
   }
 }

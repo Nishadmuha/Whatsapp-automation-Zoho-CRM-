@@ -1315,6 +1315,62 @@ label {
   color: var(--vx-text-muted);
 }
 
+.settings-health-detail {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--vx-border);
+  border-left: 3px solid var(--vx-red);
+  border-radius: 6px;
+  background: #FAFAFC;
+}
+
+.settings-health-detail[hidden] {
+  display: none;
+}
+
+.settings-health-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.settings-health-detail-area {
+  margin-top: 0.75rem;
+  color: var(--vx-text-heading);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.settings-health-detail p {
+  margin: 0.35rem 0 0;
+  color: var(--vx-text-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.settings-health-detail code {
+  display: block;
+  margin-top: 0.65rem;
+  color: var(--vx-red);
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+
+.settings-val.status-healthy {
+  color: #16A34A;
+}
+
+.settings-val.status-error {
+  color: #DC2626;
+}
+
+.settings-val.status-not_configured,
+.settings-val.status-warning,
+.settings-val.status-unknown {
+  color: #B45309;
+}
+
 /* ==========================================================================
    RESPONSIVE LAYOUT
    ========================================================================== */
@@ -1542,6 +1598,16 @@ body.dark-mode .settings-item {
 
 body.dark-mode .settings-label {
   color: #CDD5E0 !important;
+}
+
+body.dark-mode .settings-health-detail {
+  background: #171A22;
+  border-color: #2A3045;
+  border-left-color: var(--vx-red);
+}
+
+body.dark-mode .settings-health-detail-area {
+  color: #E8EBF0;
 }
 
 body.dark-mode .settings-val {

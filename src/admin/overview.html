@@ -474,21 +474,61 @@
 
           <!-- 3. System Status & Diagnostics Widget -->
           <div class="system-diagnostics-card">
-            <div class="status-indicator-row">
-              <div class="indicator-name">
-                <span class="indicator-pulse-dot"></span>
-                <span>WHATSAPP API STATUS</span>
+            <div class="diagnostics-heading">
+              <div>
+                <div class="diagnostics-title">SYSTEM STATUS</div>
+                <div class="diagnostics-subtitle">Live backend and integration checks</div>
               </div>
-              <span id="diag-whatsapp-val" class="indicator-status-text">OPERATIONAL</span>
+              <span id="diagnostics-overall-status" class="diagnostics-overall-status">CHECKING</span>
             </div>
 
-            <div class="status-indicator-row">
+            <button class="status-indicator-row health-indicator" data-health-key="backend" type="button" aria-label="View Backend status details">
               <div class="indicator-name">
-                <span class="indicator-pulse-dot"></span>
-                <span>ZOHO BOOKS LINK</span>
+                <span class="indicator-pulse-dot" data-health-dot="backend"></span>
+                <span>BACKEND</span>
               </div>
-              <span id="diag-books-val" class="indicator-status-text">CONNECTED</span>
-            </div>
+              <span id="health-status-backend" class="indicator-status-text">CHECKING</span>
+            </button>
+
+            <button class="status-indicator-row health-indicator" data-health-key="webhook" type="button" aria-label="View Webhook status details">
+              <div class="indicator-name">
+                <span class="indicator-pulse-dot" data-health-dot="webhook"></span>
+                <span>WEBHOOK</span>
+              </div>
+              <span id="health-status-webhook" class="indicator-status-text">CHECKING</span>
+            </button>
+
+            <button class="status-indicator-row health-indicator" data-health-key="mongodb" type="button" aria-label="View MongoDB status details">
+              <div class="indicator-name">
+                <span class="indicator-pulse-dot" data-health-dot="mongodb"></span>
+                <span>MONGODB</span>
+              </div>
+              <span id="health-status-mongodb" class="indicator-status-text">CHECKING</span>
+            </button>
+
+            <button class="status-indicator-row health-indicator" data-health-key="whatsapp" type="button" aria-label="View WhatsApp status details">
+              <div class="indicator-name">
+                <span class="indicator-pulse-dot" data-health-dot="whatsapp"></span>
+                <span>WHATSAPP API</span>
+              </div>
+              <span id="health-status-whatsapp" class="indicator-status-text">CHECKING</span>
+            </button>
+
+            <button class="status-indicator-row health-indicator" data-health-key="ai" type="button" aria-label="View AI status details">
+              <div class="indicator-name">
+                <span class="indicator-pulse-dot" data-health-dot="ai"></span>
+                <span>AI SERVICE</span>
+              </div>
+              <span id="health-status-ai" class="indicator-status-text">CHECKING</span>
+            </button>
+
+            <button class="status-indicator-row health-indicator" data-health-key="zoho_crm" type="button" aria-label="View Zoho CRM status details">
+              <div class="indicator-name">
+                <span class="indicator-pulse-dot" data-health-dot="zoho_crm"></span>
+                <span>ZOHO CRM</span>
+              </div>
+              <span id="health-status-zoho_crm" class="indicator-status-text">CHECKING</span>
+            </button>
 
             <button id="btn-diagnostics-action" class="btn-system-diagnostics" type="button">SYSTEM DIAGNOSTICS</button>
           </div>

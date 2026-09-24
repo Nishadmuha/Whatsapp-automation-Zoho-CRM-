@@ -17,11 +17,12 @@ function memoryStore() {
     async getBill(id) { return bills.get(id); },
   };
 }
-function fixture({ billStore = memoryStore(), sourceStore, bill = validBill(), zohoOverrides = {}, whatsappOverrides = {}, extractionOverrides = {} } = {}) {
+function fixture({ billStore = memoryStore(), sourceStore, bill = validBill(), zohoOverrides = {}, whatsappOverrides = {}, extractionOverrides = {}, aiOverrides = {}, logger } = {}) {
   const calls = [], media = new Map();
   let next = 0;
   const extraction = {
     async extractBillFromText(input) { calls.push(['extract', input]); return { success: true, bill: structuredClone(bill) }; },
+    async extractBillFromMedia(input) { calls.push(['vision', input]); return { success: true, bill: structuredClone(bill) }; },
     async applyEditInstructions({ currentBill, editInstruction }) { calls.push(['edit', editInstruction]); return { success: true, bill: { ...currentBill, notes: editInstruction } }; },
     async mergeAdditionalInfo({ currentBill, additionalText }) { calls.push(['merge', additionalText]); return { success: true, bill: { ...currentBill, notes: additionalText } }; },
     ...extractionOverrides,
@@ -45,8 +46,8 @@ function fixture({ billStore = memoryStore(), sourceStore, bill = validBill(), z
     async saveMediaFile(data) { const ref = 'stored-' + media.size; media.set(ref, data); return { storageReference: ref }; },
     async getMediaFile(ref) { return media.get(ref); },
   };
-  const ai = { async extractMediaText(input) { calls.push(['ocr', input]); return 'Supplier LLC INV-100 Cable 2 50 100 VAT 5 Total 105 AED 2026-09-19'; } };
-  const workflow = createBillWorkflow({ billStore, billExtractionService: extraction, zohoBooksClient: zoho, whatsappService: whatsapp, aiService: ai, store });
+  const ai = { async extractMediaText(input) { calls.push(['ocr', input]); return 'Supplier LLC INV-100 Cable 2 50 100 VAT 5 Total 105 AED 2026-09-19'; }, ...aiOverrides };
+  const workflow = createBillWorkflow({ billStore, billExtractionService: extraction, zohoBooksClient: zoho, whatsappService: whatsapp, aiService: ai, store, logger });
   const send = (text, extra = {}) => workflow.processMessage({ messageId: `m-${++next}`, senderPhone: WORKER, messageType: 'text', text, ...extra });
   return { workflow, billStore, calls, extraction, zoho, whatsapp, store, ai, send, media };
 }

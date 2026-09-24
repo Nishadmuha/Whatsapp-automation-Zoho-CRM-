@@ -27,6 +27,47 @@ function sanitizeErrorMessage(message, secrets = []) {
   return clean;
 }
 
+function nullableText(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+function normalizeCustomerContact(contact = {}) {
+  const contactId = nullableText(contact.contact_id ?? contact.contactId ?? contact.id);
+  if (!contactId) return null;
+
+  const contactName = nullableText(contact.contact_name ?? contact.contactName);
+  const companyName = nullableText(contact.company_name ?? contact.companyName);
+  const email = nullableText(contact.email);
+  const phone = nullableText(contact.phone);
+  const mobile = nullableText(contact.mobile);
+  const contactType = nullableText(contact.contact_type ?? contact.contactType);
+  const status = nullableText(contact.status);
+  const displayName = companyName && contactName && companyName !== contactName
+    ? `${companyName} (${contactName})`
+    : companyName || contactName;
+
+  return {
+    // Canonical fields. These are kept separate because Zoho does not promise
+    // that contact_name and company_name are the same value.
+    contactId,
+    contactName,
+    companyName,
+    email,
+    phone,
+    mobile,
+    contactType,
+    status,
+    displayName,
+    // Compatibility aliases for existing callers. The canonical ID remains
+    // contactId and is never derived from a display position or name.
+    id: contactId,
+    name: displayName || '',
+    raw: contact,
+  };
+}
+
 function normalizeDate(input) {
   const { date, issue } = require('./billValidator').normalizeDate(input, 'bill_date');
   if (issue || !date) throw new ZohoBooksError('INVALID_DATE', 'Bill date must be an unambiguous valid calendar date.');
@@ -221,27 +262,68 @@ function createZohoBooksClient({
   async function searchCustomer({ searchText = '' } = {}) {
     const term = String(searchText || '').trim();
     return requestWithRetry(async (token) => {
-      const response = await http.get(`${cleanBaseUrl}/contacts`, {
-        params: { organization_id: cleanOrganizationId, contact_type: 'customer', per_page: 10, ...(term ? { search_text: term } : {}) },
+      const contacts = [];
+      for (let page = 1; page <= 100; page += 1) {
+        const response = await http.get(`${cleanBaseUrl}/contacts`, {
+          params: {
+            organization_id: cleanOrganizationId,
+            contact_type: 'customer',
+            page,
+            per_page: 200,
+            ...(term ? { search_text: term } : {}),
+          },
+          headers: { Authorization: `Zoho-oauthtoken ${token}` },
+          timeout,
+          httpsAgent,
+        });
+        if (response?.data?.code !== undefined && response.data.code !== 0) throw new ZohoBooksError('CUSTOMER_LOOKUP_FAILED', 'Zoho rejected the customer lookup.');
+        const pageContacts = Array.isArray(response?.data?.contacts) ? response.data.contacts : [];
+        contacts.push(...pageContacts);
+        _logger?.debug?.({
+          event: 'zoho.books.customer_lookup.page',
+          page,
+          count: pageContacts.length,
+          fields: [...new Set(pageContacts.flatMap(contact => Object.keys(contact || {})))].sort(),
+        });
+        if (!response?.data?.page_context?.has_more_page) break;
+        if (page === 100) throw new ZohoBooksError('CUSTOMER_LOOKUP_INCOMPLETE', 'Zoho customer lookup could not be completed safely.');
+      }
+
+      const seen = new Set();
+      const mapped = contacts.map(normalizeCustomerContact).filter(contact => {
+        if (!contact || seen.has(contact.contactId)) return false;
+        seen.add(contact.contactId);
+        return Boolean(contact.displayName);
+      });
+      if (!term) return mapped;
+      const needle = term.toLowerCase();
+      return mapped.filter(contact => [contact.contactName, contact.companyName, contact.phone, contact.mobile, contact.email]
+        .filter(Boolean).some(value => String(value).toLowerCase().includes(needle)));
+    }, 'searchCustomer');
+  }
+
+  async function getCustomer(contactId) {
+    const cleanContactId = nullableText(contactId);
+    if (!cleanContactId) throw new ZohoBooksError('INVALID_INPUT', 'contactId is required to fetch a Zoho Books customer.');
+
+    return requestWithRetry(async (token) => {
+      const response = await http.get(`${cleanBaseUrl}/contacts/${encodeURIComponent(cleanContactId)}`, {
+        params: { organization_id: cleanOrganizationId },
         headers: { Authorization: `Zoho-oauthtoken ${token}` },
         timeout,
         httpsAgent,
       });
       if (response?.data?.code !== undefined && response.data.code !== 0) throw new ZohoBooksError('CUSTOMER_LOOKUP_FAILED', 'Zoho rejected the customer lookup.');
-      const mapped = (response?.data?.contacts || []).map(contact => ({
-        id: String(contact.contact_id || contact.id || ''),
-        name: contact.contact_name || contact.company_name || '',
-        companyName: contact.company_name || null,
-        email: contact.email || null,
-        phone: contact.phone || contact.mobile || null,
-        status: contact.status || null,
-        raw: contact,
-      })).filter(contact => contact.id && contact.name);
-      if (!term) return mapped;
-      const needle = term.toLowerCase();
-      return mapped.filter(contact => [contact.name, contact.companyName, contact.phone, contact.email]
-        .filter(Boolean).some(value => String(value).toLowerCase().includes(needle)));
-    }, 'searchCustomer');
+      const contact = normalizeCustomerContact(response?.data?.contact || response?.data);
+      if (!contact) throw new ZohoBooksError('CUSTOMER_LOOKUP_FAILED', 'Zoho returned an invalid customer record.');
+      if (contact.contactId !== cleanContactId) throw new ZohoBooksError('CUSTOMER_ID_MISMATCH', 'Zoho returned a different customer than the one selected.');
+      _logger?.debug?.({
+        event: 'zoho.books.customer_lookup.detail',
+        contactId: contact.contactId,
+        fields: Object.keys(contact.raw || {}).sort(),
+      });
+      return contact;
+    }, 'getCustomer');
   }
 
   async function checkDuplicateBill({ billNumber, vendorId = null }) {
@@ -318,6 +400,7 @@ function createZohoBooksClient({
       date: formattedDate,
       due_date: formattedDueDate,
       line_items: items,
+      ...(customerId ? { customer_id: String(customerId).trim() } : {}),
       ...(currencyId ? { currency_id: currencyId } : {}),
     };
 
@@ -453,6 +536,7 @@ function createZohoBooksClient({
     invalidateToken,
     searchVendor,
     searchCustomer,
+    getCustomer,
     checkDuplicateBill,
     createBill,
     attachBillFile,

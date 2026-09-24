@@ -9,7 +9,9 @@
   const number = value => Number(value || 0).toLocaleString('en-AE');
   const formatAed = value => `AED ${Number(value || 0).toLocaleString('en-AE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const statusLabel = value => text(value).replaceAll('_', ' ').toUpperCase();
+  const healthKeys = ['backend', 'webhook', 'mongodb', 'whatsapp', 'ai', 'zoho_crm'];
   let recentBills = [];
+  let latestHealth = null;
 
   function fetchJson(path) {
     return fetch(path, { credentials: 'same-origin', cache: 'no-store' }).then(response => {
@@ -143,13 +145,94 @@
     bars.forEach((bar, index) => { bar.style.height = `${(counts[index] / max) * 80}%`; });
   }
 
+  function healthStatus(value) {
+    return ['healthy', 'error', 'not_configured', 'warning', 'unknown'].includes(value) ? value : 'unknown';
+  }
+
+  function applyStatusClass(node, status) {
+    if (!node?.classList) return;
+    node.classList.remove('status-healthy', 'status-error', 'status-not_configured', 'status-warning', 'status-unknown');
+    node.classList.add(`status-${healthStatus(status)}`);
+  }
+
+  function fallbackHealthComponent(key, health = {}) {
+    const values = {
+      backend: [health.backend || 'ONLINE', 'Backend', 'The backend health endpoint is responding normally.'],
+      webhook: ['READY', 'Webhook', 'The signed WhatsApp webhook route is registered and ready to accept requests.'],
+      mongodb: [health.mongodb || 'UNKNOWN', 'MongoDB', 'MongoDB status is unavailable.'],
+      whatsapp: [health.whatsapp || 'UNKNOWN', 'WhatsApp', 'WhatsApp status is unavailable.'],
+      ai: [health.openai || 'UNKNOWN', 'AI', 'AI status is unavailable.'],
+      zoho_crm: [health.zoho_crm || 'UNKNOWN', 'Zoho CRM', 'Zoho CRM status is unavailable.'],
+    };
+    const [label, area, message] = values[key] || ['UNKNOWN', key, 'No diagnostic information is available.'];
+    const status = /DISCONNECTED|ERROR|FAILED/i.test(label)
+      ? 'error' : /NOT_CONFIGURED|NOT CONFIGURED/i.test(label) ? 'not_configured' : 'unknown';
+    return { status, label: status === 'unknown' ? label : label.replaceAll('_', ' '), area, message };
+  }
+
+  function showHealthDetail(key) {
+    const component = latestHealth?.components?.[key] || fallbackHealthComponent(key, latestHealth || {});
+    const panel = el('settings-health-detail');
+    const status = el('setting-health-status');
+    const area = el('setting-health-area');
+    const message = el('setting-health-message');
+    const code = el('setting-health-code');
+    if (panel) panel.hidden = false;
+    if (status) {
+      status.textContent = component.label || 'UNKNOWN';
+      applyStatusClass(status, component.status);
+    }
+    if (area) area.textContent = component.area || key;
+    if (message) message.textContent = component.message || 'No diagnostic information is available.';
+    if (code) {
+      code.textContent = component.code || '';
+      code.hidden = !component.code;
+    }
+    const settingsModal = el('settings-dialog');
+    if (settingsModal && typeof settingsModal.showModal === 'function' && !settingsModal.open) settingsModal.showModal();
+  }
+
   function updateHealth(health = {}) {
-    setText('diag-whatsapp-val', health.whatsapp || '—');
-    setText('diag-books-val', health.zoho_books || health.backend || '—');
+    latestHealth = health;
+    const components = health.components || {};
+    healthKeys.forEach(key => {
+      const component = components[key] || fallbackHealthComponent(key, health);
+      const status = healthStatus(component.status);
+      const dot = typeof document.querySelector === 'function'
+        ? document.querySelector(`[data-health-dot="${key}"]`) : null;
+      const value = el(`health-status-${key}`);
+      if (dot) applyStatusClass(dot, status);
+      if (value) {
+        value.textContent = component.label || 'UNKNOWN';
+        applyStatusClass(value, status);
+      }
+    });
+    const hasError = healthKeys.some(key => healthStatus((components[key] || {}).status) === 'error');
+    const hasWarning = healthKeys.some(key => ['not_configured', 'warning', 'unknown'].includes(healthStatus((components[key] || {}).status)));
+    const overall = el('diagnostics-overall-status');
+    if (overall) {
+      overall.textContent = hasError ? 'ERROR DETECTED' : hasWarning ? 'REVIEW CONFIG' : 'ALL SYSTEMS GO';
+      applyStatusClass(overall, hasError ? 'error' : hasWarning ? 'warning' : 'healthy');
+    }
     setText('setting-val-mongo', health.mongodb || '—');
     setText('setting-val-whatsapp', health.whatsapp || '—');
     setText('setting-val-crm', health.zoho_crm || '—');
     setText('kpi-sync-status', health.zoho_books || health.zoho_crm || health.backend || '—');
+  }
+
+  function renderHealthFailure(error) {
+    const status = error?.status ? `HTTP ${error.status}` : 'UNAVAILABLE';
+    const message = error?.status
+      ? `The health endpoint returned ${status}. Check the backend logs and server availability.`
+      : 'The health endpoint could not be reached. Check that the backend process is running.';
+    const components = Object.fromEntries(healthKeys.map(key => [key, {
+      status: key === 'backend' ? 'error' : 'unknown',
+      label: key === 'backend' ? 'ERROR' : 'UNKNOWN',
+      area: key === 'backend' ? 'Backend' : key,
+      message: key === 'backend' ? message : 'This check could not run because the backend health endpoint is unavailable.',
+      ...(key === 'backend' ? { code: 'HEALTH_ENDPOINT_' + status.replace(/[^A-Z0-9]+/gi, '_') } : {}),
+    }]));
+    updateHealth({ backend: 'ERROR', components });
   }
 
   async function loadLiveMetrics() {
@@ -180,6 +263,7 @@
       renderChart(recentBills);
     }
     if (health) updateHealth(health);
+    else renderHealthFailure(results[4]?.reason);
     setText('kpi-avg-time', '—');
   }
 
@@ -229,6 +313,9 @@
   const settingsModal = el('settings-dialog');
   if (el('btn-diagnostics-action') && settingsModal) el('btn-diagnostics-action').addEventListener('click', () => settingsModal.showModal?.());
   if (el('close-settings') && settingsModal) el('close-settings').addEventListener('click', () => settingsModal.close?.());
+  document.querySelectorAll('[data-health-key]').forEach(button => {
+    button.addEventListener('click', () => showHealthDetail(button.dataset.healthKey));
+  });
 
   if (el('btn-bills-export')) el('btn-bills-export').addEventListener('click', () => {
     const rows = recentBills.map(bill => [bill.bill_number || bill.bill_id || '', bill.vendor_name || '', bill.bill_date || '', bill.category || '', Number(bill.total_amount || 0).toFixed(2), bill.zoho_status || bill.status || '']);

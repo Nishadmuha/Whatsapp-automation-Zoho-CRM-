@@ -1,6 +1,6 @@
 'use strict';
 
-const { conversationIntent } = require('../leads/bossConversation');
+const { conversationIntent } = require('../../utils/conversationIntent');
 
 const BOSS_BOUNDARIES = new Set(['greeting', 'new_lead', 'discard', 'continue', 'confirmation', 'defer']);
 const BOOKS_COMMAND = /^(?:1|2|3|save|edit|delete)$/i;

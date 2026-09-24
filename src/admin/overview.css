@@ -659,6 +659,43 @@
   color: #FFFFFF;
 }
 
+.diagnostics-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.diagnostics-title {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.diagnostics-subtitle {
+  margin-top: 0.25rem;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+}
+
+.diagnostics-overall-status {
+  color: #FACC15;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.diagnostics-overall-status.status-healthy {
+  color: var(--vx-green);
+}
+
+.diagnostics-overall-status.status-error {
+  color: #F87171;
+}
+
 .status-indicator-row {
   display: flex;
   justify-content: space-between;
@@ -667,6 +704,26 @@
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.05em;
+}
+
+.health-indicator {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease, padding 0.15s ease;
+}
+
+.health-indicator:hover,
+.health-indicator:focus-visible {
+  border-radius: 4px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.09);
+  padding-left: 0.45rem;
+  padding-right: 0.45rem;
 }
 
 .indicator-name {
@@ -681,13 +738,44 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
+  background: #FACC15;
+  box-shadow: 0 0 6px rgba(250, 204, 21, 0.8);
+}
+
+.indicator-pulse-dot.status-healthy {
   background: var(--vx-green);
   box-shadow: 0 0 6px rgba(34, 197, 94, 0.8);
 }
 
+.indicator-pulse-dot.status-error {
+  background: #EF4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.85);
+}
+
+.indicator-pulse-dot.status-not_configured,
+.indicator-pulse-dot.status-warning,
+.indicator-pulse-dot.status-unknown {
+  background: #FACC15;
+  box-shadow: 0 0 6px rgba(250, 204, 21, 0.8);
+}
+
 .indicator-status-text {
-  color: var(--vx-green);
+  color: #FACC15;
   font-weight: 800;
+}
+
+.indicator-status-text.status-healthy {
+  color: var(--vx-green);
+}
+
+.indicator-status-text.status-error {
+  color: #F87171;
+}
+
+.indicator-status-text.status-not_configured,
+.indicator-status-text.status-warning,
+.indicator-status-text.status-unknown {
+  color: #FACC15;
 }
 
 .btn-system-diagnostics {

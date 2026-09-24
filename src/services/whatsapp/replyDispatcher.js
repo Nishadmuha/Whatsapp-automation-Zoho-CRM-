@@ -60,7 +60,11 @@ function createReplyDispatcher({ store, whatsapp, config, logger, replyText = nu
           return true;
         }
       }
-      log('info', 'whatsapp_reply_sent', { delivery_state: 'SENT', persisted: true });
+      const createdAt = Date.parse(reply.created_at || '');
+      log('info', 'whatsapp_reply_sent', {
+        delivery_state: 'SENT', persisted: true,
+        ...(Number.isFinite(createdAt) ? { duration_ms: Math.max(0, Date.now() - createdAt) } : {}),
+      });
       await store.appendLog(reply.message_id, 'whatsapp_reply_sent', { status: 'SENT' }).catch(() => {});
       return true;
     } finally {

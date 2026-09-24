@@ -3,17 +3,73 @@ const { randomUUID, createHash } = require('node:crypto');
 const { validateBill } = require('./billValidator');
 const { formatInitialReviewPrompt, formatCustomerSelectionPrompt, formatSuccessReport, formatDuplicateWarning } = require('./billFormatter');
 const { PAYMENT_METHODS, normalizePaymentMethod } = require('./paymentMethods');
+const { mediaKind, normalizeMediaMimeType } = require('../../utils/media');
 // Preserve persisted legacy state names; only SAVE/1 can authorize a write.
 const WORKFLOW_STATES = Object.freeze({ PROCESSING: 'EXTRACTING', AWAITING_ADDITIONAL_INFO_CHOICE: 'AWAITING_ADDITIONAL_INFO', WAITING_FOR_ADDITIONAL_INFO: 'WAITING_FOR_ADDITIONAL_INFO', WAITING_FOR_CUSTOMER_SELECTION: 'WAITING_FOR_CUSTOMER_SELECTION', AWAITING_EDIT_CHOICE: 'AWAITING_EDIT', WAITING_FOR_EDIT_INSTRUCTION: 'WAITING_FOR_EDIT_INSTRUCTION', AWAITING_FINAL_CONFIRMATION: 'AWAITING_FINAL_CONFIRMATION', SAVING: 'CREATING_IN_ZOHO', COMPLETED: 'COMPLETED', CANCELLED: 'CANCELLED', FAILED: 'FAILED' });
 const REVIEW = WORKFLOW_STATES.AWAITING_FINAL_CONFIRMATION;
 const EDIT = WORKFLOW_STATES.WAITING_FOR_EDIT_INSTRUCTION;
 const SAVING = WORKFLOW_STATES.SAVING;
+const PIPELINE_FAILURES = Object.freeze({
+  DOWNLOAD: 'A_MEDIA_DOWNLOAD_FAILURE',
+  EXTRACTION: 'B_OCR_VISION_EXTRACTION_FAILURE',
+  JSON: 'C_INVALID_AI_JSON',
+  INSUFFICIENT: 'D_INSUFFICIENT_BILL_INFORMATION',
+  STORAGE: 'MEDIA_STORAGE_FAILURE',
+});
+function pipelineError(category, reason) {
+  const error = new Error(reason);
+  error.code = 'BILL_MEDIA_PIPELINE_FAILED';
+  error.category = category;
+  error.reason = reason;
+  return error;
+}
+function hasBillInformation(bill = {}) {
+  return Boolean(
+    (typeof bill.vendor_name === 'string' && bill.vendor_name.trim())
+    || (typeof bill.bill_number === 'string' && bill.bill_number.trim())
+    || (bill.total_amount !== null && bill.total_amount !== undefined && Number.isFinite(bill.total_amount))
+    || (Array.isArray(bill.line_items) && bill.line_items.length)
+  );
+}
+function isWeakBillText(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.replace(/[^\p{L}\p{N}]/gu, '').length < 30) return true;
+  const signals = [
+    /\b(?:invoice|bill|receipt|tax invoice)\b/i,
+    /\b(?:total|subtotal|amount|vat|tax)\b/i,
+    /\b(?:aed|usd|eur|gbp|sar|qar|dhs?)\b/i,
+    /\b\d+(?:[.,]\d{2})\b/,
+    /\b(?:vendor|supplier|sold by|from)\b/i,
+  ];
+  return signals.filter((pattern) => pattern.test(text)).length < 2;
+}
 function parseYesNo(input) {
   const value = String(input || '').trim().toLowerCase().replace(/[.!?]+$/, '');
   return ['yes', 'y', 'yeah', 'yep'].includes(value) ? 'YES' : ['no', 'n', 'nope'].includes(value) ? 'NO' : null;
 }
 function command(text) {
   return ({ '1': 'SAVE', SAVE: 'SAVE', '2': 'EDIT', EDIT: 'EDIT', '3': 'DELETE', DELETE: 'DELETE' })[String(text || '').trim().toUpperCase()] || null;
+}
+function nullableText(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+function normalizeCustomerRecord(customer = {}) {
+  const contactId = nullableText(customer.contactId ?? customer.contact_id ?? customer.id);
+  const contactName = nullableText(customer.contactName ?? customer.contact_name ?? (!customer.contactId && !customer.contact_id ? customer.name : null));
+  const companyName = nullableText(customer.companyName ?? customer.company_name);
+  const email = nullableText(customer.email);
+  const phone = nullableText(customer.phone);
+  const mobile = nullableText(customer.mobile);
+  const contactType = nullableText(customer.contactType ?? customer.contact_type);
+  const status = nullableText(customer.status);
+  const displayName = nullableText(customer.displayName)
+    || (companyName && contactName && companyName !== contactName ? `${companyName} (${contactName})` : companyName || contactName);
+  return { contactId, contactName, companyName, email, phone, mobile, contactType, status, displayName };
+}
+function isSafeContactId(value) {
+  return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 }
 function parseWorkerDetails(text, { allowShorthand = true } = {}) {
   const source = String(text || '').trim();
@@ -51,7 +107,10 @@ function mergeWorkerDetails(currentBill, text, parsed = parseWorkerDetails(text)
     ...(parsed.customer_details ? { customer_details: { ...existing, ...parsed.customer_details } } : {}),
   };
 }
-function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient, whatsappService = null, aiService = null, store = null, config = {} } = {}) {
+function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient, whatsappService = null, aiService = null, store = null, config = {}, logger = null } = {}) {
+  function log(level, metadata) {
+    try { logger?.[level]?.(metadata); } catch { /* Ignore logger failures */ }
+  }
   function reply(session, text, extra = {}) {
     return { success: true, sessionId: session?.session_id, billId: session?.bill_id, state: session?.state, replyText: text, ...extra };
   }
@@ -63,73 +122,210 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     } catch {
       return reply(session, 'I could not load the Zoho Books customer list. Reply EDIT with the customer name, or try again.', { state: REVIEW, bill });
     }
-    const options = (customers || []).slice(0, 10).map(customer => ({
-      id: String(customer.id), name: String(customer.name || customer.companyName || 'Unnamed customer').slice(0, 160),
-      description: String(customer.phone || customer.email || '').slice(0, 72),
-      phone: customer.phone || null, email: customer.email || null,
-    })).filter(option => /^[a-zA-Z0-9_-]+$/.test(option.id));
+    const options = (customers || []).map(customer => {
+      const normalized = normalizeCustomerRecord(customer);
+      if (!isSafeContactId(normalized.contactId) || !normalized.displayName) return null;
+      return {
+        id: normalized.contactId,
+        contactId: normalized.contactId,
+        contactName: normalized.contactName,
+        companyName: normalized.companyName,
+        email: normalized.email,
+        phone: normalized.phone,
+        mobile: normalized.mobile,
+        contactType: normalized.contactType,
+        status: normalized.status,
+        name: normalized.displayName.slice(0, 160),
+        displayName: normalized.displayName.slice(0, 160),
+        description: String(normalized.phone || normalized.mobile || normalized.email || '').slice(0, 72),
+      };
+    }).filter(Boolean);
     if (!options.length) {
       return reply(session, searchText ? 'No matching Zoho Books customer was found. Reply with another customer name.' : 'No Zoho Books customers were found. Reply EDIT with the customer name.', { state: REVIEW, bill });
     }
+    const visibleOptions = options.slice(0, 10);
     await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, customer_options: options, bill_data: bill });
-    return reply(session, formatCustomerSelectionPrompt(options), {
+    return reply(session, formatCustomerSelectionPrompt(visibleOptions), {
       state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION,
       bill,
       replyInteractive: {
         header: 'Customer details', body: 'Select the customer from Zoho Books.', footer: 'Voltronix Contracting LLC',
-        button: 'Select customer', sections: [{ title: 'Zoho Books customers', rows: options.map(option => ({ id: `zoho-customer:${option.id}`, title: option.name.slice(0, 24), description: option.description })) }],
+        button: 'Select customer', sections: [{ title: 'Zoho Books customers', rows: visibleOptions.map(option => ({ id: `zoho-customer:${option.contactId}`, title: option.name.slice(0, 24), description: option.description })) }],
       },
     });
   }
   async function selectCustomer(session, incoming) {
     const options = Array.isArray(session.customer_options) ? session.customer_options : [];
-    const rawId = incoming.interactiveId || (options[Number(incoming.text) - 1] ? `zoho-customer:${options[Number(incoming.text) - 1].id}` : '');
-    const option = options.find(candidate => rawId === `zoho-customer:${candidate.id}` || rawId === candidate.id);
+    const rawId = incoming.interactiveId || (options[Number(incoming.text) - 1] ? `zoho-customer:${options[Number(incoming.text) - 1].contactId || options[Number(incoming.text) - 1].id}` : '');
+    const option = options.find(candidate => rawId === `zoho-customer:${candidate.contactId || candidate.id}` || rawId === (candidate.contactId || candidate.id));
     if (!option) return reply(session, 'Please select one of the customers shown in the Zoho Books list.', { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION });
+    const selectedId = option.contactId || option.id;
+    let selectedRecord = option;
+    if (typeof zohoBooksClient?.getCustomer === 'function') {
+      try {
+        selectedRecord = await zohoBooksClient.getCustomer(selectedId);
+      } catch {
+        return reply(session, 'I could not load the selected Zoho Books customer. Please select it again or search by customer name.', { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION });
+      }
+    }
+    const customer = normalizeCustomerRecord(selectedRecord);
+    if (customer.contactId !== selectedId || !customer.displayName) {
+      return reply(session, 'The selected Zoho Books customer could not be verified. Please select it again.', { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION });
+    }
     // Zoho is authoritative, including missing values; do not retain OCR guesses.
-    const bill = { ...session.bill_data, customer_details: { ...(session.bill_data?.customer_details || {}), customer_id: option.id, customer_name: option.name, customer_phone: option.phone || null, customer_email: option.email || null } };
+    const customerDetails = {
+      ...(session.bill_data?.customer_details || {}),
+      customer_id: customer.contactId,
+      contact_id: customer.contactId,
+      customer_name: customer.displayName,
+      contact_name: customer.contactName,
+      company_name: customer.companyName,
+      customer_contact_name: customer.contactName,
+      customer_company_name: customer.companyName,
+      customer_phone: customer.phone,
+      customer_mobile: customer.mobile,
+      customer_email: customer.email,
+      customer_contact_type: customer.contactType,
+      customer_status: customer.status,
+    };
+    const bill = { ...session.bill_data, customer_details: customerDetails };
     await billStore.updateBill(session.bill_id, { ...bill, status: 'PENDING_REVIEW' });
     await billStore.updateBillSession(session.session_id, { state: REVIEW, bill_data: bill, customer_options: [], last_message_id: incoming.messageId });
     return reply(session, formatInitialReviewPrompt(bill), { state: REVIEW, bill });
   }
   async function readSingleInput(incoming) {
     const media = Boolean(incoming.mediaId || incoming.mediaBuffer || ['image', 'document', 'pdf', 'audio'].includes(incoming.messageType));
-    if (!media) return { text: incoming.text || '', attachment: null };
+    if (!media) return { text: incoming.text || '', attachment: null, media: null, ocrError: null };
     let buffer = incoming.mediaBuffer;
     let mimeType = incoming.mediaMimeType;
     if (!buffer && incoming.mediaId && whatsappService?.downloadMedia) {
-      const downloaded = await whatsappService.downloadMedia(incoming.mediaId);
-      buffer = Buffer.isBuffer(downloaded) ? downloaded : downloaded?.buffer;
-      mimeType = downloaded?.mimeType || mimeType;
+      try {
+        const downloaded = await whatsappService.downloadMedia(incoming.mediaId);
+        buffer = Buffer.isBuffer(downloaded) ? downloaded : downloaded?.buffer;
+        mimeType = downloaded?.mimeType || mimeType;
+      } catch (error) {
+        throw pipelineError(PIPELINE_FAILURES.DOWNLOAD, error?.code || 'WHATSAPP_MEDIA_DOWNLOAD_FAILED');
+      }
     }
-    if (!Buffer.isBuffer(buffer) || !buffer.length || !mimeType) throw new Error('MEDIA_UNAVAILABLE');
-    if (!store?.saveMediaFile) throw new Error('MEDIA_STORAGE_UNAVAILABLE');
-    const filename = incoming.mediaFilename || `bill-${randomUUID()}.${mimeType === 'application/pdf' ? 'pdf' : mimeType.split('/')[1]?.split(';')[0] || 'bin'}`;
-    const saved = await store.saveMediaFile({ messageId: incoming.messageId, mediaId: incoming.mediaId, buffer, mimeType, filename });
+    mimeType = normalizeMediaMimeType(mimeType);
+    const kind = mediaKind(mimeType);
+    if (!Buffer.isBuffer(buffer) || !buffer.length) throw pipelineError(PIPELINE_FAILURES.DOWNLOAD, 'MEDIA_BYTES_UNAVAILABLE');
+    if (!kind) throw pipelineError(PIPELINE_FAILURES.DOWNLOAD, 'MEDIA_TYPE_UNSUPPORTED');
+    if (!store?.saveMediaFile) throw pipelineError(PIPELINE_FAILURES.STORAGE, 'MEDIA_STORAGE_UNAVAILABLE');
+    const filename = incoming.mediaFilename || `bill-${randomUUID()}.${mimeType === 'application/pdf' ? 'pdf' : mimeType.split('/')[1] || 'bin'}`;
+    const savePromise = Promise.resolve()
+      .then(() => store.saveMediaFile({ messageId: incoming.messageId, mediaId: incoming.mediaId, buffer, mimeType, filename }))
+      .catch(error => { throw pipelineError(PIPELINE_FAILURES.STORAGE, error?.code || 'MEDIA_PERSIST_FAILED'); });
+    let ocrError = null;
+    const ocrPromise = Promise.resolve().then(async () => {
+      if (typeof aiService?.extractMediaText !== 'function') throw Object.assign(new Error(), { code: 'OCR_SERVICE_UNAVAILABLE' });
+      const result = await aiService.extractMediaText({ buffer, mimeType, type: kind });
+      if (typeof result !== 'string' || !result.trim()) throw Object.assign(new Error(), { code: 'OCR_EMPTY_RESULT' });
+      return result;
+    }).catch(error => {
+      ocrError = error?.code || 'OCR_EXTRACTION_FAILED';
+      log('warn', { event: 'books.bill_media_pipeline.ocr_failed', category: PIPELINE_FAILURES.EXTRACTION, reason: ocrError, messageId: incoming.messageId, mimeType });
+      return '';
+    });
+    // Storage and OCR consume the same downloaded bytes but are independent.
+    // Await both so the attachment remains durable while their latency overlaps.
+    const [saved, ocrText] = await Promise.all([savePromise, ocrPromise]);
     const storageReference = typeof saved === 'string' ? saved : saved?.storageReference;
-    if (!storageReference) throw new Error('MEDIA_NOT_PERSISTED');
-    const extracted = await aiService?.extractMediaText({ buffer, mimeType, type: incoming.messageType === 'audio' ? 'audio' : mimeType.startsWith('image/') ? 'image' : 'document' });
-    if (typeof extracted !== 'string' || !extracted.trim()) throw new Error('MEDIA_UNREADABLE');
-    return { text: [extracted, incoming.text].filter(Boolean).join('\n'), attachment: { storage_reference: storageReference, original_filename: filename, mime_type: mimeType, media_id: incoming.mediaId, message_id: incoming.messageId } };
+    if (!storageReference) throw pipelineError(PIPELINE_FAILURES.STORAGE, 'MEDIA_NOT_PERSISTED');
+    const attachment = { storage_reference: storageReference, original_filename: filename, mime_type: mimeType, media_id: incoming.mediaId, message_id: incoming.messageId };
+    return {
+      text: [ocrText, incoming.text].filter((value) => typeof value === 'string' && value.trim()).join('\n'),
+      attachment,
+      media: { buffer, mimeType, kind, filename, messageId: incoming.messageId },
+      ocrError,
+    };
   }
   async function readInput(incoming) {
+    const startedAt = Date.now();
     const items = Array.isArray(incoming.items) && incoming.items.length ? incoming.items : [incoming];
     const settled = await Promise.allSettled(items.map(readSingleInput));
     const text = [];
     const attachments = [];
+    const media = [];
+    const ocrErrors = [];
     const failedMessageIds = [];
     for (let index = 0; index < settled.length; index += 1) {
       const outcome = settled[index];
       if (outcome.status === 'fulfilled') {
         if (outcome.value.text?.trim()) text.push(outcome.value.text.trim());
         if (outcome.value.attachment) attachments.push(outcome.value.attachment);
+        if (outcome.value.media) media.push(outcome.value.media);
+        if (outcome.value.ocrError) ocrErrors.push(outcome.value.ocrError);
       } else {
         failedMessageIds.push(items[index].messageId);
-        if (items[index].text?.trim()) text.push(items[index].text.trim());
+        const error = outcome.reason;
+        log('error', {
+          event: 'books.bill_media_pipeline.failed',
+          category: error?.category || PIPELINE_FAILURES.DOWNLOAD,
+          reason: error?.reason || error?.code || 'MEDIA_INPUT_FAILED',
+          messageId: items[index].messageId,
+        });
       }
     }
-    if (!text.length) throw new Error('MEDIA_UNREADABLE');
-    return { text: text.join('\n'), attachment: attachments[0] || null, attachments, failedMessageIds };
+    if (failedMessageIds.length) throw settled.find((outcome) => outcome.status === 'rejected').reason;
+    if (!text.length && !media.some((item) => ['image', 'document'].includes(item.kind))) {
+      throw pipelineError(PIPELINE_FAILURES.EXTRACTION, ocrErrors[0] || 'NO_EXTRACTABLE_BILL_INPUT');
+    }
+    log('info', {
+      event: 'books_media_ready',
+      batch_size: items.length,
+      media_count: media.length,
+      duration_ms: Date.now() - startedAt,
+    });
+    return { text: text.join('\n'), attachment: attachments[0] || null, attachments, media, ocrErrors, failedMessageIds };
+  }
+  function groundedBill(extracted) {
+    const grounded = { ...extracted.bill };
+    for (const [field, evidence] of Object.entries(extracted.grounding || {})) {
+      if (evidence === 'inferred') grounded[field] = field === 'line_items' ? [] : null;
+    }
+    return grounded;
+  }
+  async function extractBillFromInput(input, sourceType) {
+    const directMedia = (input.media || []).filter((item) => ['image', 'document'].includes(item.kind));
+    const weakText = isWeakBillText(input.text);
+    const attempts = [];
+    const tryText = async () => {
+      if (!input.text?.trim()) return null;
+      const result = await billExtractionService.extractBillFromText({ text: input.text, sourceType });
+      attempts.push(result);
+      return result;
+    };
+    const tryMedia = async () => {
+      if (!directMedia.length || typeof billExtractionService.extractBillFromMedia !== 'function') return null;
+      log('info', {
+        event: 'books.bill_media_pipeline.vision_fallback',
+        reason: input.ocrErrors?.length ? 'OCR_FAILED' : weakText ? 'OCR_TEXT_WEAK' : 'TEXT_EXTRACTION_FAILED',
+        mediaCount: directMedia.length,
+      });
+      const result = await billExtractionService.extractBillFromMedia({ media: directMedia, caption: input.text || '', sourceType });
+      attempts.push(result);
+      return result;
+    };
+
+    if (!weakText || !directMedia.length) {
+      const textResult = await tryText();
+      if (textResult?.success && textResult.bill && hasBillInformation(textResult.bill)) return textResult;
+    }
+    const mediaResult = await tryMedia();
+    if (mediaResult?.success && mediaResult.bill && hasBillInformation(mediaResult.bill)) return mediaResult;
+    if (weakText && input.text?.trim() && directMedia.length) {
+      const textResult = await tryText();
+      if (textResult?.success && textResult.bill && hasBillInformation(textResult.bill)) return textResult;
+    }
+
+    if (attempts.some((result) => result?.success && result.bill)) {
+      throw pipelineError(PIPELINE_FAILURES.INSUFFICIENT, 'NO_IDENTIFYING_OR_FINANCIAL_BILL_FIELDS');
+    }
+    if (attempts.length && attempts.every((result) => result?.error?.code === 'AI_MALFORMED_RESPONSE')) {
+      throw pipelineError(PIPELINE_FAILURES.JSON, 'AI_MALFORMED_RESPONSE');
+    }
+    throw pipelineError(PIPELINE_FAILURES.EXTRACTION, attempts.find((result) => result?.error?.code)?.error.code || input.ocrErrors?.[0] || 'OCR_AND_VISION_FAILED');
   }
   async function processUnlocked(incoming) {
     if (!incoming.senderPhone) return reply(null, 'Sender phone is required.', { success: false });
@@ -177,7 +373,12 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       if (!media && editDetails.payment_type_invalid) return reply(session, `Payment method must be one of: ${PAYMENT_METHODS.join(', ')}.`, { state: EDIT });
       try {
         const input = await readInput(incoming);
-        const edited = media ? await billExtractionService.mergeAdditionalInfo({ currentBill: session.bill_data, additionalText: input.text }) : await billExtractionService.applyEditInstructions({ currentBill: session.bill_data, editInstruction: input.text });
+        let edited;
+        if (media && isWeakBillText(input.text) && input.media?.some((item) => ['image', 'document'].includes(item.kind))) {
+          edited = await extractBillFromInput(input, incoming.messageType || 'media_edit');
+        } else {
+          edited = media ? await billExtractionService.mergeAdditionalInfo({ currentBill: session.bill_data, additionalText: input.text }) : await billExtractionService.applyEditInstructions({ currentBill: session.bill_data, editInstruction: input.text });
+        }
         if (!edited?.success || !edited.bill) throw new Error('EDIT_FAILED');
         // An incomplete model response must not erase unrelated existing facts.
         const updates = Object.fromEntries(Object.entries(edited.bill).filter(([field, value]) =>
@@ -187,17 +388,16 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
         await billStore.updateBill(session.bill_id, { ...bill, attachments, status: 'PENDING_REVIEW' });
         await billStore.updateBillSession(session.session_id, { state: REVIEW, bill_data: bill, attachments, last_message_id: incoming.messageId });
         return reply(session, formatInitialReviewPrompt(bill), { state: REVIEW, bill });
-      } catch { return reply(session, 'I could not read or apply the correction. The existing bill is unchanged. Please resend clear details, or reply DELETE.'); }
+      } catch (error) {
+        log('error', { event: 'books.bill_media_pipeline.failed', category: error?.category || PIPELINE_FAILURES.EXTRACTION, reason: error?.reason || error?.code || 'EDIT_FAILED', messageId: incoming.messageId });
+        return reply(session, 'I could not read or apply the correction. The existing bill is unchanged. Please resend clear details, or reply DELETE.');
+      }
     }
     if (!media && (cmd || /^(hi|hello|hey|salaam|start|\?)[.!?]*$/i.test((incoming.text || '').trim()) || !(incoming.text || '').trim())) return reply(null, 'Please send the bill image, PDF, or bill details.');
     try {
       const input = await readInput(incoming);
-      const extracted = await billExtractionService.extractBillFromText({ text: input.text, sourceType: incoming.messageType || 'text' });
-      if (!extracted?.success || !extracted.bill) throw new Error('EXTRACTION_FAILED');
-      const grounded = { ...extracted.bill };
-      for (const [field, evidence] of Object.entries(extracted.grounding || {})) {
-        if (evidence === 'inferred') grounded[field] = field === 'line_items' ? [] : null;
-      }
+      const extracted = await extractBillFromInput(input, incoming.messageType || 'text');
+      const grounded = groundedBill(extracted);
       const bill = validateBill(mergeWorkerDetails(mergeWorkerDetails(grounded, input.text, parseWorkerDetails(input.text, { allowShorthand: false })), input.text, parseWorkerDetails(input.text))).normalizedBill;
       const attachments = input.attachments || (input.attachment ? [input.attachment] : []);
       const draft = { session_id: randomUUID(), bill_id: randomUUID(), worker_phone: incoming.senderPhone, state: REVIEW, last_message_id: incoming.messageId, bill_data: bill, attachments };
@@ -206,13 +406,25 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       const customerPrompt = await askForCustomer(draft, bill);
       if (customerPrompt) return customerPrompt;
       return reply(draft, formatInitialReviewPrompt(bill), { bill });
-    } catch { return reply(null, 'I could not read or store this bill safely. Nothing was saved to Zoho Books. Please send a clearer image/PDF or the bill details as text.'); }
+    } catch (error) {
+      log('error', {
+        event: 'books.bill_media_pipeline.failed',
+        category: error?.category || PIPELINE_FAILURES.EXTRACTION,
+        reason: error?.reason || error?.code || 'BILL_PIPELINE_FAILED',
+        messageId: incoming.messageId,
+      });
+      return reply(null, 'I could not read or store this bill safely. Nothing was saved to Zoho Books. Please send a clearer image/PDF or the bill details as text.');
+    }
   }
   async function save(session, messageId) {
     const validation = validateBill(session.bill_data);
     const bill = { ...validation.normalizedBill, payment_type: normalizePaymentMethod(validation.normalizedBill.payment_type) };
     const customer = bill.customer_details || {};
-    if (!bill.payment_type || !customer.customer_name) {
+    const customerId = customer.contact_id || customer.customer_id;
+    // Manually supplied legacy customer details remain supported when the
+    // Contacts lookup is unavailable. A customer selected from Zoho always
+    // carries the verified contact_id and it is forwarded to bill creation.
+    if (!bill.payment_type || !customer.customer_name || (typeof zohoBooksClient?.searchCustomer === 'function' && !customerId)) {
       return reply(session, `Before SAVE, please send a valid payment method and customer details.\nPayment method: ${PAYMENT_METHODS.join(' / ')}\nCustomer: ABC Contracting, 0501234567, Dubai site`);
     }
     const missing = ['bill_number', 'bill_date', 'currency'].filter(field => !bill[field]);
@@ -238,9 +450,9 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     }
     await billStore.updateBill(session.bill_id, { status: 'CREATING', zoho_status: 'SYNCING', zoho_vendor_id: vendor.id });
     try {
-      const detailNote = [`Payment method: ${bill.payment_type}`, `Customer: ${customer.customer_name}`, customer.customer_id ? `Zoho customer ID: ${customer.customer_id}` : null, customer.customer_phone ? `Customer phone: ${customer.customer_phone}` : null, customer.project_site ? `Project/site: ${customer.project_site}` : null].filter(Boolean).join(' | ');
+      const detailNote = [`Payment method: ${bill.payment_type}`, `Customer: ${customer.customer_name}`, customerId ? `Zoho customer ID: ${customerId}` : null, customer.customer_phone ? `Customer phone: ${customer.customer_phone}` : null, customer.project_site ? `Project/site: ${customer.project_site}` : null].filter(Boolean).join(' | ');
       const notes = [bill.notes, detailNote].filter(Boolean).join('\n');
-      const created = await zohoBooksClient.createBill({ vendorId: vendor.id, billNumber: bill.bill_number, billDate: bill.bill_date, dueDate: bill.due_date, lineItems: bill.line_items, total: bill.total_amount, currency: bill.currency, currencyId: bill.currency_id, customerId: customer.customer_id || null, paymentType: bill.payment_type, notes });
+      const created = await zohoBooksClient.createBill({ vendorId: vendor.id, billNumber: bill.bill_number, billDate: bill.bill_date, dueDate: bill.due_date, lineItems: bill.line_items, total: bill.total_amount, currency: bill.currency, currencyId: bill.currency_id, customerId: customerId || null, paymentType: bill.payment_type, notes });
       if (!created?.id) throw new Error('MISSING_ZOHO_ID');
       // Persist the returned ID BEFORE any attachment or outbound document work.
       await billStore.updateBill(session.bill_id, { zoho_bill_id: created.id, zoho_bill_url: zohoBooksClient.buildZohoBillUrl(created.id), zoho_status: 'SYNCED', status: 'COMPLETED' });
