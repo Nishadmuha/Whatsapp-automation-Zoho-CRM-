@@ -597,6 +597,7 @@ class BillStore {
       bill_date: billData.bill_date || null,
       due_date: billData.due_date || null,
       currency: billData.currency || null,
+      organization: billData.organization || null,
 
       subtotal: typeof billData.subtotal === 'number' ? billData.subtotal : null,
       tax_amount: typeof billData.tax_amount === 'number' ? billData.tax_amount : null,
@@ -879,6 +880,9 @@ class BillStore {
         break;
       case 'WAITING_FOR_CURRENCY':
         pendingAction = 'Waiting for worker to provide the bill currency';
+        break;
+      case 'WAITING_FOR_ORGANIZATION':
+        pendingAction = 'Waiting for worker to select the bill organization';
         break;
       case 'WAITING_FOR_CUSTOMER_SELECTION':
         pendingAction = 'Waiting for worker to select a Zoho Books customer';

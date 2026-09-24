@@ -1,7 +1,7 @@
 'use strict';
 const { createBillWorkflow } = require('../src/services/books/billWorkflow');
 const WORKER = '+971568556901';
-const validBill = () => ({ vendor_name: 'Supplier LLC', bill_number: 'INV-100', bill_date: '2026-09-19', due_date: null, currency: 'AED', subtotal: 100, tax_amount: 5, total_amount: 105, line_items: [{ name: 'Cable', quantity: 2, rate: 50, amount: 100, tax_percentage: 5 }], payment_type: 'Credit Card', customer_details: { customer_name: 'ABC Contracting', customer_phone: '+971501234567', project_site: 'Dubai site' }, notes: null });
+const validBill = () => ({ vendor_name: 'Supplier LLC', bill_number: 'INV-100', bill_date: '2026-09-19', due_date: null, currency: 'AED', organization: { name: 'VOLTRONIX CONTRACTING LLC', organizationId: '828765858', confidence: 1 }, subtotal: 100, tax_amount: 5, total_amount: 105, line_items: [{ name: 'Cable', quantity: 2, rate: 50, amount: 100, tax_percentage: 5 }], payment_type: 'Credit Card', customer_details: { customer_name: 'ABC Contracting', customer_phone: '+971501234567', project_site: 'Dubai site' }, notes: null });
 function memoryStore() {
   const sessions = new Map(), bills = new Map();
   return {

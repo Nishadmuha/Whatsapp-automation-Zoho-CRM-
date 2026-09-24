@@ -1728,6 +1728,16 @@ class MongoMessageStore {
     return res.matchedCount === 1;
   }
 
+  async reopenLeadSessionForContact(leadId) {
+    if (typeof leadId !== 'string' || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(leadId)) throw new TypeError('Invalid lead id.');
+    const now = await this._now();
+    const res = await this.col('lead_sessions').updateOne(
+      { lead_id: leadId, state: 'completed' },
+      { $set: { state: 'collecting', pending_action: null, completed_at: null, updated_at: now } }
+    );
+    return res.matchedCount === 1;
+  }
+
   async updateReplyText(messageId, text) {
     string(messageId, 'message id', 128);
     string(text, 'reply text', 4096);

@@ -27,14 +27,14 @@ test('PDF retrieval reads EXACT created ID, never original attachment or OCR', a
     async post() { return { data: { access_token: 'synthetic-access', expires_in: 3600 } }; },
     async get(url, options) { calls.push(url); assert.equal(options.params.organization_id, 'org1'); return { data: { code: 0, bill: record() } }; },
   } });
-  const document = await client.getBillPdf('123456'); assert.equal(document.source, 'generated_from_zoho_record'); assert.match(calls[0], /\/bills\/123456$/); assert.equal(calls.length, 1);
+  const document = await client.getBillPdf('123456', { organizationId: credentials.organizationId }); assert.equal(document.source, 'generated_from_zoho_record'); assert.match(calls[0], /\/bills\/123456$/); assert.equal(calls.length, 1);
 });
 test('wrong record ID and JSON errors cannot be delivered as PDF', async () => {
   const client = createZohoBooksClient({ ...credentials, env: {}, http: {
     async post() { return { data: { access_token: 'synthetic-access', expires_in: 3600 } }; },
     async get() { return { data: { code: 0, bill: { ...record(), bill_id: 'other' } } }; },
   } });
-  await assert.rejects(client.getBillPdf('123456'), /different bill/);
+  await assert.rejects(client.getBillPdf('123456', { organizationId: credentials.organizationId }), /different bill/);
 });
 test('document transport uploads PDF bytes and sends media ID to correct worker', async () => {
   const calls = [];
@@ -63,7 +63,7 @@ test('bill preparation validates AED and tax IDs without Chart of Accounts acces
       assert.fail('Unexpected read');
     },
   } });
-  const bill = require('./billFixtures').validBill(); await client.prepareBill(bill, { raw: { currency_id: 'aed1' } });
+  const bill = require('./billFixtures').validBill(); await client.prepareBill(bill, { raw: { currency_id: 'aed1' } }, { organizationId: credentials.organizationId });
   assert.equal(bill.currency_id, 'aed1'); assert.equal(bill.line_items[0].account_id, undefined); assert.equal(bill.line_items[0].tax_id, 'vat5'); assert.equal(reads.length, 2); assert.equal(reads.some(url => url.includes('chartofaccounts')), false);
 });
 test('bill preparation does not require an expense account or Chart of Accounts access', async () => {
@@ -75,7 +75,7 @@ test('bill preparation does not require an expense account or Chart of Accounts 
       return { data: { code: 0, taxes: [{ tax_id: 'vat5', tax_type: 'tax', tax_percentage: 5 }] } };
     },
   } });
-  await assert.doesNotReject(client.prepareBill(require('./billFixtures').validBill(), {}));
+  await assert.doesNotReject(client.prepareBill(require('./billFixtures').validBill(), {}, { organizationId: credentials.organizationId }));
 });
 test('duplicate check follows all pages and rejects provider errors', async () => {
   const pages = [];
@@ -83,7 +83,7 @@ test('duplicate check follows all pages and rejects provider errors', async () =
     async post() { return { data: { access_token: 'synthetic', expires_in: 3600 } }; },
     async get(_url, options) { const page = options.params.page; pages.push(page); return { data: { code: 0, bills: page === 1 ? [] : [{ bill_id: 'saved', bill_number: 'INV-100', vendor_id: 'v1' }], page_context: { has_more_page: page === 1 } } }; },
   } });
-  assert.equal((await client.checkDuplicateBill({ billNumber: 'INV-100', vendorId: 'v1' })).found, true); assert.deepEqual(pages, [1, 2]);
+  assert.equal((await client.checkDuplicateBill({ organizationId: credentials.organizationId, billNumber: 'INV-100', vendorId: 'v1' })).found, true); assert.deepEqual(pages, [1, 2]);
 });
 test('Books client has no obsolete Chart of Accounts integration', () => {
   const client = createZohoBooksClient({ ...credentials, env: {} });

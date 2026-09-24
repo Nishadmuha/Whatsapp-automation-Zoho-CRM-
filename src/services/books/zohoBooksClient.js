@@ -81,7 +81,6 @@ function createZohoBooksClient({
   clientId = env.ZOHO_BOOKS_CLIENT_ID,
   clientSecret = env.ZOHO_BOOKS_CLIENT_SECRET,
   refreshToken = env.ZOHO_BOOKS_REFRESH_TOKEN,
-  organizationId = env.ZOHO_BOOKS_ORGANIZATION_ID,
   accountsUrl = env.ZOHO_BOOKS_ACCOUNTS_URL || 'https://accounts.zoho.com',
   baseUrl = env.ZOHO_BOOKS_BASE_URL || 'https://www.zohoapis.com/books/v3',
   timeout = Number(env.ZOHO_BOOKS_TIMEOUT_MS || 15000),
@@ -94,29 +93,31 @@ function createZohoBooksClient({
   const cleanClientId = typeof clientId === 'string' ? clientId.trim() : '';
   const cleanClientSecret = typeof clientSecret === 'string' ? clientSecret.trim() : '';
   const cleanRefreshToken = typeof refreshToken === 'string' ? refreshToken.trim() : '';
-  const cleanOrganizationId = typeof organizationId === 'string' ? organizationId.trim() : '';
   const cleanAccountsUrl = typeof accountsUrl === 'string' ? accountsUrl.trim().replace(/\/+$/, '') : 'https://accounts.zoho.com';
   const cleanBaseUrl = typeof baseUrl === 'string' ? baseUrl.trim().replace(/\/+$/, '') : 'https://www.zohoapis.com/books/v3';
 
   const secrets = [cleanClientSecret, cleanRefreshToken];
 
-  function validateCredentials() {
+  function resolveOrganizationId(value = null) {
+    const candidate = typeof value === 'string' ? value.trim() : '';
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(candidate)) {
+      throw new ZohoBooksError('ZOHO_BOOKS_CONFIG_ERROR', 'A selected bill organization ID is required for this Zoho Books operation.');
+    }
+    return candidate;
+  }
+
+  function validateCredentials({ organizationId = null, requireOrganization = true } = {}) {
     if (!cleanClientId || !cleanClientSecret || !cleanRefreshToken) {
       throw new ZohoBooksError(
         'ZOHO_BOOKS_CONFIG_ERROR',
         'Zoho Books credentials not configured. Set ZOHO_BOOKS_CLIENT_ID, ZOHO_BOOKS_CLIENT_SECRET, and ZOHO_BOOKS_REFRESH_TOKEN.'
       );
     }
-    if (!cleanOrganizationId) {
-      throw new ZohoBooksError(
-        'ZOHO_BOOKS_CONFIG_ERROR',
-        'Zoho Books organization ID not configured. Set ZOHO_BOOKS_ORGANIZATION_ID.'
-      );
-    }
+    if (requireOrganization) resolveOrganizationId(organizationId);
   }
 
   async function refreshAccessToken() {
-    validateCredentials();
+    validateCredentials({ requireOrganization: false });
 
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
@@ -178,8 +179,8 @@ function createZohoBooksClient({
     tokenExpiresAt = 0;
   }
 
-  async function requestWithRetry(requestFn, operationName) {
-    validateCredentials();
+  async function requestWithRetry(requestFn, operationName, organizationId = null) {
+    validateCredentials({ organizationId });
 
     let token = await getAccessToken();
     try {
@@ -224,7 +225,7 @@ function createZohoBooksClient({
   // API METHODS
   // =========================================================================
 
-  async function searchVendor({ name = '', searchText = '' } = {}) {
+  async function searchVendor({ name = '', searchText = '', organizationId = null } = {}) {
     const term = (searchText || name || '').trim();
     if (!term) {
       return [];
@@ -233,7 +234,7 @@ function createZohoBooksClient({
     return requestWithRetry(async (token) => {
       const response = await http.get(`${cleanBaseUrl}/contacts`, {
         params: {
-          organization_id: cleanOrganizationId,
+          organization_id: resolveOrganizationId(organizationId),
           contact_type: 'vendor',
           search_text: term,
         },
@@ -256,17 +257,17 @@ function createZohoBooksClient({
         status: c.status || null,
         raw: c,
       }));
-    }, 'searchVendor');
+    }, 'searchVendor', organizationId);
   }
 
-  async function searchCustomer({ searchText = '' } = {}) {
+  async function searchCustomer({ searchText = '', organizationId = null } = {}) {
     const term = String(searchText || '').trim();
     return requestWithRetry(async (token) => {
       const contacts = [];
       for (let page = 1; page <= 100; page += 1) {
         const response = await http.get(`${cleanBaseUrl}/contacts`, {
           params: {
-            organization_id: cleanOrganizationId,
+            organization_id: resolveOrganizationId(organizationId),
             contact_type: 'customer',
             page,
             per_page: 200,
@@ -299,16 +300,16 @@ function createZohoBooksClient({
       const needle = term.toLowerCase();
       return mapped.filter(contact => [contact.contactName, contact.companyName, contact.phone, contact.mobile, contact.email]
         .filter(Boolean).some(value => String(value).toLowerCase().includes(needle)));
-    }, 'searchCustomer');
+    }, 'searchCustomer', organizationId);
   }
 
-  async function getCustomer(contactId) {
+  async function getCustomer(contactId, { organizationId = null } = {}) {
     const cleanContactId = nullableText(contactId);
     if (!cleanContactId) throw new ZohoBooksError('INVALID_INPUT', 'contactId is required to fetch a Zoho Books customer.');
 
     return requestWithRetry(async (token) => {
       const response = await http.get(`${cleanBaseUrl}/contacts/${encodeURIComponent(cleanContactId)}`, {
-        params: { organization_id: cleanOrganizationId },
+        params: { organization_id: resolveOrganizationId(organizationId) },
         headers: { Authorization: `Zoho-oauthtoken ${token}` },
         timeout,
         httpsAgent,
@@ -323,10 +324,10 @@ function createZohoBooksClient({
         fields: Object.keys(contact.raw || {}).sort(),
       });
       return contact;
-    }, 'getCustomer');
+    }, 'getCustomer', organizationId);
   }
 
-  async function checkDuplicateBill({ billNumber, vendorId = null }) {
+  async function checkDuplicateBill({ billNumber, vendorId = null, organizationId = null }) {
     if (!billNumber || typeof billNumber !== 'string' || !billNumber.trim()) {
       throw new ZohoBooksError('INVALID_INPUT', 'billNumber is required for duplicate check.');
     }
@@ -335,7 +336,7 @@ function createZohoBooksClient({
 
     const bills = [];
     for (let page = 1; page <= 100; page++) {
-      const data = await getJson('/bills', { search_text: cleanBillNumber, page, per_page: 200 });
+      const data = await getJson('/bills', { search_text: cleanBillNumber, page, per_page: 200 }, organizationId);
       if (!Array.isArray(data.bills)) throw new ZohoBooksError('DUPLICATE_CHECK_FAILED', 'Zoho returned an invalid bill list.');
       bills.push(...data.bills);
       if (!data.page_context?.has_more_page) break;
@@ -362,6 +363,7 @@ function createZohoBooksClient({
     notes = null,
     referenceNumber = null,
     attachment: _attachment = null,
+    organizationId = null,
   } = {}) {
     if (!vendorId) {
       throw new ZohoBooksError('INVALID_INPUT', 'vendorId is required to create a bill in Zoho Books.');
@@ -416,7 +418,7 @@ function createZohoBooksClient({
     return requestWithRetry(async (token) => {
       const response = await http.post(`${cleanBaseUrl}/bills`, payload, {
         params: {
-          organization_id: cleanOrganizationId,
+          organization_id: resolveOrganizationId(organizationId),
         },
         headers: {
           Authorization: `Zoho-oauthtoken ${token}`,
@@ -442,10 +444,10 @@ function createZohoBooksClient({
         currencyCode: bill.currency_code || currency || 'AED',
         raw: response.data,
       };
-    }, 'createBill');
+    }, 'createBill', organizationId);
   }
 
-  async function attachBillFile({ billId, buffer, filename, mimeType = 'application/pdf' } = {}) {
+  async function attachBillFile({ billId, buffer, filename, mimeType = 'application/pdf', organizationId = null } = {}) {
     if (!billId) {
       throw new ZohoBooksError('INVALID_INPUT', 'billId is required to attach file.');
     }
@@ -463,7 +465,7 @@ function createZohoBooksClient({
     return requestWithRetry(async (token) => {
       const response = await http.post(`${cleanBaseUrl}/bills/${billId}/attachment`, form, {
         params: {
-          organization_id: cleanOrganizationId,
+          organization_id: resolveOrganizationId(organizationId),
         },
         headers: {
           Authorization: `Zoho-oauthtoken ${token}`,
@@ -480,24 +482,24 @@ function createZohoBooksClient({
         message: data?.message || 'File attached successfully.',
         raw: data,
       };
-    }, 'attachBillFile');
+    }, 'attachBillFile', organizationId);
   }
 
-  function buildZohoBillUrl(billId) {
+  function buildZohoBillUrl(billId, organizationId = null) {
     if (!billId) return null;
-    return `https://${domain}/app/${cleanOrganizationId}#/bills/${billId}`;
+    return `https://${domain}/app/${resolveOrganizationId(organizationId)}#/bills/${billId}`;
   }
 
-  async function getJson(path, params = {}) {
+  async function getJson(path, params = {}, organizationId = null) {
     return requestWithRetry(async token => {
-      const response = await http.get(`${cleanBaseUrl}${path}`, { params: { organization_id: cleanOrganizationId, ...params }, headers: { Authorization: `Zoho-oauthtoken ${token}` }, timeout, httpsAgent, maxRedirects: 0 });
+      const response = await http.get(`${cleanBaseUrl}${path}`, { params: { ...params, organization_id: resolveOrganizationId(organizationId) }, headers: { Authorization: `Zoho-oauthtoken ${token}` }, timeout, httpsAgent, maxRedirects: 0 });
       if (response?.data?.code !== 0) throw new ZohoBooksError('ZOHO_BOOKS_INVALID_RESPONSE', 'Zoho did not confirm the read operation.');
       return response.data;
-    }, 'read');
+    }, 'read', organizationId);
   }
 
-  async function prepareBill(bill, vendor) {
-    const currencies = await getJson('/settings/currencies');
+  async function prepareBill(bill, vendor, { organizationId = null } = {}) {
+    const currencies = await getJson('/settings/currencies', {}, organizationId);
     const currency = (currencies.currencies || []).find(item => item.currency_code === bill.currency);
     if (!currency?.currency_id) throw new ZohoBooksError('CURRENCY_NOT_FOUND', 'Currency is not configured in Zoho Books.');
     bill.currency_id = currency.currency_id;
@@ -506,7 +508,7 @@ function createZohoBooksClient({
     if (bill.line_items.some(item => item.amount != null && Math.abs(item.quantity * item.rate - item.amount) > 0.05)) throw new ZohoBooksError('LINE_AMOUNT_MISMATCH', 'A line amount differs from its quantity and rate.');
     if (bill.subtotal == null || bill.tax_amount == null || Math.abs(calculatedSubtotal - bill.subtotal) > 0.05) throw new ZohoBooksError('TOTAL_MISMATCH', 'Confirm subtotal, tax, quantity and rates before saving.');
     if (bill.tax_amount > 0) {
-      const taxes = await getJson('/settings/taxes');
+      const taxes = await getJson('/settings/taxes', {}, organizationId);
       // Do not infer item-level tax allocation from the total tax.
       let calculatedTax = 0;
       for (const item of bill.line_items) {
@@ -522,9 +524,9 @@ function createZohoBooksClient({
     return bill;
   }
 
-  async function getBillPdf(billId) {
+  async function getBillPdf(billId, { organizationId = null } = {}) {
     if (!/^[a-zA-Z0-9_-]+$/.test(billId || '')) throw new ZohoBooksError('INVALID_INPUT', 'A bill ID is required.');
-    const data = await getJson(`/bills/${billId}`);
+    const data = await getJson(`/bills/${billId}`, {}, organizationId);
     if (String(data.bill?.bill_id) !== String(billId)) throw new ZohoBooksError('BILL_ID_MISMATCH', 'Zoho returned a different bill.');
     const { renderCreatedBillPdf } = require('./billPdf');
     const buffer = await renderCreatedBillPdf(data.bill, { fontPath: env.BILL_PDF_FONT_PATH });

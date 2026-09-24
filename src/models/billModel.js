@@ -24,6 +24,7 @@ const SESSION_STATES = Object.freeze([
   'AWAITING_ADDITIONAL_INFO',
   'WAITING_FOR_ADDITIONAL_INFO',
   'WAITING_FOR_CURRENCY',
+  'WAITING_FOR_ORGANIZATION',
   'WAITING_FOR_CUSTOMER_SELECTION',
   'AWAITING_EDIT',
   'WAITING_FOR_EDIT_INSTRUCTION',
@@ -39,6 +40,7 @@ const ACTIVE_SESSION_STATES = Object.freeze([
   'AWAITING_ADDITIONAL_INFO',
   'WAITING_FOR_ADDITIONAL_INFO',
   'WAITING_FOR_CURRENCY',
+  'WAITING_FOR_ORGANIZATION',
   'WAITING_FOR_CUSTOMER_SELECTION',
   'AWAITING_EDIT',
   'WAITING_FOR_EDIT_INSTRUCTION',
@@ -112,6 +114,7 @@ const BillSchema = new mongoose.Schema({
   bill_date: { type: String, default: null },
   due_date: { type: String, default: null },
   currency: { type: String, default: 'AED' },
+  organization: { type: mongoose.Schema.Types.Mixed, default: null },
 
   subtotal: { type: Number, default: null },
   tax_amount: { type: Number, default: null },

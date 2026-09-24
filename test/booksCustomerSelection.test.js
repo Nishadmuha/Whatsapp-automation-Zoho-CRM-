@@ -27,6 +27,7 @@ for (const [label, phone, email] of [
     customer_id: customer.contactId, contact_id: customer.contactId, contact_name: customer.contactName, company_name: customer.companyName,
     customer_contact_name: customer.contactName, customer_company_name: customer.companyName, customer_mobile: null,
     customer_contact_type: 'customer', customer_status: 'active',
+    organization_id: '828765858',
   };
   assert.deepEqual((await f.billStore.getBill(first.billId)).customer_details, expected);
   assert.deepEqual((await f.billStore.getBillSession(first.sessionId)).bill_data.customer_details, expected);

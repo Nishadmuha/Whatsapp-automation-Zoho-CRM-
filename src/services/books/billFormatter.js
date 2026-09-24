@@ -15,6 +15,7 @@ function formatAmount(amount, currency = '') {
 function formatBillSummary(bill = {}) {
   const currency = bill.currency || '[Not detected]';
   const lines = ['📄 *BILL DETAILS*'];
+  lines.push(`• *Organization:* ${bill.organization?.name || '[Not detected]'}`);
 
   lines.push(`• *Vendor:* ${bill.vendor_name || '⚠️ [Not detected]'}`);
   lines.push(`• *Bill #:* ${bill.bill_number || '[Not detected]'}`);
@@ -83,6 +84,10 @@ function formatCustomerSelectionPrompt(customers = []) {
   });
   lines.push('Select a customer from the list.');
   return lines.join('\n');
+}
+
+function formatOrganizationSelectionPrompt(bill = {}) {
+  return `${formatBillSummary(bill).slice(0, 3500)}\n\nOrganization could not be clearly detected from the invoice.\nPlease select the bill organization:\n\n1. VOLTRONIX CONTRACTING LLC\n2. VOLTRONIX SWITCHGEAR LLC\nReply DELETE to cancel.`;
 }
 
 /**
@@ -168,6 +173,7 @@ module.exports = {
   formatBillSummary,
   formatInitialReviewPrompt,
   formatCustomerSelectionPrompt,
+  formatOrganizationSelectionPrompt,
   formatAdditionalInfoUpdatedPrompt,
   formatEditUpdatedPrompt,
   formatFinalConfirmation,
