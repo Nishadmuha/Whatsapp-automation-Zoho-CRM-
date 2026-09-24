@@ -14,6 +14,83 @@ test('initial text persists pending bill and explicit options without creating i
   assert.match(r.replyText, /1 SAVE\n2 EDIT\n3 DELETE/); assert.match(r.replyText, /AED 105.00/);
   assert.equal((await f.billStore.getBill(r.billId)).status, 'PENDING_REVIEW'); assert.equal(count(f, 'create'), 0);
 });
+test('currency detected automatically remains normalized and reaches Zoho on SAVE', async () => {
+  const f = fixture(); const first = await f.send('Invoice details');
+  assert.equal(first.bill.currency, 'AED');
+  await f.send('SAVE');
+  assert.equal(f.calls.find(call => call[0] === 'create')[1].currency, 'AED');
+});
+test('missing currency prompts the worker and keeps the pending bill', async () => {
+  const f = fixture({ bill: { ...validBill(), currency: null } });
+  const result = await f.send('Invoice details');
+  assert.equal(result.state, 'WAITING_FOR_CURRENCY');
+  assert.match(result.replyText, /Currency not detected\. Please enter the currency \(e\.g\. AED, USD, EUR\)\./);
+  assert.equal((await f.billStore.getBillSession(result.sessionId)).state, 'WAITING_FOR_CURRENCY');
+  assert.equal(count(f, 'create'), 0);
+});
+for (const input of ['AED', 'aed']) test(`worker currency input ${input} is stored as AED`, async () => {
+  const f = fixture({ bill: { ...validBill(), currency: null } });
+  const first = await f.send('Invoice details');
+  const result = await f.send(input);
+  assert.equal(result.bill.currency, 'AED');
+  assert.match(result.replyText, /AED 105\.00/);
+  assert.equal((await f.billStore.getBill(first.billId)).currency, 'AED');
+});
+test('SAVE without currency is blocked before Zoho calls', async () => {
+  const f = fixture({ bill: { ...validBill(), currency: null } });
+  const first = await f.send('Invoice details');
+  const result = await f.send('1');
+  assert.equal(result.state, 'WAITING_FOR_CURRENCY');
+  assert.match(result.replyText, /Currency not detected/);
+  assert.equal(count(f, 'create'), 0);
+  assert.equal((await f.billStore.getBill(first.billId)).zoho_bill_id, undefined);
+});
+test('SAVE after entering currency proceeds with the normalized currency', async () => {
+  const f = fixture({ bill: { ...validBill(), currency: null } });
+  await f.send('Invoice details'); await f.send('aed');
+  const result = await f.send('1');
+  assert.equal(result.state, 'COMPLETED');
+  assert.equal(count(f, 'create'), 1);
+  assert.equal(f.calls.find(call => call[0] === 'create')[1].currency, 'AED');
+});
+test('currency entry continues customer selection and payment type workflows', async () => {
+  const f = fixture({
+    bill: { ...validBill(), currency: null, payment_type: null, customer_details: null },
+    zohoOverrides: {
+      async searchCustomer() { return [{ id: 'customer-1', name: 'Gulf Client', phone: '+971501112233' }]; },
+      async getCustomer(id) { assert.equal(id, 'customer-1'); return { id, name: 'Gulf Client', phone: '+971501112233' }; },
+    },
+  });
+  const first = await f.send('Invoice details');
+  assert.equal(first.state, 'WAITING_FOR_CURRENCY');
+  const currency = await f.send('AED');
+  assert.equal(currency.state, 'WAITING_FOR_CUSTOMER_SELECTION');
+  assert.match(currency.replyText, /AED 105\.00/);
+  const selected = await f.send('Select', { interactiveId: 'zoho-customer:customer-1' });
+  assert.equal(selected.state, 'AWAITING_FINAL_CONFIRMATION');
+  const payment = await f.send('Cash');
+  assert.equal(payment.bill.payment_type, 'Cash');
+  await f.send('SAVE');
+  assert.equal(count(f, 'create'), 1);
+  assert.equal(f.calls.find(call => call[0] === 'create')[1].currency, 'AED');
+  assert.equal(f.calls.find(call => call[0] === 'create')[1].customerId, 'customer-1');
+  assert.equal((await f.billStore.getBill(first.billId)).payment_type, 'Cash');
+});
+test('EDIT can change the pending bill currency', async () => {
+  const f = fixture();
+  await f.send('Invoice details'); await f.send('EDIT');
+  const result = await f.send('currency usd');
+  assert.equal(result.bill.currency, 'USD');
+  assert.match(result.replyText, /USD 105\.00/);
+  assert.equal((await f.billStore.getBill(result.billId)).currency, 'USD');
+});
+test('DELETE clears a pending bill waiting for currency', async () => {
+  const f = fixture({ bill: { ...validBill(), currency: null } });
+  const first = await f.send('Invoice details'); await f.send('DELETE');
+  assert.equal(await f.billStore.getActiveBillSession(WORKER), undefined);
+  assert.deepEqual((await f.billStore.getBillSession(first.sessionId)).bill_data, {});
+  assert.equal(count(f, 'create'), 0);
+});
 test('SAVE requires payment type and customer details, then accepts both before creation', async () => {
   const f = fixture({ bill: { ...validBill(), payment_type: null, customer_details: null } });
   const first = await f.send('Invoice details');
@@ -84,7 +161,7 @@ test('partially unreadable optional fields remain null while customer selection 
     zohoOverrides: { async searchCustomer() { return [{ id: 'customer-1', name: 'Voltronix Contracting LLC' }]; } },
   });
   const result = await f.send('', { messageType: 'image', mediaId: 'partial-optional-fields' });
-  assert.equal(result.state, 'WAITING_FOR_CUSTOMER_SELECTION');
+  assert.equal(result.state, 'WAITING_FOR_CURRENCY');
   assert.equal(result.bill.vendor_name, 'Supplier LLC');
   assert.equal(result.bill.total_amount, 105);
   assert.equal(result.bill.bill_number, null);
@@ -231,7 +308,7 @@ for (const cmd of ['SAVE', '1']) test(`${cmd} creates once, persists ID before P
   const sent = f.calls.find(c => c[0] === 'document'); assert.equal(sent[1], WORKER); assert.equal(sent[2].buffer.toString(), '%PDF-created-record');
   await f.send(cmd); assert.equal(count(f, 'create'), 1); assert.equal(count(f, 'document'), 1);
 });
-for (const changes of [{ vendor_name: null }, { bill_date: '2026-02-31' }, { total_amount: -1 }, { bill_number: null }, { currency: null }, { line_items: [] }]) test(`incomplete/invalid bill blocks SAVE: ${Object.keys(changes)[0]}`, async () => {
+for (const changes of [{ vendor_name: null }, { bill_date: '2026-02-31' }, { total_amount: -1 }, { bill_number: null }, { line_items: [] }]) test(`incomplete/invalid bill blocks SAVE: ${Object.keys(changes)[0]}`, async () => {
   const f = fixture({ bill: { ...validBill(), ...changes } }); await f.send('Bill'); const r = await f.send('SAVE'); assert.match(r.replyText, /Cannot save/); assert.equal(count(f, 'create'), 0);
 });
 test('missing and ambiguous vendor never creates a vendor or bill', async () => {
