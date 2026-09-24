@@ -59,6 +59,15 @@ test('detailed health reports configured WhatsApp transport using sender validat
   assert.equal(response.status, 200);
   assert.equal(body.whatsapp, 'CONFIGURED / HEALTHY');
   assert.equal(body.checks.whatsapp_api, '🟢 CONNECTED');
+  assert.deepEqual(body.components.backend, {
+    status: 'healthy', label: 'ONLINE', area: 'Backend',
+    message: 'The backend health endpoint is responding normally.',
+  });
+  assert.deepEqual(body.components.webhook, {
+    status: 'healthy', label: 'READY', area: 'Webhook',
+    message: 'The signed WhatsApp webhook route is registered and ready to accept requests.',
+  });
+  assert.equal(body.components.whatsapp.status, 'healthy');
 });
 test('CORS permits only configured browser origins', async (t) => {
   const h = await backend(t, { CORS_ORIGINS: 'https://dashboard.example.com' });

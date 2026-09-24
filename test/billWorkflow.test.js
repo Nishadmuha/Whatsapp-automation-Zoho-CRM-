@@ -53,10 +53,150 @@ test('media is persisted and OCR runs even when an image has a caption', async (
   assert.equal(count(f, 'ocr'), 1); assert.match(f.calls.find(c => c[0] === 'extract')[1].text, /Supplier LLC[\s\S]*Fuel expense/);
   assert.equal((await f.billStore.getBillSession(r.sessionId)).attachments.length, 1); assert.equal(f.media.size, 1); assert.match(r.replyText, /SAVE/);
 });
+test('clear invoice image reaches the existing Zoho customer-selection workflow', async () => {
+  const f = fixture({ zohoOverrides: { async searchCustomer() { return [{ id: 'customer-1', name: 'Voltronix Contracting LLC' }]; } } });
+  const result = await f.send('', { messageType: 'image', mediaId: 'clear-invoice' });
+  assert.equal(result.state, 'WAITING_FOR_CUSTOMER_SELECTION');
+  assert.equal(result.bill.vendor_name, 'Supplier LLC');
+  assert.equal(result.bill.total_amount, 105);
+  assert.equal((await f.billStore.getBillSession(result.sessionId)).attachments.length, 1);
+  assert.match(result.replyText, /select the customer/i);
+});
+test('photographed invoice with a large table falls back to direct vision', async () => {
+  const tableBill = { ...validBill(), line_items: Array.from({ length: 24 }, (_, index) => ({ name: `Table item ${index + 1}`, quantity: 1, rate: 10, amount: 10, tax_percentage: null })) };
+  const f = fixture({
+    zohoOverrides: { async searchCustomer() { return [{ id: 'customer-1', name: 'Voltronix Contracting LLC' }]; } },
+    aiOverrides: { async extractMediaText() { return 'TAX INVOICE Supplier LLC Total AED 240 table rows with photographed perspective'; } },
+    extractionOverrides: {
+      async extractBillFromText(input) { f.calls.push(['extract', input]); return { success: true, bill: { vendor_name: null, total_amount: null, line_items: [] } }; },
+      async extractBillFromMedia(input) { f.calls.push(['vision', input]); return { success: true, bill: tableBill }; },
+    },
+  });
+  const result = await f.send('', { messageType: 'image', mediaId: 'large-table-photo' });
+  assert.equal(result.state, 'WAITING_FOR_CUSTOMER_SELECTION');
+  assert.equal(result.bill.line_items.length, 24);
+  assert.equal(count(f, 'extract'), 1);
+  assert.equal(count(f, 'vision'), 1);
+});
+test('partially unreadable optional fields remain null while customer selection continues', async () => {
+  const f = fixture({
+    bill: { ...validBill(), bill_number: null, bill_date: null, due_date: null, currency: null, subtotal: null, tax_amount: null },
+    zohoOverrides: { async searchCustomer() { return [{ id: 'customer-1', name: 'Voltronix Contracting LLC' }]; } },
+  });
+  const result = await f.send('', { messageType: 'image', mediaId: 'partial-optional-fields' });
+  assert.equal(result.state, 'WAITING_FOR_CUSTOMER_SELECTION');
+  assert.equal(result.bill.vendor_name, 'Supplier LLC');
+  assert.equal(result.bill.total_amount, 105);
+  assert.equal(result.bill.bill_number, null);
+  assert.equal(result.bill.bill_date, null);
+  assert.equal(result.bill.currency, null);
+});
+test('multi-page PDF keeps every original page for extraction and Zoho attachment', async () => {
+  const f = fixture({
+    whatsappOverrides: {
+      async downloadMedia(id) { f.calls.push(['download', id]); return { buffer: Buffer.from(`%PDF-${id}`), mimeType: 'application/pdf' }; },
+    },
+    aiOverrides: { async extractMediaText() { throw Object.assign(Error('OCR unavailable'), { code: 'AI_MEDIA_EXTRACTION_FAILED' }); } },
+    extractionOverrides: {
+      async extractBillFromMedia(input) { f.calls.push(['vision', input]); assert.equal(input.media.length, 2); return { success: true, bill: validBill() }; },
+    },
+    zohoOverrides: { async searchCustomer() { return [{ id: 'customer-1', name: 'Voltronix Contracting LLC' }]; } },
+  });
+  const result = await f.send('', { items: [
+    { messageType: 'document', mediaId: 'page-1', mediaMimeType: 'application/pdf' },
+    { messageType: 'document', mediaId: 'page-2', mediaMimeType: 'application/pdf' },
+  ] });
+  assert.equal(result.state, 'WAITING_FOR_CUSTOMER_SELECTION');
+  assert.equal((await f.billStore.getBillSession(result.sessionId)).attachments.length, 2);
+  await f.send('Select customer', { interactiveId: 'zoho-customer:customer-1' });
+  await f.send('SAVE');
+  const attachments = f.calls.filter(call => call[0] === 'attach').map(call => call[1].buffer.toString());
+  assert.deepEqual(attachments, ['%PDF-page-1', '%PDF-page-2']);
+});
+test('low-quality but readable image falls back from failed OCR to structured vision', async () => {
+  const logs = [];
+  const f = fixture({
+    aiOverrides: { async extractMediaText() { throw Object.assign(Error('unreadable OCR'), { code: 'AI_MEDIA_EXTRACTION_FAILED' }); } },
+    logger: { info: (entry) => logs.push(entry), warn: (entry) => logs.push(entry), error: (entry) => logs.push(entry) },
+  });
+  const result = await f.send('', { messageType: 'image', mediaId: 'low-quality' });
+  assert.equal(count(f, 'vision'), 1);
+  assert.equal(count(f, 'extract'), 0);
+  assert.match(result.replyText, /SAVE/);
+  assert.ok(logs.some((entry) => entry.event === 'books.bill_media_pipeline.vision_fallback' && entry.reason === 'OCR_FAILED'));
+});
+test('partial OCR text uses direct vision and does not require every optional field', async () => {
+  const partialBill = { ...validBill(), due_date: null, subtotal: null, tax_amount: null, notes: null };
+  const f = fixture({
+    bill: partialBill,
+    aiOverrides: { async extractMediaText(input) { f.calls.push(['ocr', input]); return 'Supplier LLC INV-100'; } },
+  });
+  const result = await f.send('', { messageType: 'image', mediaId: 'partial' });
+  assert.equal(count(f, 'vision'), 1);
+  assert.equal(count(f, 'extract'), 0);
+  assert.equal(result.bill.total_amount, 105);
+  assert.equal(result.bill.due_date, null);
+});
+test('malformed AI JSON is logged as category C after media fallback', async () => {
+  const logs = [];
+  const f = fixture({
+    aiOverrides: { async extractMediaText() { throw Object.assign(Error('no OCR'), { code: 'AI_MEDIA_EXTRACTION_FAILED' }); } },
+    extractionOverrides: { async extractBillFromMedia(input) { f.calls.push(['vision', input]); return { success: false, bill: null, error: { code: 'AI_MALFORMED_RESPONSE' } }; } },
+    logger: { info: (entry) => logs.push(entry), warn: (entry) => logs.push(entry), error: (entry) => logs.push(entry) },
+  });
+  const result = await f.send('', { messageType: 'image', mediaId: 'malformed' });
+  assert.match(result.replyText, /could not read/);
+  assert.equal(f.billStore.sessions.size, 0);
+  assert.ok(logs.some((entry) => entry.category === 'C_INVALID_AI_JSON' && entry.reason === 'AI_MALFORMED_RESPONSE'));
+});
+test('genuinely unreadable image is logged as category B without creating a draft', async () => {
+  const logs = [];
+  const f = fixture({
+    aiOverrides: { async extractMediaText() { throw Object.assign(Error('no OCR'), { code: 'AI_MEDIA_EXTRACTION_FAILED' }); } },
+    extractionOverrides: { async extractBillFromMedia(input) { f.calls.push(['vision', input]); return { success: false, bill: null, error: { code: 'AI_REQUEST_FAILED' } }; } },
+    logger: { info: (entry) => logs.push(entry), warn: (entry) => logs.push(entry), error: (entry) => logs.push(entry) },
+  });
+  const result = await f.send('', { messageType: 'image', mediaId: 'unreadable' });
+  assert.match(result.replyText, /could not read/);
+  assert.equal(f.billStore.sessions.size, 0);
+  assert.ok(logs.some((entry) => entry.category === 'B_OCR_VISION_EXTRACTION_FAILURE' && entry.reason === 'AI_REQUEST_FAILED'));
+});
+test('vision output with no bill facts is logged as genuinely insufficient information', async () => {
+  const logs = [];
+  const emptyBill = { vendor_name: null, bill_number: null, bill_date: null, due_date: null, currency: null, subtotal: null, tax_amount: null, total_amount: null, line_items: [], payment_type: null, notes: null };
+  const f = fixture({
+    aiOverrides: { async extractMediaText() { throw Object.assign(Error('no OCR'), { code: 'AI_MEDIA_EXTRACTION_FAILED' }); } },
+    extractionOverrides: { async extractBillFromMedia(input) { f.calls.push(['vision', input]); return { success: true, bill: emptyBill }; } },
+    logger: { info: (entry) => logs.push(entry), warn: (entry) => logs.push(entry), error: (entry) => logs.push(entry) },
+  });
+  const result = await f.send('', { messageType: 'image', mediaId: 'blank' });
+  assert.match(result.replyText, /could not read/);
+  assert.equal(f.billStore.sessions.size, 0);
+  assert.ok(logs.some((entry) => entry.category === 'D_INSUFFICIENT_BILL_INFORMATION'));
+});
+test('vision fallback preserves the original media bytes for Zoho attachment', async () => {
+  const original = Buffer.from('original-low-quality-image-bytes');
+  const f = fixture({
+    whatsappOverrides: { async downloadMedia(id) { f.calls.push(['download', id]); return { buffer: original, mimeType: 'image/jpeg' }; } },
+    aiOverrides: { async extractMediaText() { throw Object.assign(Error('weak OCR'), { code: 'AI_MEDIA_EXTRACTION_FAILED' }); } },
+  });
+  await f.send('', { messageType: 'image', mediaId: 'preserved' });
+  await f.send('SAVE');
+  const vision = f.calls.find((call) => call[0] === 'vision')[1];
+  const attachment = f.calls.find((call) => call[0] === 'attach')[1];
+  assert.equal(vision.media[0].buffer.equals(original), true);
+  assert.equal(attachment.buffer.equals(original), true);
+});
 test('unreadable or expired media responds honestly without inventing a bill', async () => {
-  const f = fixture({ whatsappOverrides: { async downloadMedia() { throw Error('secret-token'); } } });
+  const logs = [];
+  const f = fixture({
+    whatsappOverrides: { async downloadMedia() { throw Error('secret-token'); } },
+    logger: { info: (entry) => logs.push(entry), warn: (entry) => logs.push(entry), error: (entry) => logs.push(entry) },
+  });
   const r = await f.send('', { mediaId: '123', messageType: 'image' });
   assert.match(r.replyText, /could not read/); assert.doesNotMatch(r.replyText, /secret-token/); assert.equal(count(f, 'extract'), 0); assert.equal(f.billStore.sessions.size, 0);
+  assert.ok(logs.some((entry) => entry.category === 'A_MEDIA_DOWNLOAD_FAILURE'));
+  assert.doesNotMatch(JSON.stringify(logs), /secret-token/);
 });
 for (const text of ['YES', 'NO', 'okay', '?']) test(`${text} never authorizes bill creation`, async () => {
   const f = fixture(); await f.send('Bill'); await f.send(text); assert.equal(count(f, 'create'), 0); assert.ok(await f.billStore.getActiveBillSession(WORKER));

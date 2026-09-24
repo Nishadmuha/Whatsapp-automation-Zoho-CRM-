@@ -53,6 +53,25 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
     }
     const openaiHealthy = Boolean(config.openaiApiKey || env.OPENAI_API_KEY);
     const zohoHealthy = Boolean(config.zohoClientId || env.ZOHO_CLIENT_ID);
+    const component = (status, label, area, message, code = null) => ({
+      status, label, area, message, ...(code ? { code } : {}),
+    });
+    const components = {
+      backend: component('healthy', 'ONLINE', 'Backend', 'The backend health endpoint is responding normally.'),
+      webhook: component('healthy', 'READY', 'Webhook', 'The signed WhatsApp webhook route is registered and ready to accept requests.'),
+      mongodb: mongoStatus === 'CONNECTED'
+        ? component('healthy', 'CONNECTED', 'MongoDB', 'MongoDB responded to the connectivity check.')
+        : component('error', 'DISCONNECTED', 'MongoDB', 'MongoDB did not respond to the connectivity check.', 'MONGODB_UNAVAILABLE'),
+      whatsapp: whatsappHealthy
+        ? component('healthy', 'CONFIGURED', 'WhatsApp', 'WhatsApp sender configuration passed validation.')
+        : component('not_configured', 'NOT CONFIGURED', 'WhatsApp', 'WhatsApp sender credentials are missing or invalid.', 'WHATSAPP_NOT_CONFIGURED'),
+      ai: openaiHealthy
+        ? component('healthy', 'READY', 'AI', 'The configured AI provider credentials are present. No paid provider call is made by this health check.')
+        : component('not_configured', 'NOT CONFIGURED', 'AI', 'AI provider credentials are not configured.', 'AI_NOT_CONFIGURED'),
+      zoho_crm: zohoHealthy
+        ? component('healthy', 'READY', 'Zoho CRM', 'Zoho CRM credentials are present.')
+        : component('not_configured', 'NOT CONFIGURED', 'Zoho CRM', 'Zoho CRM credentials are not configured.', 'ZOHO_CRM_NOT_CONFIGURED'),
+    };
 
     return {
       backend: 'ONLINE',
@@ -67,7 +86,9 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
         whatsapp_api: whatsappHealthy ? '🟢 CONNECTED' : '⚪ NOT_CONFIGURED',
         openai: openaiHealthy ? '🟢 READY' : '⚪ NOT_CONFIGURED',
         zoho_crm: zohoHealthy ? '🟢 CONNECTED' : '⚪ NOT_CONFIGURED',
+        webhook: '🟢 READY',
       },
+      components,
     };
   };
 

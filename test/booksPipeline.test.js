@@ -17,7 +17,8 @@ async function setup(t) {
   const f = fixture({ billStore, sourceStore: store });
   const { config, triggerGate } = app.locals;
   const outgoing = createOutgoingMessages({ store, whatsapp: f.whatsapp, config, triggerGate, logger: silent });
-  const worker = createBooksWorker({ billStore, billWorkflow: f.workflow, whatsapp: f.whatsapp, config, triggerGate, logger: silent });
+  const workerConfig = { ...config, messageBatchQuietMs: 0 };
+  const worker = createBooksWorker({ billStore, billWorkflow: f.workflow, whatsapp: f.whatsapp, config: workerConfig, triggerGate, logger: silent });
   app.locals.onNewMessage = async message => {
     if (!config.booksSenders.has(message.senderPhone)) return;
     if (message.mediaId) { await outgoing.acknowledge(message, { isBooks: true }); await outgoing.flush(); }

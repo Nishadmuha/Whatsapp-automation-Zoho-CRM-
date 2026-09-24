@@ -49,10 +49,16 @@ const groundingStateSchema = z.enum(['explicit', 'inferred', 'missing']);
 
 const groundingSchema = z.record(z.string(), groundingStateSchema);
 
-const confidenceScoreSchema = z.number().refine(
-  (n) => Number.isFinite(n) && !Number.isNaN(n) && n >= 0 && n <= 1,
-  { message: 'Confidence must be a finite number between 0 and 1' }
-);
+// The provider JSON contract permits null when a field is unreadable or not
+// present. Confidence is metadata, so an unknown confidence must not make the
+// complete bill envelope invalid.
+const confidenceScoreSchema = z.union([
+  z.number().refine(
+    (n) => Number.isFinite(n) && !Number.isNaN(n) && n >= 0 && n <= 1,
+    { message: 'Confidence must be a finite number between 0 and 1' }
+  ),
+  z.null(),
+]);
 
 const confidenceSchema = z.record(z.string(), confidenceScoreSchema);
 

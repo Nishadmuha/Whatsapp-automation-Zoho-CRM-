@@ -705,3 +705,86 @@ test('30. No secrets appear in thrown or returned public errors or logs', async 
   assert.equal(inspectedError.includes(privateApiKey), false, 'API key must not leak in error');
   assert.equal(inspectedLogs.includes(privateApiKey), false, 'API key must not leak in logs');
 });
+
+test('31. Direct bill image extraction uses high-detail structured vision', async () => {
+  const payload = {
+    bill: {
+      vendor_name: 'Supplier LLC',
+      bill_number: 'INV-100',
+      bill_date: '2026-09-19',
+      due_date: null,
+      currency: 'AED',
+      payment_type: null,
+      subtotal: 100,
+      tax_amount: 5,
+      total_amount: 105,
+      line_items: [{ name: 'Cable', description: null, quantity: 2, rate: 50, amount: 100, tax_percentage: 5 }],
+      notes: null,
+      description: null,
+    },
+    confidence: { vendor_name: 0.95, bill_number: 0.95, bill_date: 0.9, due_date: 0, currency: 0.9, subtotal: 0.9, tax_amount: 0.9, total_amount: 0.95, line_items: 0.9 },
+  };
+  const { service, calls } = setupService({ responseOutcome: mockOpenAiResponse(payload) });
+  const result = await service.extractBillFromMedia({
+    media: [{ buffer: Buffer.from('readable-invoice-image'), mimeType: 'image/jpeg', filename: 'invoice.jpg' }],
+    caption: 'Site purchase',
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.bill.total_amount, 105);
+  assert.equal(result.grounding.vendor_name, 'explicit');
+  const body = calls[0][1];
+  const image = body.input[1].content.find((item) => item.type === 'input_image');
+  assert.equal(image.detail, 'high');
+  assert.match(image.image_url, /^data:image\/jpeg;base64,/);
+  assert.equal(body.text.format.type, 'json_schema');
+});
+
+test('32. Unknown confidence and unreadable table rows degrade to null/omitted fields', async () => {
+  const payload = {
+    bill: {
+      vendor_name: 'Photographed Supplier LLC',
+      bill_number: 'PHOTO-42',
+      bill_date: null,
+      due_date: null,
+      currency: 'AED',
+      payment_type: null,
+      subtotal: null,
+      tax_amount: null,
+      total_amount: 1575,
+      line_items: [
+        { name: 'Readable cable', description: null, quantity: 3, rate: 100, amount: 300, tax_percentage: null },
+        { name: null, description: null, quantity: null, rate: null, amount: 900, tax_percentage: null },
+      ],
+      notes: null,
+      description: null,
+    },
+    confidence: {
+      vendor_name: 0.96,
+      bill_number: 0.8,
+      bill_date: null,
+      due_date: null,
+      currency: 0.9,
+      subtotal: null,
+      tax_amount: null,
+      total_amount: 0.94,
+      line_items: null,
+    },
+  };
+  const { service } = setupService({ responseOutcome: mockOpenAiResponse(payload) });
+  const result = await service.extractBillFromMedia({ media: [{ buffer: Buffer.from('large-table-photo'), mimeType: 'image/jpeg' }] });
+  assert.equal(result.success, true);
+  assert.equal(result.bill.total_amount, 1575);
+  assert.deepEqual(result.bill.line_items.map(item => item.name), ['Readable cable']);
+  assert.equal(result.confidence.bill_date, 0);
+  assert.equal(result.confidence.line_items, 0);
+});
+
+test('33. Malformed direct-vision JSON returns a controlled error', async () => {
+  const { service } = setupService({ responseOutcome: mockOpenAiResponse('{not-json') });
+  const result = await service.extractBillFromMedia({
+    media: [{ buffer: Buffer.from('invoice-image'), mimeType: 'image/jpeg', filename: 'invoice.jpg' }],
+  });
+  assert.equal(result.success, false);
+  assert.equal(result.bill, null);
+  assert.equal(result.error.code, 'AI_MALFORMED_RESPONSE');
+});
