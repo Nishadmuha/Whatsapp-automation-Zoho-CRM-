@@ -4,11 +4,17 @@
 // for the fixed reply flow and the preserved lead-processing code.
 function createReplyDispatcher({ store, whatsapp, config, logger, replyText = null, processingFlow = null, triggerGate,
   bossReplyQuietMs = 0,
+  shouldDeferReply = () => false,
   canSendReply = (reply) => config.allowedSenders.has(reply.sender_phone) }) {
   async function processNextReply() {
+    const admittedMessageIds = triggerGate?.messageIds();
+    const messageIds = Array.isArray(admittedMessageIds)
+      ? admittedMessageIds.filter(messageId => !shouldDeferReply(messageId))
+      : null;
+    if (Array.isArray(messageIds) && messageIds.length === 0) return false;
     const reply = await store.claimReply({ leaseMs: config.leaseMs,
       ...(bossReplyQuietMs ? { bossReplyQuietMs } : {}),
-      ...(triggerGate ? { messageIds: triggerGate.messageIds() } : {}),
+      ...(Array.isArray(messageIds) ? { messageIds } : {}),
       ...(replyText === null ? {} : { replyText }), ...(processingFlow === null ? {} : { processingFlow }) });
     if (!reply) return false;
     try {

@@ -4,6 +4,7 @@ const { createLeadService } = require('./leadService');
 const { validateReplyOutput } = require('../ai/conversation');
 const { createReplyDispatcher } = require('../whatsapp/replyDispatcher');
 const {
+  conversationIntent,
   buildZohoLeadUrl,
   formatBossFinalSuccessMessage,
   formatBossZohoFailureMessage,
@@ -301,6 +302,7 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
 }
 
 function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGate, zoho }) {
+  const pendingZohoReplies = new Set();
   const service = createLeadService({ store, ai, config, resolveMessageContent: async (job, { assertLease }) => {
     if (job.batch_unreadable) throw new Error('Unreadable media batch.');
     const { resolveLeadMessageContent } = require('./leadMedia');
@@ -402,6 +404,9 @@ function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGa
           : { ...job, batch_unreadable: true };
       }
 
+      const defersUntilZohoFinalization = job.message_type === 'text'
+        && conversationIntent(job.message_text || '') === 'confirmation';
+      if (defersUntilZohoFinalization) pendingZohoReplies.add(id);
       const { result, validation, state, kind, leadId } = await service.saveIncomingLead(job, { assertLease, maxAttempts: triggerGate ? 1 : config.maxAttempts });
       log('info', 'boss_reply_queued', id, {
         stage: state === 'awaiting_confirmation' ? 'confirmation' : 'processing',
@@ -465,12 +470,14 @@ function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGa
       }
     } finally {
       clearInterval(renewal);
+      pendingZohoReplies.delete(id);
     }
   }
 
   const dispatcher = createReplyDispatcher({
     store, whatsapp, config, logger, triggerGate, processingFlow: 'boss_lead',
     bossReplyQuietMs: config.bossReplyQuietMs ?? 0,
+    shouldDeferReply: messageId => pendingZohoReplies.has(messageId),
     canSendReply(reply) {
       if (!active() || !authorized(reply)) return false;
       try { return validateReplyOutput(reply.text) === reply.text; } catch { return false; }
