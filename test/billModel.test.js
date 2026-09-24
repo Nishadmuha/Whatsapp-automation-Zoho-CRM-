@@ -29,6 +29,7 @@ test('billModel: constants and enum definitions are valid', () => {
   assert.ok(SESSION_STATES.includes('EXTRACTING'));
   assert.ok(SESSION_STATES.includes('AWAITING_ADDITIONAL_INFO'));
   assert.ok(SESSION_STATES.includes('WAITING_FOR_ADDITIONAL_INFO'));
+  assert.ok(SESSION_STATES.includes('WAITING_FOR_CURRENCY'));
   assert.ok(SESSION_STATES.includes('AWAITING_EDIT'));
   assert.ok(SESSION_STATES.includes('WAITING_FOR_EDIT_INSTRUCTION'));
   assert.ok(SESSION_STATES.includes('AWAITING_FINAL_CONFIRMATION'));

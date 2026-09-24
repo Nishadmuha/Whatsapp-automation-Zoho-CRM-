@@ -877,6 +877,9 @@ class BillStore {
       case 'WAITING_FOR_ADDITIONAL_INFO':
         pendingAction = 'Waiting for worker to provide additional info text';
         break;
+      case 'WAITING_FOR_CURRENCY':
+        pendingAction = 'Waiting for worker to provide the bill currency';
+        break;
       case 'WAITING_FOR_CUSTOMER_SELECTION':
         pendingAction = 'Waiting for worker to select a Zoho Books customer';
         break;
