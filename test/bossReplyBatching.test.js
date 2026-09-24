@@ -23,7 +23,7 @@ const attachments = {
   '125': { text: 'Dubai site', mimeType: 'audio/ogg' },
 };
 
-async function setup(t) {
+async function setup(t, { zoho = null } = {}) {
   const { store } = await temporaryStore(t);
   let time = Date.now();
   t.mock.method(store, '_now', async () => new Date(time).toISOString());
@@ -47,9 +47,9 @@ async function setup(t) {
   };
   const config = { enabled: true, aiProvider: 'openai', bossSenders: new Set([BOSS, SECOND_BOSS]),
     allowedSenders: new Set(), leaseMs: 30000, maxAttempts: 3, bossReplyQuietMs: 5000 };
-  const workflow = createBossLeadWorkflow({ store, ai, whatsapp, config, logger: silent, triggerGate });
+  const workflow = createBossLeadWorkflow({ store, ai, whatsapp, config, logger: silent, triggerGate, zoho });
   return {
-    store, ai, whatsapp, config, triggerGate, workflow, sends, extracts,
+    store, ai, whatsapp, config, triggerGate, workflow, sends, extracts, zoho,
     advance(ms) { time += ms; },
     async receive(text, overrides = {}, admit = true) {
       const message = incoming({ sender_phone: BOSS, message_text: text, request_lead_workflow: true,
@@ -116,6 +116,39 @@ test('text, image, document and voice in one burst produce one confirmation with
   assert.deepEqual(new Set(saved.attachments.map(a => a.type)), new Set(['image', 'document', 'audio']));
   assert.equal(saved.attachments.find(a => a.type === 'audio').transcription, 'Dubai site');
   assert.equal(saved.attachments.find(a => a.type === 'document').extractedText, attachments['124'].text);
+});
+
+test('CRM finalization restores the rich Boss success reply instead of racing with the initial saved prompt', async t => {
+  let crmStarted;
+  const crmReady = new Promise(resolve => { crmStarted = resolve; });
+  let releaseCrm;
+  const crmReleased = new Promise(resolve => { releaseCrm = resolve; });
+  const zoho = {
+    async createLead() {
+      crmStarted();
+      await crmReleased;
+      return { id: 'crm-rich-reply-1' };
+    },
+  };
+  const h = await setup(t, { zoho });
+  await h.receive('Al Noor Contracting');
+  await h.process();
+  const confirmation = await h.receive('YES');
+  const processing = h.process();
+
+  await crmReady;
+  assert.equal(await h.workflow.processNextReply(), false, 'The initial saved prompt must not dispatch during CRM finalization.');
+  assert.equal((await h.store.getReply(confirmation)).text, SAVED_REPLY);
+
+  releaseCrm();
+  await processing;
+  assert.equal((await h.store.listLeads()).items[0].zoho_lead_id, 'crm-rich-reply-1');
+  assert.equal(await h.sendNext(), true);
+  const sent = h.sends.at(-1).text;
+  assert.match(sent, /Lead Saved Successfully/);
+  assert.match(sent, /crm-rich-reply-1/);
+  assert.notEqual(sent, SAVED_REPLY);
+  assert.equal(h.sends.length, 1, 'One logical confirmation must produce one final Boss response.');
 });
 
 test('separate arrivals reset the pause and slow OCR cannot send an intermediate prompt', async t => {
