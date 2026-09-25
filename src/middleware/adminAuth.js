@@ -469,6 +469,9 @@ function createAdminAccess({
       if (!deleted) {
         return res.status(404).json({ success: false, message: 'User not found' });
       }
+      for (const [token, session] of sessions) {
+        if (session.username?.toLowerCase() === String(username).trim().toLowerCase()) sessions.delete(token);
+      }
       return res.json({ success: true, message: `User "${username}" deleted successfully` });
     } catch (err) {
       return res.status(500).json({ success: false, message: err.message });
@@ -476,7 +479,7 @@ function createAdminAccess({
   });
 
   router.post('/generate-password', requireFullAdminAuth, (_req, res) => {
-    const pin = userService.generateNumericPassword(6);
+    const pin = userService.generateNumericPassword(10);
     return res.json({ success: true, password: pin });
   });
 

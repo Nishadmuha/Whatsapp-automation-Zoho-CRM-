@@ -34,7 +34,7 @@ async function startServer() {
     Promise.resolve().then(() => disconnectMongoDB()),
   ]);
   try {
-    await connectMongoDB({ logger });
+    await connectMongoDB({ env: { ...process.env, MONGODB_URI: config.mongoUri }, logger });
     if (config.enabled) {
       const { createWhatsAppService } = require('./services/whatsapp/whatsappService');
       const { createWorker } = require('./worker');

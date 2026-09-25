@@ -247,8 +247,8 @@ test('Zoho field API names, search criteria, record IDs, and inputs cannot injec
   await assert.rejects(service.searchLeadByPhone('+971501234567)or(Last_Name:equals:x'), { code: 'ZOHO_INPUT' });
   await assert.rejects(service.searchLeadByEmail('a@example.com)or(Email:equals:b'), { code: 'ZOHO_INPUT' });
   await assert.rejects(service.getLead('../users'), { code: 'ZOHO_INPUT' });
-  await assert.rejects(service.createLead(lead({ name: null })), { code: 'ZOHO_INPUT' });
-  await assert.rejects(service.createLead(lead({ phone: null })), { code: 'ZOHO_INPUT' });
+  await assert.rejects(service.createLead(lead({ name: null, phone: null })), { code: 'ZOHO_INPUT' });
+  await assert.rejects(service.createLead(lead({ phone: 'invalid' })), { code: 'ZOHO_INPUT' });
   await assert.rejects(service.createLead(lead({ notes: { unexpected: true } })), { code: 'ZOHO_INPUT' });
 });
 
@@ -260,6 +260,173 @@ test('Zoho create sends one real API insert contract and returns the provider ID
   assert.equal(http.calls[0].url, 'https://www.zohoapis.com/crm/v8/Leads');
   assert.equal(http.calls[0].data.data.length, 1);
   assert.equal(http.calls[0].data.data[0].Lead_Source, 'WhatsApp');
+});
+
+const suppliedName = { name: 'جابر صاحب' };
+const mappedName = { First_Name: 'جابر', Last_Name: 'صاحب' };
+for (const [label, input, expectedFields, fallback] of [
+  ['name only', suppliedName, mappedName],
+  ['phone only', { phone: '050 123 4567' }, { Phone: '+971501234567' }, 'Lead-971501234567'],
+  ['email only', { email: ' SALES@Example.COM ' }, { Email: 'sales@example.com' }, 'Lead-sales-example-com'],
+  ['name and phone', { ...suppliedName, phone: '050 123 4567' }, { ...mappedName, Phone: '+971501234567' }],
+  ['name and email', { ...suppliedName, email: ' SALES@Example.COM ' }, { ...mappedName, Email: 'sales@example.com' }],
+  ['phone and email', { phone: '0501234567', email: 'SALES@Example.COM' }, { Phone: '+971501234567', Email: 'sales@example.com' }, 'Lead-971501234567'],
+  ['name, phone and email', { ...suppliedName, phone: '0501234567', email: 'SALES@Example.COM' }, { ...mappedName, Phone: '+971501234567', Email: 'sales@example.com' }],
+  ['name with null contacts', { ...suppliedName, phone: null, email: null }, mappedName],
+  ['name with blank contacts', { ...suppliedName, phone: ' ', email: '' }, mappedName],
+  ['null name with phone', { name: null, phone: '0501234567' }, { Phone: '+971501234567' }, 'Lead-971501234567'],
+  ['blank name with email', { name: ' ', email: 'sales@example.com' }, { Email: 'sales@example.com' }, 'Lead-sales-example-com'],
+]) {
+  test(`CRM ${label} uses a fallback only for nameless creation, never for updates (mocked provider)`, async () => {
+    const original = { ...input };
+    const modified = '2026-09-01T12:20:30+04:00';
+    const http = mockHttp([
+      writeSuccess(),
+      { status: 200, data: { data: [{ id: '12345', Last_Name: 'Existing', Modified_Time: modified }] } },
+      writeSuccess(),
+    ]);
+    const service = crm(http);
+    assert.deepEqual(await service.createLead(input), { id: '12345' });
+    assert.equal(http.calls[0].method, 'POST');
+    assert.deepEqual(http.calls[0].data, { data: [{
+      Lead_Source: 'WhatsApp', Lead_Status: 'None', ...expectedFields, ...(fallback ? { Last_Name: fallback } : {}),
+    }] });
+    assert.deepEqual(await service.updateLead('12345', input), { id: '12345' });
+    assert.deepEqual(http.calls.map(call => call.method), ['POST', 'GET', 'PUT']);
+    assert.equal(http.calls[2].headers['If-Unmodified-Since'], modified);
+    assert.deepEqual(http.calls[2].data, { data: [{ id: '12345', Lead_Source: 'WhatsApp', ...expectedFields }] });
+    assert.deepEqual(input, original, 'Fallback names must not mutate extracted/local lead data.');
+  });
+}
+
+for (const [label, inputs, expected] of [
+  ['phone', ['050 123 4567', '+971501234567', '0501234567', '050 123 4567'].map(phone => ({ phone })), 'Lead-971501234567'],
+  ['email', ['john@example.com', ' JOHN@Example.COM ', 'john@example.com'].map(email => ({ email })), 'Lead-john-example-com'],
+]) {
+  test(`CRM ${label} fallback is deterministic across repeated creates and normalized input variants`, async () => {
+    const http = mockHttp(inputs.map(() => writeSuccess()));
+    const service = crm(http);
+    for (const input of inputs) await service.createLead(input);
+    assert.deepEqual(http.calls.map(call => call.data.data[0].Last_Name), inputs.map(() => expected));
+  });
+}
+
+test('CRM email fallback sanitizes punctuation and bounds long or non-ASCII identifiers deterministically', async () => {
+  const emails = [
+    ' JOHN+SALES@example.com ',
+    `${'a'.repeat(63)}@${'b'.repeat(63)}.com`,
+    `${'a'.repeat(63)}@${'b'.repeat(63)}.org`,
+    '\u5ba2\u6237@\u4f8b\u5b50.\u516c\u53f8',
+  ];
+  const http = mockHttp(emails.flatMap(() => [writeSuccess(), writeSuccess()]));
+  const service = crm(http);
+  for (const email of emails) {
+    await service.createLead({ email });
+    await service.createLead({ email });
+    const [first, second] = http.calls.slice(-2).map(call => call.data.data[0]);
+    assert.equal(first.Last_Name, second.Last_Name);
+    assert.match(first.Last_Name, /^Lead-[a-z0-9]+(?:-[a-z0-9]+)*$/);
+    assert.ok(first.Last_Name.length <= 80);
+    assert.equal(first.Email, email.trim().toLowerCase());
+  }
+  assert.equal(http.calls[0].data.data[0].Last_Name, 'Lead-john-sales-example-com');
+  assert.notEqual(http.calls[2].data.data[0].Last_Name, http.calls[4].data.data[0].Last_Name,
+    'Long emails with the same truncated prefix must retain identifier-specific suffixes.');
+  assert.match(http.calls[6].data.data[0].Last_Name, /^Lead-[a-f0-9]{12}$/);
+});
+
+test('CRM create fallback respects custom contact mappings without populating custom name fields', async () => {
+  for (const name of ['Customer_Name', 'Last_Name']) {
+    for (const [input, fields, expected] of [
+      [{ phone: '0501234567' }, { Mobile: '+971501234567' }, 'Lead-971501234567'],
+      [{ email: ' JOHN@Example.COM ' }, { Contact_Email: 'john@example.com' }, 'Lead-john-example-com'],
+    ]) {
+      const http = mockHttp([writeSuccess()]);
+      const env = settings({ ZOHO_FIELD_MAPPING: JSON.stringify({ name, phone: 'Mobile', email: 'Contact_Email' }) });
+      await crm(http, env).createLead(input);
+      assert.deepEqual(http.calls[0].data, { data: [{
+        Lead_Source: 'WhatsApp', Lead_Status: 'None', ...fields, Last_Name: expected,
+      }] });
+    }
+  }
+});
+
+test('CRM create and update reject missing or blank identity fields even when other lead details exist', async () => {
+  for (const empty of [
+    {}, { name: null, phone: null, email: null },
+    { name: '', phone: '', email: '' }, { name: ' ', phone: ' ', email: ' ' },
+    { name: null, phone: ' ', email: undefined },
+  ]) {
+    const http = mockHttp([]);
+    const service = crm(http);
+    const input = { company: 'Known Company', notes: 'Needs a quote', ...empty };
+    await assert.rejects(service.createLead(input), { code: 'ZOHO_INPUT' });
+    await assert.rejects(service.updateLead('12345', input), { code: 'ZOHO_INPUT' });
+    assert.equal(http.calls.length, 0);
+  }
+});
+
+test('CRM create and update still reject invalid supplied fields before HTTP', async () => {
+  for (const invalid of [
+    { name: 123, phone: '0501234567' }, { name: {}, email: 'valid@example.com' },
+    { name: 'bad\u0000name', phone: '0501234567' },
+    { phone: 'invalid' }, { email: 'invalid' },
+    { name: null, phone: 'invalid' }, { name: null, email: 'invalid' },
+    { phone: 'invalid', email: 'valid@example.com' },
+    { phone: '0501234567', email: 'invalid' },
+    { phone: 501234567 }, { email: { value: 'valid@example.com' } },
+  ]) {
+    const http = mockHttp([]);
+    const service = crm(http);
+    const input = { name: 'Ahmed Ali', ...invalid };
+    await assert.rejects(service.createLead(input), { code: 'ZOHO_INPUT' });
+    await assert.rejects(service.updateLead('12345', input), { code: 'ZOHO_INPUT' });
+    assert.equal(http.calls.length, 0);
+  }
+});
+
+test('CRM custom name mappings omit all name keys when the source has no name', () => {
+  for (const mapping of [
+    parseFieldMapping('{"name":"Customer_Name"}'),
+    parseFieldMapping('{"name":"Last_Name"}'),
+  ]) {
+    assert.deepEqual(mapLeadToZoho({ phone: '0501234567' }, undefined, mapping), {
+      Phone: '+971501234567', Lead_Source: 'WhatsApp', Lead_Status: 'None',
+    });
+  }
+});
+
+test('CRM create fallback does not bypass other Zoho required fields or retry a rejected create', async () => {
+  for (const input of [
+    { phone: '0501234567' }, { email: 'sales@example.com' },
+    { phone: '0501234567', email: 'sales@example.com' },
+  ]) {
+    const http = mockHttp([{ status: 400, data: { data: [{
+      status: 'error', code: 'MANDATORY_NOT_FOUND', details: { api_name: 'Custom_Required_Field' },
+    }] } }]);
+    await assert.rejects(crm(http).createLead(input), {
+      code: 'ZOHO_API', retryable: false, uncertain: false,
+    });
+    assert.equal(http.calls.length, 1);
+    assert.equal(http.calls[0].data.data[0].Last_Name,
+      input.phone ? 'Lead-971501234567' : 'Lead-sales-example-com');
+    assert.equal(Object.hasOwn(http.calls[0].data.data[0], 'First_Name'), false);
+  }
+});
+
+test('Zoho name-only update retains existing contact fields and optimistic concurrency', async () => {
+  const modified = '2026-09-01T12:20:30+04:00';
+  const http = mockHttp([
+    { status: 200, data: { data: [{ id: '12345', Phone: '+971501234567', Email: 'keep@example.com', Modified_Time: modified }] } },
+    writeSuccess(),
+  ]);
+  assert.deepEqual(await crm(http).updateLead('12345', { name: 'Ahmed Ali' }), { id: '12345' });
+  assert.deepEqual(http.calls.map(call => call.method), ['GET', 'PUT']);
+  assert.equal(http.calls[1].url, 'https://www.zohoapis.com/crm/v8/Leads/12345');
+  assert.equal(http.calls[1].headers['If-Unmodified-Since'], modified);
+  assert.deepEqual(http.calls[1].data, { data: [{
+    id: '12345', First_Name: 'Ahmed', Last_Name: 'Ali', Lead_Source: 'WhatsApp',
+  }] });
 });
 
 test('Zoho update reads the existing record, appends history, uses optimistic concurrency, and omits missing fields', async () => {
@@ -673,5 +840,3 @@ test('Zoho OAuth: getAuthHealth reports status safely without exposing credentia
   assert.equal(unconfiguredHealth.configured, false);
   assert.equal(unconfiguredHealth.authenticated, false);
 });
-
-

@@ -108,7 +108,7 @@ async function verifyService(service, env, http) {
     } else result.checks.attachmentRead = { status: 'SKIPPED', reason: 'No lead available for read-only attachment check.' };
   } else {
     await check('customers', async () => {
-      const customers = await client.searchCustomer();
+      const customers = await client.searchCustomer({ organizationId: env.ZOHO_BOOKS_ORGANIZATION_ID });
       return {
         recordsReturned: customers.length,
         withIdAndName: customers.filter(c => c.id && c.name).length,

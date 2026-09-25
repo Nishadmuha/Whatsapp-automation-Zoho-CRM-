@@ -18,7 +18,12 @@ const { createAdminAccess } = require('./middleware/adminAuth');
 const { createIncomingTriggerGate } = require('./services/whatsapp/incomingTriggerGate');
 
 function createApp({ env = process.env, config = readConfig(env), logger = createLogger(env), store, billStore } = {}) {
-  store ||= createMessageStore({ databaseUrl: config.databaseUrl, logger });
+  store ||= createMessageStore({
+    databaseUrl: config.databaseUrl,
+    mongoUri: config.mongoUri,
+    databaseName: env.MONGODB_DB_NAME || env.MONGO_DB_NAME ? config.databaseName : undefined,
+    logger,
+  });
   billStore ||= createBillStore({ store, logger });
   const ready = Promise.resolve().then(() => store.init());
   ready.catch(() => logger.error({ event: 'database_initialization_failed' }));
@@ -34,6 +39,23 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
   if (config.corsOrigins.length) app.use(cors({ origin: config.corsOrigins }));
   app.use(requestLogger(logger));
   app.use(express.json({ limit: '3mb', inflate: false, verify(req, _res, buffer) { req.rawBody = buffer; } }));
+  const conversational = config.enabled && config.aiProvider === 'openai';
+  const configured = (...keys) => keys.every(key => Boolean(String(env[key] || '').trim()));
+  const crmEnabled = conversational && Boolean(config.bossSenders?.size)
+    && ['ZOHO_CLIENT_ID', 'ZOHO_CLIENT_SECRET', 'ZOHO_REFRESH_TOKEN'].some(key => Boolean(String(env[key] || '').trim()));
+  const booksEnabled = conversational && Boolean(config.booksSenders?.size);
+  const openaiKey = env.OPENAI_API_KEY;
+  const openaiModel = env.OPENAI_MODEL_DEFAULT || env.OPENAI_MODEL;
+  const openaiHealthy = typeof openaiKey === 'string' && Boolean(openaiKey.trim())
+    && openaiKey.length <= 4096 && !/[\r\n]/.test(openaiKey)
+    && typeof openaiModel === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/.test(openaiModel);
+  const zohoHealthy = configured('ZOHO_CLIENT_ID', 'ZOHO_CLIENT_SECRET', 'ZOHO_REFRESH_TOKEN');
+  const booksHealthy = configured('ZOHO_BOOKS_CLIENT_ID', 'ZOHO_BOOKS_CLIENT_SECRET', 'ZOHO_BOOKS_REFRESH_TOKEN')
+    && /^\d+$/.test(config.booksOrganizationIds?.switchgear || '')
+    && /^\d+$/.test(config.booksOrganizationIds?.contracting || '')
+    && config.booksOrganizationIds.switchgear !== config.booksOrganizationIds.contracting;
+  const requiredDependenciesHealthy = whatsappHealthy => (!config.enabled || whatsappHealthy)
+    && (!conversational || openaiHealthy) && (!crmEnabled || zohoHealthy) && (!booksEnabled || booksHealthy);
   const getHealthStatus = async () => {
     let mongoStatus;
     try {
@@ -51,8 +73,6 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
     } catch {
       // Health should report the same configuration validity used by the sender.
     }
-    const openaiHealthy = Boolean(config.openaiApiKey || env.OPENAI_API_KEY);
-    const zohoHealthy = Boolean(config.zohoClientId || env.ZOHO_CLIENT_ID);
     const component = (status, label, area, message, code = null) => ({
       status, label, area, message, ...(code ? { code } : {}),
     });
@@ -66,11 +86,14 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
         ? component('healthy', 'CONFIGURED', 'WhatsApp', 'WhatsApp sender configuration passed validation.')
         : component('not_configured', 'NOT CONFIGURED', 'WhatsApp', 'WhatsApp sender credentials are missing or invalid.', 'WHATSAPP_NOT_CONFIGURED'),
       ai: openaiHealthy
-        ? component('healthy', 'READY', 'AI', 'The configured AI provider credentials are present. No paid provider call is made by this health check.')
-        : component('not_configured', 'NOT CONFIGURED', 'AI', 'AI provider credentials are not configured.', 'AI_NOT_CONFIGURED'),
+        ? component('healthy', 'READY', 'AI', 'The configured AI provider credentials and model are present. No paid provider call is made by this health check.')
+        : component('not_configured', 'NOT CONFIGURED', 'AI', 'AI provider credentials or model are not configured.', 'AI_NOT_CONFIGURED'),
       zoho_crm: zohoHealthy
         ? component('healthy', 'READY', 'Zoho CRM', 'Zoho CRM credentials are present.')
         : component('not_configured', 'NOT CONFIGURED', 'Zoho CRM', 'Zoho CRM credentials are not configured.', 'ZOHO_CRM_NOT_CONFIGURED'),
+      zoho_books: booksHealthy
+        ? component('healthy', 'READY', 'Zoho Books', 'Zoho Books credentials and organization IDs are present.')
+        : component('not_configured', 'NOT CONFIGURED', 'Zoho Books', 'Zoho Books credentials or organization IDs are not configured.', 'ZOHO_BOOKS_NOT_CONFIGURED'),
     };
 
     return {
@@ -80,6 +103,7 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
       openai: openaiHealthy ? 'CONFIGURED / READY' : 'NOT_CONFIGURED',
       zoho_oauth: zohoHealthy ? 'HEALTHY' : 'NOT_CONFIGURED',
       zoho_crm: zohoHealthy ? 'HEALTHY' : 'NOT_CONFIGURED',
+      zoho_books: booksHealthy ? 'HEALTHY' : 'NOT_CONFIGURED',
       checks: {
         backend: '🟢 ONLINE',
         mongodb: mongoStatus === 'CONNECTED' ? '🟢 CONNECTED' : '🔴 DISCONNECTED',
@@ -89,19 +113,23 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
         webhook: '🟢 READY',
       },
       components,
+      healthy: mongoStatus === 'CONNECTED' && requiredDependenciesHealthy(whatsappHealthy),
     };
   };
 
   app.get('/health', async (req, res) => {
     if (req.query && (req.query.detailed === 'true' || req.query.status === 'true')) {
       const details = await getHealthStatus();
-      return res.json({ status: 'ok', service: 'voltronix-whatsapp-backend', ...details });
+      const { healthy, ...report } = details;
+      return res.status(healthy ? 200 : 503).json({ status: healthy ? 'ok' : 'unavailable', service: 'voltronix-whatsapp-backend', ...report });
     }
-    return res.json({ status: 'ok', service: 'voltronix-whatsapp-backend' });
+    const { healthy } = await getHealthStatus();
+    return res.status(healthy ? 200 : 503).json({ status: healthy ? 'ok' : 'unavailable', service: 'voltronix-whatsapp-backend' });
   });
   app.get(['/health/status', '/health/detailed', '/api/health/status'], async (_req, res) => {
     const details = await getHealthStatus();
-    return res.json({ status: 'ok', service: 'voltronix-whatsapp-backend', ...details });
+    const { healthy, ...report } = details;
+    return res.status(healthy ? 200 : 503).json({ status: healthy ? 'ok' : 'unavailable', service: 'voltronix-whatsapp-backend', ...report });
   });
   app.get('/api/health', (_req, res) => res.json({ success: true, message: 'Voltronix WhatsApp backend is running' }));
   app.get('/favicon.svg', (_req, res) => res.sendFile(path.join(__dirname, 'admin/favicon.svg')));
@@ -110,9 +138,17 @@ function createApp({ env = process.env, config = readConfig(env), logger = creat
     try {
       await ready;
       await store.ping();
+      if (config.enabled) {
+        const { readWhatsAppSendConfig } = require('./services/whatsapp/whatsappService');
+        readWhatsAppSendConfig(env);
+      }
+      if (conversational && !openaiHealthy) return res.status(503).json({ status: 'unavailable', reason: 'AI_NOT_CONFIGURED' });
+      if (crmEnabled && !zohoHealthy) return res.status(503).json({ status: 'unavailable', reason: 'ZOHO_CRM_NOT_CONFIGURED' });
+      if (booksEnabled && !booksHealthy) return res.status(503).json({ status: 'unavailable', reason: 'ZOHO_BOOKS_NOT_CONFIGURED' });
       return res.json({ status: 'ready', automation: config.enabled ? 'enabled' : 'disabled' });
-    } catch {
-      return res.status(503).json({ status: 'unavailable' });
+    } catch (error) {
+      const reason = error?.code === 'ERR_WHATSAPP_CONFIG' ? 'WHATSAPP_NOT_CONFIGURED' : 'DEPENDENCY_UNAVAILABLE';
+      return res.status(503).json({ status: 'unavailable', reason });
     }
   });
   app.get('/api/media/:reference', adminAccess.requireAuth, async (req, res) => {

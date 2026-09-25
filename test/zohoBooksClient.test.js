@@ -47,7 +47,7 @@ test('1. Books credentials/config are read correctly and missing config throws Z
   const client = createZohoBooksClient({
     ...mockConfig,
   });
-  assert.doesNotThrow(() => client.validateCredentials());
+  assert.doesNotThrow(() => client.validateCredentials({ organizationId: mockConfig.organizationId }));
 
   const invalidClient = createZohoBooksClient({
     clientId: '',
@@ -167,7 +167,7 @@ test('5. Authentication failure (401 / expired token) causes exactly one token r
   });
 
   const client = createZohoBooksClient({ ...mockConfig, http });
-  const vendors = await client.searchVendor({ name: 'Success' });
+  const vendors = await client.searchVendor({ organizationId: mockConfig.organizationId, name: 'Success' });
 
   assert.strictEqual(tokenCalls, 2);
   assert.strictEqual(vendorCalls, 2);
@@ -206,7 +206,7 @@ test('6. searchVendor() sends the correct vendor search request and parameters',
   });
 
   const client = createZohoBooksClient({ ...mockConfig, http });
-  const result = await client.searchVendor({ searchText: 'Gulf Supplies' });
+  const result = await client.searchVendor({ organizationId: mockConfig.organizationId, searchText: 'Gulf Supplies' });
 
   assert.strictEqual(result.length, 1);
   assert.strictEqual(result[0].id, 'c_9988');
@@ -227,7 +227,7 @@ test('7. searchVendor() returns empty array when none found and does NOT create 
   }));
 
   const client = createZohoBooksClient({ ...mockConfig, http });
-  const result = await client.searchVendor({ name: 'Non Existent Vendor' });
+  const result = await client.searchVendor({ organizationId: mockConfig.organizationId, name: 'Non Existent Vendor' });
 
   assert.deepStrictEqual(result, []);
   // Ensure NO post request to /contacts was made
@@ -248,7 +248,7 @@ test('7a. searchCustomer() reads Zoho Books customers without creating contacts'
     return { status: 200, data: { code: 0, contacts: [{ contact_id: 'cust-1', contact_name: 'Gulf Client', phone: '+971501112233' }] } };
   });
   const client = createZohoBooksClient({ ...mockConfig, http });
-  assert.deepEqual(await client.searchCustomer({ searchText: 'Gulf' }), [{
+  assert.deepEqual(await client.searchCustomer({ organizationId: mockConfig.organizationId, searchText: 'Gulf' }), [{
     contactId: 'cust-1', contactName: 'Gulf Client', companyName: null, email: null,
     phone: '+971501112233', mobile: null, contactType: null, status: null,
     displayName: 'Gulf Client', id: 'cust-1', name: 'Gulf Client',
@@ -272,14 +272,14 @@ test('7b. customer lookup paginates and individual lookup preserves the authorit
     return { status: 200, data: { code: 0, contact: { contact_id: 'cust-3', contact_name: 'Contact Three', company_name: 'Company Three', email: 'three@example.invalid', mobile: '+971550000003', contact_type: 'customer', status: 'active' } } };
   });
   const client = createZohoBooksClient({ ...mockConfig, http });
-  const customers = await client.searchCustomer();
+  const customers = await client.searchCustomer({ organizationId: mockConfig.organizationId });
   assert.deepEqual(customers.map(customer => customer.contactId), ['cust-1', 'cust-3']);
   assert.equal(customers[0].companyName, 'Company One');
   assert.equal(customers[0].contactName, 'Contact One');
   assert.equal(customers[0].phone, '+971500000001');
   assert.equal(customers[0].mobile, '+971550000001');
   assert.equal(customers[0].name, 'Company One (Contact One)');
-  const selected = await client.getCustomer('cust-3');
+  const selected = await client.getCustomer('cust-3', { organizationId: mockConfig.organizationId });
   assert.equal(selected.contactId, 'cust-3');
   assert.equal(selected.companyName, 'Company Three');
   assert.equal(selected.contactName, 'Contact Three');
@@ -325,14 +325,14 @@ test('8. checkDuplicateBill() sends expected bill search request and filters exa
   const client = createZohoBooksClient({ ...mockConfig, http });
 
   // Exact match found
-  const dupCheck = await client.checkDuplicateBill({ billNumber: 'INV-8899', vendorId: 'v_456' });
+  const dupCheck = await client.checkDuplicateBill({ organizationId: mockConfig.organizationId, billNumber: 'INV-8899', vendorId: 'v_456' });
   assert.strictEqual(dupCheck.found, true);
   assert.strictEqual(dupCheck.bills.length, 1);
   assert.strictEqual(dupCheck.bills[0].id, 'b_101');
   assert.strictEqual(dupCheck.bills[0].billNumber, 'INV-8899');
 
   // Vendor mismatch returns not duplicate for that vendor
-  const vendorMismatch = await client.checkDuplicateBill({ billNumber: 'INV-8899', vendorId: 'v_different' });
+  const vendorMismatch = await client.checkDuplicateBill({ organizationId: mockConfig.organizationId, billNumber: 'INV-8899', vendorId: 'v_different' });
   assert.strictEqual(vendorMismatch.found, false);
 });
 
@@ -377,7 +377,7 @@ test('9. createBill() sends the expected payload to Zoho Books', async () => {
   });
 
   const client = createZohoBooksClient({ ...mockConfig, http });
-  const created = await client.createBill({
+  const created = await client.createBill({ organizationId: mockConfig.organizationId,
     vendorId: 'v_777',
     billNumber: 'BILL-1234',
     billDate: '2026-03-15',
@@ -412,7 +412,7 @@ test('9a. createBill() forwards the selected Zoho contact_id as customer_id', as
     return { status: 201, data: { code: 0, bill: { bill_id: 'bill-with-customer-id' } } };
   });
   const client = createZohoBooksClient({ ...mockConfig, http });
-  const created = await client.createBill({
+  const created = await client.createBill({ organizationId: mockConfig.organizationId,
     vendorId: 'v-1', billNumber: 'INV-1', billDate: '2026-03-15', customerId: 'cust-789',
     lineItems: [{ name: 'Cable', quantity: 1, rate: 10 }],
   });
@@ -438,7 +438,7 @@ test('10. createBill() uses YYYY-MM-DD dates and normalizes variations', async (
   });
 
   const client = createZohoBooksClient({ ...mockConfig, http });
-  const created = await client.createBill({
+  const created = await client.createBill({ organizationId: mockConfig.organizationId,
     vendorId: 'v_123',
     billNumber: 'INV-1',
     billDate: '15/03/2026',
@@ -454,7 +454,7 @@ test('11. createBill() requires vendor ID and bill number', async () => {
 
   await assert.rejects(
     async () => {
-      await client.createBill({
+      await client.createBill({ organizationId: mockConfig.organizationId,
         vendorId: '',
         billNumber: 'INV-1',
         billDate: '2026-03-15',
@@ -465,7 +465,7 @@ test('11. createBill() requires vendor ID and bill number', async () => {
 
   await assert.rejects(
     async () => {
-      await client.createBill({
+      await client.createBill({ organizationId: mockConfig.organizationId,
         vendorId: 'v_123',
         billNumber: '',
         billDate: '2026-03-15',
@@ -500,7 +500,7 @@ test('12. attachBillFile() sends multipart attachment data correctly', async () 
   const client = createZohoBooksClient({ ...mockConfig, http });
   const fileBuffer = Buffer.from('%PDF-1.5 test invoice content');
 
-  const result = await client.attachBillFile({
+  const result = await client.attachBillFile({ organizationId: mockConfig.organizationId,
     billId: 'zb_bill_123',
     buffer: fileBuffer,
     filename: 'invoice.pdf',
@@ -535,7 +535,7 @@ test('13. API errors are surfaced safely with HTTP status and operation name', a
 
   await assert.rejects(
     async () => {
-      await client.createBill({
+      await client.createBill({ organizationId: mockConfig.organizationId,
         vendorId: 'v_123',
         billNumber: 'INVALID_NUM',
         billDate: '2026-03-15',

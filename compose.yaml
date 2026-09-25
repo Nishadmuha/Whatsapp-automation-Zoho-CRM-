@@ -10,6 +10,8 @@ services:
     ports:
       - "127.0.0.1:${PORT:-5000}:${PORT:-5000}"
     read_only: true
+    volumes:
+      - user_data:/app/data
     tmpfs:
       - /tmp
     cap_drop:
@@ -17,3 +19,6 @@ services:
     security_opt:
       - no-new-privileges:true
     stop_grace_period: 35s
+
+volumes:
+  user_data:

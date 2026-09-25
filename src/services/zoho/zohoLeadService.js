@@ -1,6 +1,7 @@
 'use strict';
 
 const axios = require('axios');
+const { createHash } = require('node:crypto');
 const { parsePhoneNumberFromString } = require('libphonenumber-js/max');
 const { normalizePhone } = require('../../utils/phone');
 const { createZohoAuthService } = require('./zohoAuthService');
@@ -9,7 +10,7 @@ const { ZohoError, configError, validateZohoUrl, requestOptions, safeProviderCod
 const DEFAULT_FIELD_MAPPING = Object.freeze({
   name: null, firstName: 'First_Name', lastName: 'Last_Name',
   phone: 'Phone', email: 'Email', company: 'Company', location: 'City',
-  leadSource: 'Lead_Source', originalMessage: 'Description',
+  leadSource: 'Lead_Source', leadStatus: 'Lead_Status', originalMessage: 'Description',
   service: null, requirement: null, notes: null,
 });
 
@@ -59,11 +60,10 @@ function optionalText(value) {
 function mapLeadToZoho(lead, originalText, mapping = DEFAULT_FIELD_MAPPING) {
   if (!lead || typeof lead !== 'object' || Array.isArray(lead)) throw inputError('A lead object is required.');
   const name = optionalText(lead.name);
-  if (!name) throw inputError('A customer name is required.');
-  const parts = name.split(/\s+/);
+  const parts = name ? name.split(/\s+/) : [];
   const values = {
     name, firstName: parts.length > 1 ? parts.slice(0, -1).join(' ') : undefined,
-    lastName: parts.at(-1), leadSource: 'WhatsApp',
+    lastName: parts.at(-1), leadSource: 'WhatsApp', leadStatus: 'None',
   };
   for (const field of ['phone', 'email', 'company', 'service', 'location', 'requirement', 'notes']) {
     values[field] = optionalText(lead[field]);
@@ -76,7 +76,9 @@ function mapLeadToZoho(lead, originalText, mapping = DEFAULT_FIELD_MAPPING) {
     values.email = normalizeEmail(values.email);
     if (!values.email) throw inputError('A valid customer email address is required.');
   }
-  if (!values.phone && !values.email) throw inputError('A customer phone number or email address is required.');
+  if (!values.name && !values.phone && !values.email) {
+    throw inputError('A customer name, phone number or email address is required.');
+  }
 
   const original = originalText === undefined ? lead.originalMessage : originalText;
   if (original !== undefined && original !== null &&
@@ -94,8 +96,9 @@ function mapLeadToZoho(lead, originalText, mapping = DEFAULT_FIELD_MAPPING) {
   for (const [source, destination] of Object.entries(mapping)) {
     if (destination && values[source] !== undefined) record[destination] = values[source];
   }
-  // Zoho requires its standard Last_Name field even when storing the full name elsewhere.
-  if (!record.Last_Name) record.Last_Name = values.lastName;
+  // Retain the standard name mapping when a name was supplied, including with
+  // custom mappings. Omit absent names here so updates preserve existing names.
+  if (values.lastName && !record.Last_Name) record.Last_Name = values.lastName;
   for (const value of Object.values(record)) {
     if (value.length > 32000) throw inputError('The CRM description exceeds the supported length; the original message remains in local storage.');
   }
@@ -107,6 +110,18 @@ function normalizeEmail(value) {
   const email = value.trim().toLowerCase();
   if (email.length > 254 || !/^[^\s@(),:;<>\\]+@[^\s@(),:;<>\\]+\.[^\s@(),:;<>\\]+$/.test(email)) return null;
   return email;
+}
+
+// Called only for new leads, after contact validation and normalization.
+function fallbackLastName(phone, email) {
+  if (phone) return `Lead-${phone.replace(/\D/g, '')}`;
+  const slug = email.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (slug && slug.length <= 75) return `Lead-${slug}`;
+  // Keep the result within 80 characters without collapsing long or non-ASCII
+  // identifiers into a generic name. Hash the full normalized email.
+  const digest = createHash('sha256').update(email).digest('hex').slice(0, 12);
+  const prefix = slug.slice(0, 62).replace(/-+$/g, '');
+  return prefix ? `Lead-${prefix}-${digest}` : `Lead-${digest}`;
 }
 
 function escapeCriteriaValue(value) {
@@ -246,7 +261,11 @@ function createZohoLeadService({ env = process.env, http = axios, auth, logger }
   }
 
   async function createLead(lead, originalText) {
-    const record = mapLeadToZoho(lead, originalText, settings().mapping);
+    const { mapping } = settings();
+    const record = mapLeadToZoho(lead, originalText, mapping);
+    if (!optionalText(lead.name)) {
+      record.Last_Name = fallbackLastName(record[mapping.phone], record[mapping.email]);
+    }
     logger?.info?.({ event: 'zoho_create' });
     const response = await request('POST', '/Leads', { data: { data: [record] } });
     return mutationResult(response);
@@ -268,6 +287,9 @@ function createZohoLeadService({ env = process.env, http = axios, auth, logger }
     validateId(id);
     const { mapping } = settings();
     const record = mapLeadToZoho(lead, originalText, mapping);
+    // The required default status applies to newly created leads. Preserve the
+    // CRM status of an existing lead during an update.
+    if (mapping.leadStatus) delete record[mapping.leadStatus];
     const existing = await getLead(id);
     if (!existing) throw new ZohoError('ZOHO_NOT_FOUND', 'The CRM lead no longer exists.');
     const descriptionField = mapping.originalMessage;

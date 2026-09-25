@@ -8,7 +8,9 @@ const {
   buildZohoLeadUrl,
   formatBossFinalSuccessMessage,
   formatBossZohoFailureMessage,
+  formatBossZohoInputMessage,
 } = require('./bossConversation');
+const { normalizePhone } = require('../../utils/phone');
 
 const SAFE_CODES = new Set([
   'AI_INPUT_INVALID', 'AI_CONFIGURATION_ERROR', 'AI_AUTHENTICATION_ERROR', 'AI_RATE_LIMIT',
@@ -24,7 +26,23 @@ const FAILURE_REPLIES = Object.freeze({
 });
 const failure = code => Object.assign(new Error('Lead processing could not be completed safely.'), { code });
 
+function zohoContactLockKey(lead, leadId) {
+  const phone = normalizePhone(lead?.phone || '');
+  if (phone) return `zoho:phone:${phone}`;
+  const email = typeof lead?.email === 'string' ? lead.email.trim().toLowerCase() : '';
+  if (email) return `zoho:email:${email}`;
+  return `zoho:lead:${leadId}`;
+}
+
 async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, force = false, whatsapp = null }) {
+  const snapshot = await store.getLead(leadId);
+  if (!snapshot) return { success: false, error: 'Lead not found' };
+  const run = () => handleZohoSyncUnlocked({ leadId, store, zoho, config, logger, messageId, force, whatsapp });
+  if (typeof store.withContactLock !== 'function') return run();
+  return store.withContactLock(zohoContactLockKey(snapshot, leadId), run);
+}
+
+async function handleZohoSyncUnlocked({ leadId, store, zoho, config, logger, messageId, force = false, whatsapp = null }) {
   const lead = await store.getLead(leadId);
   if (!lead) return { success: false, error: 'Lead not found' };
   if (!lead.attachments?.length && typeof store.getLeadAttachments === 'function') {
@@ -79,6 +97,36 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
     return { success: false, error: 'Zoho not configured' };
   }
 
+  // The Boss lead workflow intentionally permits partial drafts. CRM mapping
+  // requires a name, phone or email and validates provided details. Check that contract
+  // before authentication or any CRM request, then reopen the same draft so
+  // the Boss can provide the missing contact detail and confirm again.
+  try {
+    const { mapLeadToZoho } = require('../zoho/zohoLeadService');
+    mapLeadToZoho({
+      name: lead.contact_name || lead.contactName || lead.company_name || lead.companyName,
+      company: lead.company_name || lead.companyName,
+      phone: lead.phone,
+      email: lead.email,
+      location: lead.project_location || lead.projectLocation || lead.address,
+      service: lead.product_or_service || lead.productOrService,
+      requirement: lead.requirement,
+      notes: lead.notes,
+    }, lead.original_message || lead.originalMessage);
+  } catch (error) {
+    if (error?.code !== 'ZOHO_INPUT') throw error;
+    await store.updateLeadZohoStatus(leadId, { zohoStatus: 'pending', errorCode: 'ZOHO_INPUT', errorStage: 'validation' });
+    if (typeof store.reopenLeadSessionForContact === 'function') {
+      await store.reopenLeadSessionForContact(leadId).catch(() => {});
+    }
+    if (messageId) {
+      const leadTitle = lead.contact_name || lead.contactName || lead.company_name || lead.companyName || 'Customer';
+      await store.updateReplyText(messageId, formatBossZohoInputMessage({ leadName: leadTitle, leadId }));
+    }
+    logger?.info?.({ event: 'zoho_sync_waiting_for_contact', lead_id: leadId, code: 'ZOHO_INPUT' });
+    return { success: false, error: error.message, code: 'ZOHO_INPUT', needsContact: true };
+  }
+
   await store.updateLeadZohoStatus(leadId, { zohoStatus: 'creating' });
 
   try {
@@ -95,7 +143,7 @@ async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, 
     ].filter(Boolean).join(' | ');
 
     const leadData = {
-      name: lead.contact_name || lead.contactName || lead.company_name || lead.companyName || 'Customer',
+      name: lead.contact_name || lead.contactName || lead.company_name || lead.companyName || undefined,
       company: lead.company_name || lead.companyName || lead.contact_name || lead.contactName || 'Individual',
       phone: lead.phone,
       email: lead.email,

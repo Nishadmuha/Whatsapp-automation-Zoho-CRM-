@@ -2,7 +2,7 @@
 
 const { z } = require('zod');
 
-const GROUNDING_STATES = Object.freeze(['explicit', 'inferred', 'missing']);
+const GROUNDING_STATES = Object.freeze(['explicit', 'inferred', 'missing', 'ambiguous']);
 
 const TRACKED_FIELDS = Object.freeze([
   'vendor_name',
@@ -10,6 +10,7 @@ const TRACKED_FIELDS = Object.freeze([
   'bill_date',
   'due_date',
   'currency',
+  'organization',
   'subtotal',
   'tax_amount',
   'total_amount',
@@ -20,6 +21,20 @@ const finiteNumberSchema = z.number().refine(
   (n) => Number.isFinite(n) && !Number.isNaN(n),
   { message: 'Must be a finite number' }
 );
+
+const organizationConfidenceSchema = z.union([
+  z.number().refine(
+    (n) => Number.isFinite(n) && !Number.isNaN(n) && n >= 0 && n <= 1,
+    { message: 'Organization confidence must be a finite number between 0 and 1' }
+  ),
+  z.null(),
+]);
+
+const organizationSchema = z.object({
+  name: z.string().nullable().default(null),
+  organizationId: z.string().nullable().default(null),
+  confidence: organizationConfidenceSchema.default(null),
+}).strict();
 
 const lineItemSchema = z.object({
   name: z.string().min(1, 'Line item name must not be empty'),
@@ -36,6 +51,7 @@ const billCoreSchema = z.object({
   bill_date: z.string().nullable().default(null),
   due_date: z.string().nullable().default(null),
   currency: z.string().nullable().default(null),
+  organization: organizationSchema.nullable().default(null),
   payment_type: z.string().nullable().default(null),
   subtotal: finiteNumberSchema.nullable().default(null),
   tax_amount: finiteNumberSchema.nullable().default(null),
@@ -45,7 +61,7 @@ const billCoreSchema = z.object({
   description: z.string().nullable().default(null),
 }).strict();
 
-const groundingStateSchema = z.enum(['explicit', 'inferred', 'missing']);
+const groundingStateSchema = z.enum(['explicit', 'inferred', 'missing', 'ambiguous']);
 
 const groundingSchema = z.record(z.string(), groundingStateSchema);
 
@@ -82,6 +98,16 @@ const billExtractionJsonSchema = {
         bill_date: { type: ['string', 'null'] },
         due_date: { type: ['string', 'null'] },
         currency: { type: ['string', 'null'] },
+        organization: {
+          type: ['object', 'null'],
+          properties: {
+            name: { type: ['string', 'null'] },
+            organizationId: { type: ['string', 'null'] },
+            confidence: { type: ['number', 'null'] },
+          },
+          required: ['name', 'organizationId', 'confidence'],
+          additionalProperties: false,
+        },
         payment_type: { type: ['string', 'null'] },
         subtotal: { type: ['number', 'null'] },
         tax_amount: { type: ['number', 'null'] },
@@ -111,6 +137,7 @@ const billExtractionJsonSchema = {
         'bill_date',
         'due_date',
         'currency',
+        'organization',
         'payment_type',
         'subtotal',
         'tax_amount',
@@ -129,6 +156,7 @@ const billExtractionJsonSchema = {
         bill_date: { type: ['number', 'null'] },
         due_date: { type: ['number', 'null'] },
         currency: { type: ['number', 'null'] },
+        organization: { type: ['number', 'null'] },
         subtotal: { type: ['number', 'null'] },
         tax_amount: { type: ['number', 'null'] },
         total_amount: { type: ['number', 'null'] },
@@ -140,6 +168,7 @@ const billExtractionJsonSchema = {
         'bill_date',
         'due_date',
         'currency',
+        'organization',
         'subtotal',
         'tax_amount',
         'total_amount',
@@ -160,6 +189,8 @@ module.exports = {
   groundingStateSchema,
   groundingSchema,
   confidenceScoreSchema,
+  organizationConfidenceSchema,
+  organizationSchema,
   confidenceSchema,
   extractedBillEnvelopeSchema,
   billExtractionJsonSchema,

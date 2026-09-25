@@ -183,7 +183,10 @@ window.VoltronixNav = (() => {
         const res = await fetch('/api/admin/generate-password', { method: 'POST', credentials: 'same-origin' });
         const data = await res.json();
         if (data.success && pinInput) pinInput.value = data.password;
-      } catch { if (pinInput) pinInput.value = String(Math.floor(100000 + Math.random() * 900000)); }
+      } catch {
+        if (pinInput) pinInput.value = '';
+        if (msg) { msg.textContent = 'Secure password generation is unavailable. Enter one manually.'; msg.className = 'um-msg error'; }
+      }
       finally { genBtn.disabled = false; }
     });
 

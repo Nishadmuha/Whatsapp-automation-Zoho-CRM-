@@ -124,6 +124,7 @@ test('CRM finalization restores the rich Boss success reply instead of racing wi
   let releaseCrm;
   const crmReleased = new Promise(resolve => { releaseCrm = resolve; });
   const zoho = {
+    async searchLeadByPhone() { return null; },
     async createLead() {
       crmStarted();
       await crmReleased;
@@ -131,7 +132,7 @@ test('CRM finalization restores the rich Boss success reply instead of racing wi
     },
   };
   const h = await setup(t, { zoho });
-  await h.receive('Al Noor Contracting');
+  await h.receive('Ahmed +971501234567');
   await h.process();
   const confirmation = await h.receive('YES');
   const processing = h.process();

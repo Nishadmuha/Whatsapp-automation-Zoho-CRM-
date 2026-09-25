@@ -6,6 +6,7 @@ const { createBossLeadWorkflow, handleZohoSync } = require('../src/services/lead
 const { temporaryStore, incoming } = require('./helpers');
 const { LEAD_FIELDS } = require('../src/services/ai/leadExtraction');
 const { createZohoAuthService } = require('../src/services/zoho/zohoAuthService');
+const { createZohoLeadService } = require('../src/services/zoho/zohoLeadService');
 
 const BOSS = '+971551234567';
 
@@ -291,7 +292,7 @@ test('AUDIT 6: Voice + text message combines into one lead with voice attachment
 // 7. Multiple messages forming one lead
 test('AUDIT 7: Multiple fragmented messages consolidate into single draft lead', async t => {
   const { store, zoho, sendBossMessage } = await setupProductionAuditFlow(t);
-  await sendBossMessage('New lead enquiry: Gulf Energy, Tariq 0509998888, Dubai South');
+  await sendBossMessage('New lead enquiry: Apex Falcon Contracting, Rashid +971501112233, Dubai South');
   await sendBossMessage('Additional detail: Warehouse MEP Fitout needed');
 
   assert.equal(zoho.calls.create, 0, 'No premature Zoho create');
@@ -304,11 +305,21 @@ test('AUDIT 7: Multiple fragmented messages consolidate into single draft lead',
 
 // 8. Boss correction
 test('AUDIT 8: Boss correction modifies the draft lead and does NOT push to Zoho without new YES', async t => {
-  const { store, zoho, sendBossMessage } = await setupProductionAuditFlow(t);
-  await sendBossMessage('Gulf Towers, contact Sameer 0501112233');
+  const ai = mockAi();
+  const originalExtract = ai.extractLeadEnquiry;
+  ai.extractLeadEnquiry = async text => {
+    const result = await originalExtract(text);
+    if (/change phone/i.test(text)) {
+      result.lead.phone = '+971509990000';
+      result.lead.company_name = 'Apex Falcon Contracting LLC';
+    }
+    return result;
+  };
+  const { store, zoho, sendBossMessage } = await setupProductionAuditFlow(t, { ai });
+  await sendBossMessage('Apex Falcon Contracting, contact Rashid +971501112233');
   assert.equal(zoho.calls.create, 0);
 
-  await sendBossMessage('Change phone to 0509990000 and company to Gulf Towers LLC');
+  await sendBossMessage('Change phone to +971509990000 and company to Apex Falcon Contracting LLC');
   assert.equal(zoho.calls.create, 0, 'Correction must not call Zoho');
 
   const session = await store.getActiveLeadSession(BOSS);
@@ -412,6 +423,223 @@ test('AUDIT 14: Repeated manual push is idempotent and does not create duplicate
   const res2 = await handleZohoSync({ leadId, store, zoho, config: { enabled: true }, logger, force: false });
   assert.equal(res2.success, true);
   assert.equal(zoho.calls.create, 1, 'Must not call Zoho create again');
+});
+
+test('Name-only Boss lead syncs after YES without contact prompts and repeated push does not recreate it', async t => {
+  const ai = mockAi({ extractionData: { company_name: null, contact_name: 'جابر صاحب', phone: null, email: null } });
+  const { store, zoho, sendBossMessage } = await setupProductionAuditFlow(t, { ai });
+  await sendBossMessage('جابر صاحب');
+  assert.equal(zoho.calls.create, 0);
+  const yes = await sendBossMessage('YES');
+  assert.equal(zoho.calls.create, 1);
+  assert.equal(zoho.calls.search, 0, 'No contact lookup is possible without phone or email.');
+  const saved = (await store.listLeads()).items[0];
+  assert.equal(saved.contact_name, 'جابر صاحب');
+  assert.equal(saved.phone, null);
+  assert.equal(saved.email, null);
+  assert.equal(saved.zoho_status, 'saved');
+  assert.equal(saved.zoho_lead_id, zoho.createdLeads[0].id);
+  assert.equal(await store.getActiveLeadSession(BOSS), null);
+  assert.equal(zoho.createdLeads[0].data.name, 'جابر صاحب');
+  assert.equal(zoho.createdLeads[0].data.phone, null);
+  assert.equal(zoho.createdLeads[0].data.email, null);
+  const reply = (await store.getReply(yes.whatsapp_message_id)).text;
+  assert.match(reply, /Zoho Lead ID/);
+  assert.doesNotMatch(reply, /valid customer phone number or email address/);
+
+  const repeated = await handleZohoSync({ leadId: saved.id, store, zoho, config: { enabled: true } });
+  assert.equal(repeated.success, true);
+  assert.equal(zoho.calls.create, 1);
+  assert.equal((await store.listLeads()).total, 1);
+});
+
+for (const [label, contact, text, expectedSearches] of [
+  ['phone only', { phone: '+971501112233', email: null }, '+971501112233', ['phone']],
+  ['email only', { phone: null, email: 'jaber@example.com' }, 'jaber@example.com', ['email']],
+  ['phone and email', { phone: '+971501112233', email: 'jaber@example.com' }, '+971501112233 jaber@example.com', ['phone', 'email']],
+]) {
+  test(`Boss ${label} uses existing duplicate search/update without a default name and retains attachments`, async t => {
+    const ai = mockAi({
+      extractionData: { company_name: null, contact_name: null, ...contact }, voiceText: text,
+    });
+    const zoho = mockZoho();
+    const searches = [];
+    const crmId = '572123456789';
+    zoho.searchLeadByPhone = async phone => {
+      searches.push('phone');
+      assert.equal(phone, contact.phone);
+      return label === 'phone only' ? { id: crmId } : null;
+    };
+    zoho.searchLeadByEmail = async email => {
+      searches.push('email');
+      assert.equal(email, contact.email);
+      return { id: crmId };
+    };
+    const { store, sendBossMessage } = await setupProductionAuditFlow(t, { ai, zoho });
+    await sendBossMessage('', {
+      message_type: 'audio', media_id: 'media_voice_contact', media_mime_type: 'audio/ogg',
+    });
+    assert.equal(zoho.calls.update, 0);
+    const yes = await sendBossMessage('YES');
+    assert.deepEqual(searches, expectedSearches);
+    assert.equal(zoho.calls.create, 0);
+    assert.equal(zoho.calls.update, 1);
+    assert.equal(zoho.updatedLeads[0].id, crmId);
+    assert.equal(zoho.updatedLeads[0].data.name, undefined, 'Missing names must not become Customer.');
+    const saved = (await store.listLeads()).items[0];
+    assert.equal(saved.contact_name, null);
+    assert.equal(saved.company_name, null);
+    assert.equal(saved.phone, contact.phone);
+    assert.equal(saved.email, contact.email);
+    assert.equal(saved.zoho_status, 'saved');
+    assert.equal(saved.zoho_lead_id, crmId);
+    assert.equal(saved.attachments.length, 1);
+    assert.equal(saved.attachments[0].zohoUploadStatus, 'uploaded');
+    assert.equal(zoho.uploadedAttachments[0].leadId, crmId);
+    assert.equal(await store.getActiveLeadSession(BOSS), null);
+    assert.match((await store.getReply(yes.whatsapp_message_id)).text, /Zoho Lead ID/);
+
+    const retry = await handleZohoSync({ leadId: saved.id, store, zoho, config: {} });
+    assert.equal(retry.success, true);
+    assert.equal(zoho.calls.update, 1);
+    assert.equal(zoho.calls.upload, 1);
+    const forced = await handleZohoSync({ leadId: saved.id, store, zoho, config: {}, force: true });
+    assert.equal(forced.success, true);
+    assert.equal(zoho.calls.create, 0);
+    assert.equal(zoho.calls.update, 2);
+    assert.equal(zoho.calls.upload, 1, 'Uploaded attachments are not uploaded again.');
+    assert.deepEqual(searches, expectedSearches, 'Stored CRM ID bypasses duplicate lookup.');
+    assert.equal((await store.listLeads()).total, 1);
+  });
+}
+
+for (const [label, contact, text, fallback, expectedSearches] of [
+  ['phone only', { phone: '+971501112233', email: null }, '+971501112233', 'Lead-971501112233', ['phone']],
+  ['email only', { phone: null, email: 'jaber@example.com' }, 'jaber@example.com', 'Lead-jaber-example-com', ['email']],
+  ['phone and email', { phone: '+971501112233', email: 'jaber@example.com' }, '+971501112233 jaber@example.com', 'Lead-971501112233', ['phone', 'email']],
+]) {
+  for (const matched of [false, true]) {
+    test(`Boss ${label} ${matched ? 'matched update preserves the real name' : 'new create uses fallback'} through the CRM HTTP adapter and persists attachments`, async t => {
+      const crmId = '572123456789';
+      const attachmentId = '572987654321';
+      const calls = [];
+      const searches = [];
+      let store;
+      let remote = matched ? {
+        id: crmId, First_Name: 'Real', Last_Name: 'Existing Customer',
+        Phone: contact.phone, Email: contact.email,
+      } : null;
+      const success = id => ({ status: 201, data: { data: [{
+        status: 'success', code: 'SUCCESS', details: { id },
+      }] } });
+      const zoho = createZohoLeadService({
+        env: { ZOHO_API_BASE_URL: 'https://www.zohoapis.com/crm/v8' },
+        auth: { async getAccessToken() { return 'test-access'; }, invalidate() {} },
+        http: {
+          async request(request) {
+            const path = new URL(request.url).pathname.replace('/crm/v8', '');
+            calls.push({ method: request.method, path, data: request.data });
+            if (request.method === 'GET' && path === '/Leads/search') {
+              const kind = request.params.criteria.includes('Email:equals:') ? 'email' : 'phone';
+              searches.push(kind);
+              // For combined contacts, exercise phone miss followed by email match.
+              return matched && (kind === 'email' || !contact.email)
+                ? { status: 200, data: { data: [{ ...remote }] } } : { status: 204 };
+            }
+            if (request.method === 'POST' && path === '/Leads') {
+              assert.equal(matched, false, 'A matched lead must never be recreated.');
+              assert.equal(request.data.data[0].Last_Name, fallback);
+              remote = { ...request.data.data[0], id: crmId };
+              return success(crmId);
+            }
+            if (request.method === 'GET' && path === `/Leads/${crmId}`) {
+              return { status: 200, data: { data: [{ ...remote }] } };
+            }
+            if (request.method === 'PUT' && path === `/Leads/${crmId}`) {
+              assert.equal(Object.hasOwn(request.data.data[0], 'Last_Name'), false);
+              assert.equal(Object.hasOwn(request.data.data[0], 'First_Name'), false);
+              Object.assign(remote, request.data.data[0]);
+              return success(crmId);
+            }
+            if (request.method === 'POST' && path === `/Leads/${crmId}/Attachments`) {
+              const local = (await store.listLeads()).items[0];
+              assert.equal(local.zoho_lead_id, crmId, 'Persist the provider ID before attaching originals.');
+              const file = request.data.get('file');
+              assert.equal(file.type, 'audio/ogg');
+              assert.deepEqual(Buffer.from(await file.arrayBuffer()), Buffer.from('mock binary data for media_voice_fallback'));
+              return success(attachmentId);
+            }
+            assert.fail(`Unexpected mocked CRM request: ${request.method} ${path}`);
+          },
+        },
+      });
+      const ai = mockAi({ extractionData: { company_name: null, contact_name: null, ...contact }, voiceText: text });
+      const flow = await setupProductionAuditFlow(t, { ai, zoho });
+      store = flow.store;
+      await flow.sendBossMessage('', {
+        message_type: 'audio', media_id: 'media_voice_fallback', media_mime_type: 'audio/ogg',
+      });
+      assert.equal(calls.length, 0, 'Keep the existing Boss confirmation boundary.');
+      const yes = await flow.sendBossMessage('YES');
+      assert.deepEqual(searches, expectedSearches);
+      assert.equal(calls.filter(call => call.method === 'POST' && call.path === '/Leads').length, matched ? 0 : 1);
+      assert.equal(calls.filter(call => call.method === 'PUT').length, matched ? 1 : 0);
+      assert.equal(remote.Last_Name, matched ? 'Existing Customer' : fallback);
+      if (matched) assert.equal(remote.First_Name, 'Real');
+      assert.equal(remote.Phone || null, contact.phone);
+      assert.equal(remote.Email || null, contact.email);
+      const saved = (await store.listLeads()).items[0];
+      assert.equal(saved.contact_name, null, 'The create-only fallback must not become an extracted customer name.');
+      assert.equal(saved.company_name, null);
+      assert.equal(saved.zoho_lead_id, crmId);
+      assert.equal(saved.zoho_status, 'saved');
+      assert.equal(saved.attachments.length, 1);
+      assert.equal(saved.attachments[0].zohoUploadStatus, 'uploaded');
+      assert.equal(saved.attachments[0].zohoAttachmentId, attachmentId);
+      assert.equal(await store.getActiveLeadSession(BOSS), null);
+      assert.match((await store.getReply(yes.whatsapp_message_id)).text, /Zoho Lead ID/);
+
+      const requestCount = calls.length;
+      const retry = await handleZohoSync({ leadId: saved.id, store, zoho, config: {} });
+      assert.equal(retry.success, true);
+      assert.equal(calls.length, requestCount, 'An already-synced lead remains idempotent.');
+      const forced = await handleZohoSync({ leadId: saved.id, store, zoho, config: {}, force: true });
+      assert.equal(forced.success, true);
+      assert.deepEqual(calls.slice(requestCount).map(call => [call.method, call.path]), [
+        ['GET', `/Leads/${crmId}`], ['PUT', `/Leads/${crmId}`],
+      ], 'Stored CRM ID bypasses lookup and already-uploaded attachments are not uploaded again.');
+      assert.equal(remote.Last_Name, matched ? 'Existing Customer' : fallback);
+      assert.equal((await store.listLeads()).total, 1);
+      assert.equal((await store.listLeads()).items[0].zoho_lead_id, crmId);
+    });
+  }
+}
+
+test('Boss phone-only provider rejection retains the original nameless local lead', async t => {
+  const ai = mockAi({ extractionData: { company_name: null, contact_name: null, email: null } });
+  const zoho = mockZoho();
+  let attempted;
+  zoho.createLead = async data => {
+    attempted = data;
+    zoho.calls.create++;
+    throw Object.assign(new Error('Zoho CRM request failed.'), {
+      code: 'ZOHO_API', providerCode: 'MANDATORY_NOT_FOUND', uncertain: false,
+    });
+  };
+  const { store, sendBossMessage } = await setupProductionAuditFlow(t, { ai, zoho });
+  await sendBossMessage('+971501112233');
+  const yes = await sendBossMessage('YES');
+  assert.equal(zoho.calls.search, 1);
+  assert.equal(zoho.calls.create, 1);
+  assert.equal(attempted.name, undefined);
+  assert.equal(attempted.phone, '+971501112233');
+  const saved = (await store.listLeads()).items[0];
+  assert.equal(saved.contact_name, null);
+  assert.equal(saved.phone, '+971501112233');
+  assert.equal(saved.zoho_status, 'failed');
+  assert.equal(saved.error_code, 'ZOHO_API');
+  assert.equal(saved.zoho_lead_id, null);
+  assert.match((await store.getReply(yes.whatsapp_message_id)).text, /Zoho Sync Pending/);
 });
 
 // 15. Zoho attachment upload

@@ -127,12 +127,23 @@ function formatBossZohoFailureMessage({ leadName, leadId, status = 'Failed/Pendi
   ].join('\n');
 }
 
+function formatBossZohoInputMessage({ leadName, leadId }) {
+  return [
+    '⚠️ Zoho CRM needs one more contact detail',
+    `📋 Lead: ${leadName || 'Customer'}`,
+    `🆔 Internal Lead ID: ${leadId}`,
+    'Please send a valid customer phone number or email address.',
+    'The lead remains saved locally. After sending the contact detail, reply YES to sync it to Zoho CRM.',
+  ].join('\n');
+}
+
 module.exports = {
   conversationIntent,
   formatConfirmationSummary,
   buildZohoLeadUrl,
   formatBossFinalSuccessMessage,
   formatBossZohoFailureMessage,
+  formatBossZohoInputMessage,
   GREETING_REPLY,
   CONFIRMATION_REPLY,
   SAVED_REPLY,

@@ -11,7 +11,7 @@ const { fixture, WORKER } = require('./billFixtures');
 
 async function setup(t) {
   const { store, databaseUrl } = await temporaryStore(t);
-  const env = testEnv({ AUTOMATION_ENABLED: 'true', AI_PROVIDER: 'openai', OPENAI_API_KEY: 'test-key', OPENAI_MODEL: 'gpt-test', META_APP_SECRET: 'synthetic-signing-secret', WHATSAPP_ACCESS_TOKEN: 'test-token', WHATSAPP_PHONE_NUMBER_ID: '123456', META_GRAPH_API_VERSION: 'v25.0', AUTHORIZED_BOOKS_PHONES: '971568556901', AUTHORIZED_BOSS_PHONES: '+971501111111', DATABASE_URL: databaseUrl, MONGODB_URI: databaseUrl });
+  const env = testEnv({ AUTOMATION_ENABLED: 'true', AI_PROVIDER: 'openai', OPENAI_API_KEY: 'test-key', OPENAI_MODEL: 'gpt-test', META_APP_SECRET: 'synthetic-signing-secret', WHATSAPP_ACCESS_TOKEN: 'test-token', WHATSAPP_PHONE_NUMBER_ID: '123456', META_GRAPH_API_VERSION: 'v25.0', AUTHORIZED_BOOKS_PHONES: '971568556901', AUTHORIZED_BOSS_PHONES: '+971501111111', ZOHO_BOOKS_SWITCHGEAR_ORG_ID: '802911060', ZOHO_BOOKS_CONTRACTING_ORG_ID: '828765858', DATABASE_URL: databaseUrl, MONGODB_URI: databaseUrl });
   const app = createApp({ env, store, logger: silent }); await app.locals.ready;
   const billStore = app.locals.billStore; await billStore.init();
   const f = fixture({ billStore, sourceStore: store });
