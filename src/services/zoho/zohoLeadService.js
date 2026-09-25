@@ -10,7 +10,7 @@ const { ZohoError, configError, validateZohoUrl, requestOptions, safeProviderCod
 const DEFAULT_FIELD_MAPPING = Object.freeze({
   name: null, firstName: 'First_Name', lastName: 'Last_Name',
   phone: 'Phone', email: 'Email', company: 'Company', location: 'City',
-  leadSource: 'Lead_Source', originalMessage: 'Description',
+  leadSource: 'Lead_Source', leadStatus: 'Lead_Status', originalMessage: 'Description',
   service: null, requirement: null, notes: null,
 });
 
@@ -63,7 +63,7 @@ function mapLeadToZoho(lead, originalText, mapping = DEFAULT_FIELD_MAPPING) {
   const parts = name ? name.split(/\s+/) : [];
   const values = {
     name, firstName: parts.length > 1 ? parts.slice(0, -1).join(' ') : undefined,
-    lastName: parts.at(-1), leadSource: 'WhatsApp',
+    lastName: parts.at(-1), leadSource: 'WhatsApp', leadStatus: 'None',
   };
   for (const field of ['phone', 'email', 'company', 'service', 'location', 'requirement', 'notes']) {
     values[field] = optionalText(lead[field]);
@@ -287,6 +287,9 @@ function createZohoLeadService({ env = process.env, http = axios, auth, logger }
     validateId(id);
     const { mapping } = settings();
     const record = mapLeadToZoho(lead, originalText, mapping);
+    // The required default status applies to newly created leads. Preserve the
+    // CRM status of an existing lead during an update.
+    if (mapping.leadStatus) delete record[mapping.leadStatus];
     const existing = await getLead(id);
     if (!existing) throw new ZohoError('ZOHO_NOT_FOUND', 'The CRM lead no longer exists.');
     const descriptionField = mapping.originalMessage;

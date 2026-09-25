@@ -436,6 +436,11 @@ class MongoMessageStore {
       { col: 'whatsapp_messages', key: { sender_phone: 1, received_at: -1 } },
       { col: 'lead_sessions', key: { id: 1 }, options: { unique: true } },
       { col: 'lead_sessions', key: { sender_phone: 1, state: 1, created_at: -1 } },
+      { col: 'lead_sessions', key: { sender_phone: 1 }, options: {
+        unique: true,
+        name: 'lead_sessions_one_active_per_sender',
+        partialFilterExpression: { state: { $in: ['collecting', 'awaiting_confirmation'] } },
+      } },
       { col: 'leads', key: { id: 1 }, options: { unique: true } },
       { col: 'leads', key: { leadId: 1 }, options: { unique: true, sparse: true } },
       { col: 'leads', key: { whatsapp_message_id: 1 }, options: { sparse: true } },
@@ -469,9 +474,8 @@ class MongoMessageStore {
       try {
         await this.col(idx.col).createIndex(idx.key, idx.options || {});
       } catch (err) {
-        if (err.code !== 85 && err.code !== 86) {
-          this.logger?.warn?.({ event: 'mongo_index_warning', collection: idx.col, error: err.message });
-        }
+        this.logger?.error?.({ event: 'mongo_required_index_failed', collection: idx.col, index: idx.options?.name || JSON.stringify(idx.key) });
+        throw new Error(`Required MongoDB index initialization failed for ${idx.col}.`, { cause: err });
       }
     }
   }

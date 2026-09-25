@@ -529,7 +529,9 @@ function createZohoBooksClient({
     const data = await getJson(`/bills/${billId}`, {}, organizationId);
     if (String(data.bill?.bill_id) !== String(billId)) throw new ZohoBooksError('BILL_ID_MISMATCH', 'Zoho returned a different bill.');
     const { renderCreatedBillPdf } = require('./billPdf');
-    const buffer = await renderCreatedBillPdf(data.bill, { fontPath: env.BILL_PDF_FONT_PATH });
+    const { organizationById } = require('./organizations');
+    const buffer = await renderCreatedBillPdf(data.bill, { fontPath: env.BILL_PDF_FONT_PATH,
+      organizationName: organizationById(organizationId)?.displayName });
     return { buffer, mimeType: 'application/pdf', source: 'generated_from_zoho_record', bill: data.bill };
   }
 

@@ -2,13 +2,13 @@
 const PDFDocument = require('pdfkit');
 
 // Only pass an authoritative GET /bills/{id} response, never OCR/draft data.
-async function renderCreatedBillPdf(bill, { fontPath } = {}) {
+async function renderCreatedBillPdf(bill, { fontPath, organizationName = 'Voltronix Contracting LLC' } = {}) {
   if (!bill?.bill_id || !bill.bill_number || !bill.currency_code || !Number.isFinite(bill.total) || !Array.isArray(bill.line_items)) throw new Error('INCOMPLETE_CREATED_BILL');
   const texts = [bill.vendor_name, bill.bill_number, bill.notes, ...bill.line_items.map(item => item.description || item.name)];
   // Standard PDF fonts do not support all scripts. Fail honestly instead of
   // silently replacing accounting text; deployments can supply a Unicode font.
   if (!fontPath && texts.some(text => /[^\x09\x0a\x0d\x20-\x7e\xa0-\xff]/u.test(String(text || '')))) throw new Error('BILL_PDF_UNICODE_FONT_REQUIRED');
-  const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true, info: { Title: `Zoho Books bill ${bill.bill_number}`, Author: 'Voltronix Contracting LLC' } });
+  const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true, info: { Title: `Zoho Books bill ${bill.bill_number}`, Author: organizationName } });
   const chunks = [];
   const ready = new Promise((resolve, reject) => {
     doc.on('data', chunk => chunks.push(chunk));

@@ -87,7 +87,7 @@ function formatCustomerSelectionPrompt(customers = []) {
 }
 
 function formatOrganizationSelectionPrompt(bill = {}) {
-  return `${formatBillSummary(bill).slice(0, 3500)}\n\nOrganization could not be clearly detected from the invoice.\nPlease select the bill organization:\n\n1. VOLTRONIX CONTRACTING LLC\n2. VOLTRONIX SWITCHGEAR LLC\nReply DELETE to cancel.`;
+  return `${formatBillSummary(bill).slice(0, 3500)}\n\nOrganization could not be clearly detected from the invoice.\nPlease select the bill organization:\n\n1. VOLTRONIX SWITCHGEAR LLC\n2. VOLTRONIX CONTRACTING LLC\nReply DELETE to cancel.`;
 }
 
 /**

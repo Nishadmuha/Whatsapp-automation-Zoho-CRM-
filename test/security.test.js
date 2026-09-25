@@ -10,7 +10,7 @@ const { requestLogger } = require('../src/middleware/requestLogger');
 function configured(extra = {}) {
   return {
     NODE_ENV: 'production', WEBHOOK_VERIFY_TOKEN: 'a'.repeat(40), META_APP_SECRET: 'mock-meta-app-secret',
-    DATABASE_URL: 'postgresql://test_user:test_password@db.example.test/test_database',
+    MONGODB_URI: 'mongodb://test_user:test_password@db.example.test/test_database',
     AUTOMATION_ENABLED: 'true', ALLOWED_SENDER_PHONES: '+971501234567,971501234568',
     WHATSAPP_PHONE_NUMBER_ID: '123456789', WHATSAPP_ACCESS_TOKEN: 'mock-whatsapp-token',
     META_GRAPH_API_VERSION: 'v24.0', AI_PROVIDER: 'openai', OPENAI_API_KEY: 'mock-openai-key', OPENAI_MODEL: 'mock-model',
@@ -20,11 +20,13 @@ function configured(extra = {}) {
   };
 }
 
-test('Production configuration requires signatures, strong verification token, PostgreSQL, and TLS verification', () => {
+test('Production configuration requires signatures, strong verification token, MongoDB, and TLS verification', () => {
   assert.equal(readConfig(configured()).enabled, true);
   for (const overrides of [
     { META_APP_SECRET: '', WHATSAPP_APP_SECRET: '' }, { WEBHOOK_VERIFY_TOKEN: 'short' },
-    { DATABASE_URL: 'file:./messages.sqlite' }, { NODE_TLS_REJECT_UNAUTHORIZED: '0' },
+    { MONGODB_URI: '' }, { DATABASE_URL: 'file:./messages.sqlite' },
+    { DATABASE_URL: 'postgresql://test_user:test_password@db.example.test/test_database', MONGODB_URI: '' },
+    { NODE_TLS_REJECT_UNAUTHORIZED: '0' },
   ]) assert.throws(() => readConfig(configured(overrides)));
 });
 

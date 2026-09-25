@@ -2,7 +2,7 @@
 const { randomUUID, createHash } = require('node:crypto');
 const { validateBill, normalizeCurrency } = require('./billValidator');
 const { formatInitialReviewPrompt, formatCustomerSelectionPrompt, formatOrganizationSelectionPrompt, formatSuccessReport, formatDuplicateWarning } = require('./billFormatter');
-const { BOOKS_ORGANIZATIONS, resolveOrganization, findOrganizationsInText } = require('./organizations');
+const { BOOKS_ORGANIZATIONS, resolveOrganization, findOrganizationsInText, organizationById } = require('./organizations');
 const { PAYMENT_METHODS, normalizePaymentMethod } = require('./paymentMethods');
 const { mediaKind, normalizeMediaMimeType } = require('../../utils/media');
 // Preserve persisted legacy state names; only SAVE/1 can authorize a write.
@@ -62,8 +62,8 @@ function parseCurrencyInput(text) {
 function parseOrganizationInput(text) {
   const source = String(text || '').trim().replace(/[.!?]+$/, '');
   if (!source) return null;
-  if (source === '1') return resolveOrganization(BOOKS_ORGANIZATIONS[0], { selected: true });
-  if (source === '2') return resolveOrganization(BOOKS_ORGANIZATIONS[1], { selected: true });
+  if (source === '1') return resolveOrganization(BOOKS_ORGANIZATIONS[1], { selected: true });
+  if (source === '2') return resolveOrganization(BOOKS_ORGANIZATIONS[0], { selected: true });
   const candidate = source.replace(/^(?:organization|company)(?:\s+name)?(?:\s+is)?\s*[:=-]?\s*/i, '');
   return resolveOrganization(candidate, { selected: true });
 }
@@ -229,7 +229,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION,
       bill,
       replyInteractive: {
-        header: 'Customer details', body: 'Select the customer from Zoho Books.', footer: 'Voltronix Contracting LLC',
+        header: 'Customer details', body: 'Select the customer from Zoho Books.', footer: organizationById(bill.organization.organizationId).displayName,
         button: 'Select customer', sections: [{ title: 'Zoho Books customers', rows: visibleOptions.map(option => ({ id: `zoho-customer:${option.contactId}`, title: option.name.slice(0, 24), description: option.description })) }],
       },
     });

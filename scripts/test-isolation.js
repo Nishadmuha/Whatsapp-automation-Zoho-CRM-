@@ -1,6 +1,8 @@
 'use strict';
 // Preloaded only by the test runner, also in its child processes.
 require('dotenv').config = () => ({ parsed: {} });
+process.env.ZOHO_BOOKS_SWITCHGEAR_ORG_ID = '802911060';
+process.env.ZOHO_BOOKS_CONTRACTING_ORG_ID = '828765858';
 const net = require('node:net');
 const original = net.Socket.prototype.connect;
 net.Socket.prototype.connect = function (...args) {

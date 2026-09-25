@@ -8,9 +8,35 @@ const { computeGrounding, createBillExtractionService } = require('../src/servic
 const { createZohoBooksClient } = require('../src/services/books/zohoBooksClient');
 const { temporaryStore } = require('./helpers');
 const { createBillStore } = require('../src/database/billStore');
+const { readConfig } = require('../src/config/env');
+
+test('Books organization IDs come from separate configuration keys and reject missing or duplicate IDs only when enabled', () => {
+  const base = { WEBHOOK_VERIFY_TOKEN: 'test-token', META_APP_SECRET: 'test-secret', AUTOMATION_ENABLED: 'true', AI_PROVIDER: 'openai',
+    AUTHORIZED_BOOKS_PHONES: '+971501234567', WHATSAPP_ACCESS_TOKEN: 'test-token', WHATSAPP_PHONE_NUMBER_ID: '123456789', META_GRAPH_API_VERSION: 'v25.0' };
+  const ids = { ZOHO_BOOKS_SWITCHGEAR_ORG_ID: '123456', ZOHO_BOOKS_CONTRACTING_ORG_ID: '654321' };
+  assert.deepEqual(readConfig({ ...base, ...ids }).booksOrganizationIds, { switchgear: '123456', contracting: '654321' });
+  assert.throws(() => readConfig({ ...base, ...ids, ZOHO_BOOKS_SWITCHGEAR_ORG_ID: '' }), /ZOHO_BOOKS_SWITCHGEAR_ORG_ID/);
+  assert.throws(() => readConfig({ ...base, ...ids, ZOHO_BOOKS_CONTRACTING_ORG_ID: '123456' }), /distinct numeric/);
+  assert.doesNotThrow(() => readConfig({ ...base, ...ids, AUTOMATION_ENABLED: 'false', ZOHO_BOOKS_SWITCHGEAR_ORG_ID: '' }));
+});
+
+for (const [name, organizationId, label] of [
+  ['Switchgear', '802911060', 'Voltronix Switchgear LLC'],
+  ['Contracting', '828765858', 'Voltronix Contracting LLC'],
+]) test(`${name} customer selection displays only its organization label without changing lookup scope`, async () => {
+  const scopes = [];
+  const f = fixture({ bill: { ...validBill(), organization: resolveOrganization({ organizationId }) }, zohoOverrides: {
+    async searchCustomer({ organizationId: scope }) { scopes.push(scope); return [{ contactId: 'customer-1', contactName: 'Customer One' }]; },
+  } });
+  const first = await f.send('invoice');
+  assert.equal(first.state, 'WAITING_FOR_CUSTOMER_SELECTION');
+  assert.equal(first.replyInteractive.footer, label);
+  assert.deepEqual(scopes, [organizationId]);
+});
 
 function mockedExtraction(organization = null, overrides = {}) {
-  const { customer_details: _customer, ...bill } = validBill();
+  const bill = { ...validBill() };
+  delete bill.customer_details;
   return createBillExtractionService({
     env: { OPENAI_API_KEY: 'synthetic-test-key', OPENAI_MODEL: 'gpt-4o-mini' },
     http: { async post() {
@@ -123,7 +149,7 @@ test('missing organization prompts for selection and persists the selected organ
   const first = await f.send('invoice');
   assert.equal(first.state, 'WAITING_FOR_ORGANIZATION');
   assert.match(first.replyText, /Organization could not be clearly detected/);
-  const selected = await f.send('2');
+  const selected = await f.send('1');
   assert.equal(selected.bill.organization.organizationId, '802911060');
   assert.equal((await f.billStore.getBillSession(first.sessionId)).bill_data.organization.organizationId, '802911060');
 });
@@ -163,7 +189,7 @@ test('cross-organization customer state is rejected before bill creation', async
 
 test('EDIT changes organization and DELETE clears an organization-pending bill', async () => {
   const edited = fixture();
-  const first = await edited.send('invoice');
+  await edited.send('invoice');
   await edited.send('EDIT');
   const changed = await edited.send('organization: VOLTRONIX SWITCHGEAR LLC');
   assert.equal(changed.bill.organization.organizationId, '802911060');
@@ -205,12 +231,12 @@ for (const organization of BOOKS_ORGANIZATIONS) {
       async searchCustomer({ organizationId }) { scoped.push(organizationId); return [{ contactId: 'customer', contactName: 'Selected Customer' }]; },
     } });
     const first = await f.send('invoice');
-    assert.match(first.replyText, /Please select the bill organization:\n\n1\. VOLTRONIX CONTRACTING LLC\n2\. VOLTRONIX SWITCHGEAR LLC/);
+    assert.match(first.replyText, /Please select the bill organization:\n\n1\. VOLTRONIX SWITCHGEAR LLC\n2\. VOLTRONIX CONTRACTING LLC/);
     await f.send('1 SAVE');
     assert.equal((await f.billStore.getBillSession(first.sessionId)).state, 'WAITING_FOR_ORGANIZATION');
     assert.deepEqual(scoped, []);
     assert.equal(f.calls.some(call => call[0] === 'create'), false);
-    const selected = await f.send(organization.organizationId === '828765858' ? '1' : '2');
+    const selected = await f.send(organization.organizationId === '802911060' ? '1' : '2');
     assert.equal(selected.state, 'WAITING_FOR_CURRENCY');
     assert.match(selected.replyText, /Currency not detected/);
     assert.equal((await f.billStore.getBill(first.billId)).organization.organizationId, organization.organizationId);
@@ -282,7 +308,7 @@ test('ambiguous extraction asks the worker; an unrelated EDIT cannot silently ch
   assert.equal(first.state, 'WAITING_FOR_ORGANIZATION');
   await f.send('SAVE');
   assert.equal(f.calls.some(call => call[0] === 'create'), false);
-  await f.send('1');
+  await f.send('2');
   await f.send('EDIT');
   const corrected = await f.send('Correct the notes');
   assert.equal(corrected.bill.organization.organizationId, '828765858');

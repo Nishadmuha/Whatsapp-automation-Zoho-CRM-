@@ -40,8 +40,13 @@ function readConfig(env = process.env) {
   }
   if (production && verifyToken.length < 32) throw new Error('WEBHOOK_VERIFY_TOKEN must have at least 32 characters in production.');
   const mongoUri = (env.MONGODB_URI || (env.DATABASE_URL && /^mongodb(?:\+srv)?:\/\//.test(env.DATABASE_URL) ? env.DATABASE_URL : '')).trim();
-  if (production && !mongoUri && !env.DATABASE_URL) throw new Error('Set MONGODB_URI to a valid MongoDB connection string in production.');
-  const databaseUrl = rawDbUrl;
+  if (production && !mongoUri) {
+    throw new Error('Set MONGODB_URI to a valid MongoDB connection string in production.');
+  }
+  if (production && env.DATABASE_URL && !env.MONGODB_URI && !/^mongodb(?:\+srv)?:\/\//.test(env.DATABASE_URL.trim())) {
+    throw new Error('DATABASE_URL must be a MongoDB connection string in production; PostgreSQL and SQLite are not supported by this runtime.');
+  }
+  const databaseUrl = mongoUri || rawDbUrl;
   const databaseName = (env.MONGODB_DB_NAME || env.MONGO_DB_NAME || 'voltronix_crm').trim();
   const allowedSenders = (env.ALLOWED_SENDER_PHONES || '').split(',').map((s) => s.trim()).filter(Boolean);
   if (allowedSenders.some((s) => !/^\+?[1-9]\d{6,14}$/.test(s))) {
@@ -62,6 +67,13 @@ function readConfig(env = process.env) {
       && booksValues.some((s) => !/^\+?[1-9]\d{6,14}$/.test(s)))) {
     throw new Error(`${booksKey} must contain comma-separated valid sender phone numbers.`);
   }
+  const { readOrganizationIds } = require('../services/books/organizations');
+  const booksOrganizationIds = readOrganizationIds(env);
+  if (enabled && aiProvider === 'openai' && booksSenders.length
+      && (!/^\d+$/.test(booksOrganizationIds.switchgear) || !/^\d+$/.test(booksOrganizationIds.contracting)
+        || booksOrganizationIds.switchgear === booksOrganizationIds.contracting)) {
+    throw new Error('Set distinct numeric ZOHO_BOOKS_SWITCHGEAR_ORG_ID and ZOHO_BOOKS_CONTRACTING_ORG_ID for Books automation.');
+  }
   const adminUsername = (env.ADMIN_USERNAME || '').trim();
   const adminPassword = env.ADMIN_PASSWORD || '';
   const adminApiToken = env.ADMIN_API_TOKEN || '';
@@ -79,7 +91,9 @@ function readConfig(env = process.env) {
   }
   const booksUsername = (env.BOOKS_USERNAME || '').trim();
   const booksPassword = env.BOOKS_PASSWORD || '';
-  const adminBooksAccess = env.ADMIN_BOOKS_ACCESS !== 'false';
+  const rawAdminBooksAccess = env.ADMIN_BOOKS_ACCESS === undefined ? 'true' : env.ADMIN_BOOKS_ACCESS.trim().toLowerCase();
+  if (!['true', 'false'].includes(rawAdminBooksAccess)) throw new Error('ADMIN_BOOKS_ACCESS must be true or false.');
+  const adminBooksAccess = rawAdminBooksAccess === 'true';
   if (Boolean(booksUsername) !== Boolean(booksPassword)) {
     throw new Error('Set both BOOKS_USERNAME and BOOKS_PASSWORD to enable Zoho Books login.');
   }
@@ -100,7 +114,7 @@ function readConfig(env = process.env) {
   }
   return {
     production, enabled, aiProvider, verifyToken, appSecret, mongoUri, databaseUrl, databaseName, phoneNumberId, graphVersion, adminUsername, adminPassword, adminApiToken,
-    booksUsername, booksPassword, adminBooksAccess,
+    booksUsername, booksPassword, adminBooksAccess, booksOrganizationIds,
     allowedSenders: new Set(allowedSenders.map((s) => `+${s.replace(/^\+/, '')}`)),
     bossSenders: new Set(bossSenders),
     bossReplyQuietMs: integer(env.BOSS_REPLY_QUIET_MS, 5000, 1, 60000, 'BOSS_REPLY_QUIET_MS'),

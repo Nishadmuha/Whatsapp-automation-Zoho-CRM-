@@ -10,6 +10,7 @@ const {
   formatBossZohoFailureMessage,
   formatBossZohoInputMessage,
 } = require('./bossConversation');
+const { normalizePhone } = require('../../utils/phone');
 
 const SAFE_CODES = new Set([
   'AI_INPUT_INVALID', 'AI_CONFIGURATION_ERROR', 'AI_AUTHENTICATION_ERROR', 'AI_RATE_LIMIT',
@@ -25,7 +26,23 @@ const FAILURE_REPLIES = Object.freeze({
 });
 const failure = code => Object.assign(new Error('Lead processing could not be completed safely.'), { code });
 
+function zohoContactLockKey(lead, leadId) {
+  const phone = normalizePhone(lead?.phone || '');
+  if (phone) return `zoho:phone:${phone}`;
+  const email = typeof lead?.email === 'string' ? lead.email.trim().toLowerCase() : '';
+  if (email) return `zoho:email:${email}`;
+  return `zoho:lead:${leadId}`;
+}
+
 async function handleZohoSync({ leadId, store, zoho, config, logger, messageId, force = false, whatsapp = null }) {
+  const snapshot = await store.getLead(leadId);
+  if (!snapshot) return { success: false, error: 'Lead not found' };
+  const run = () => handleZohoSyncUnlocked({ leadId, store, zoho, config, logger, messageId, force, whatsapp });
+  if (typeof store.withContactLock !== 'function') return run();
+  return store.withContactLock(zohoContactLockKey(snapshot, leadId), run);
+}
+
+async function handleZohoSyncUnlocked({ leadId, store, zoho, config, logger, messageId, force = false, whatsapp = null }) {
   const lead = await store.getLead(leadId);
   if (!lead) return { success: false, error: 'Lead not found' };
   if (!lead.attachments?.length && typeof store.getLeadAttachments === 'function') {

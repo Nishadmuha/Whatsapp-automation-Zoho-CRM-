@@ -29,6 +29,18 @@ test('PDF retrieval reads EXACT created ID, never original attachment or OCR', a
   } });
   const document = await client.getBillPdf('123456', { organizationId: credentials.organizationId }); assert.equal(document.source, 'generated_from_zoho_record'); assert.match(calls[0], /\/bills\/123456$/); assert.equal(calls.length, 1);
 });
+for (const [organizationId, author] of [
+  ['802911060', 'Voltronix Switchgear LLC'],
+  ['828765858', 'Voltronix Contracting LLC'],
+]) test(`created Bill PDF Author reflects selected ${author} organization`, async () => {
+  const client = createZohoBooksClient({ ...credentials, env: {}, http: {
+    async post() { return { data: { access_token: 'synthetic-access', expires_in: 3600 } }; },
+    async get(_url, options) { assert.equal(options.params.organization_id, organizationId); return { data: { code: 0, bill: record() } }; },
+  } });
+  const document = await client.getBillPdf('123456', { organizationId });
+  assert.match(document.buffer.toString('latin1'), new RegExp(`/Author \\d+ 0 R`));
+  assert.ok(document.buffer.toString('latin1').includes(`${author})`));
+});
 test('wrong record ID and JSON errors cannot be delivered as PDF', async () => {
   const client = createZohoBooksClient({ ...credentials, env: {}, http: {
     async post() { return { data: { access_token: 'synthetic-access', expires_in: 3600 } }; },

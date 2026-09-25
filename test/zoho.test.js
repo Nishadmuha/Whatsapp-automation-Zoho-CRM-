@@ -289,7 +289,7 @@ for (const [label, input, expectedFields, fallback] of [
     assert.deepEqual(await service.createLead(input), { id: '12345' });
     assert.equal(http.calls[0].method, 'POST');
     assert.deepEqual(http.calls[0].data, { data: [{
-      Lead_Source: 'WhatsApp', ...expectedFields, ...(fallback ? { Last_Name: fallback } : {}),
+      Lead_Source: 'WhatsApp', Lead_Status: 'None', ...expectedFields, ...(fallback ? { Last_Name: fallback } : {}),
     }] });
     assert.deepEqual(await service.updateLead('12345', input), { id: '12345' });
     assert.deepEqual(http.calls.map(call => call.method), ['POST', 'GET', 'PUT']);
@@ -345,7 +345,7 @@ test('CRM create fallback respects custom contact mappings without populating cu
       const env = settings({ ZOHO_FIELD_MAPPING: JSON.stringify({ name, phone: 'Mobile', email: 'Contact_Email' }) });
       await crm(http, env).createLead(input);
       assert.deepEqual(http.calls[0].data, { data: [{
-        Lead_Source: 'WhatsApp', ...fields, Last_Name: expected,
+        Lead_Source: 'WhatsApp', Lead_Status: 'None', ...fields, Last_Name: expected,
       }] });
     }
   }
@@ -391,7 +391,7 @@ test('CRM custom name mappings omit all name keys when the source has no name', 
     parseFieldMapping('{"name":"Last_Name"}'),
   ]) {
     assert.deepEqual(mapLeadToZoho({ phone: '0501234567' }, undefined, mapping), {
-      Phone: '+971501234567', Lead_Source: 'WhatsApp',
+      Phone: '+971501234567', Lead_Source: 'WhatsApp', Lead_Status: 'None',
     });
   }
 });

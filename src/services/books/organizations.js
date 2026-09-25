@@ -1,14 +1,26 @@
 'use strict';
 
+function readOrganizationIds(env = process.env) {
+  return {
+    contracting: (env.ZOHO_BOOKS_CONTRACTING_ORG_ID !== undefined
+      ? env.ZOHO_BOOKS_CONTRACTING_ORG_ID : env.ZOHO_BOOKS_CONTRACTING_ORGANIZATION_ID || '').trim(),
+    switchgear: (env.ZOHO_BOOKS_SWITCHGEAR_ORG_ID !== undefined
+      ? env.ZOHO_BOOKS_SWITCHGEAR_ORG_ID : env.ZOHO_BOOKS_SWITCHGEAR_ORGANIZATION_ID || '').trim(),
+  };
+}
+
+const organizationIds = readOrganizationIds();
 const BOOKS_ORGANIZATIONS = Object.freeze([
   Object.freeze({
     name: 'VOLTRONIX CONTRACTING LLC',
-    organizationId: '828765858',
+    displayName: 'Voltronix Contracting LLC',
+    organizationId: organizationIds.contracting,
     aliases: Object.freeze(['VOLTRONIX CONTRACTING LLC', 'VOLTRONIX CONTRACTING']),
   }),
   Object.freeze({
     name: 'VOLTRONIX SWITCHGEAR LLC',
-    organizationId: '802911060',
+    displayName: 'Voltronix Switchgear LLC',
+    organizationId: organizationIds.switchgear,
     aliases: Object.freeze(['VOLTRONIX SWITCHGEAR LLC', 'VOLTRONIX SWITCHGEAR']),
   }),
 ]);
@@ -23,6 +35,7 @@ function confidence(value, fallback = null) {
 
 function organizationById(value) {
   const id = String(value || '').trim();
+  if (!id) return null;
   return BOOKS_ORGANIZATIONS.find(organization => organization.organizationId === id) || null;
 }
 
@@ -44,7 +57,7 @@ function resolveOrganization(input, { selected = false } = {}) {
   if ((id && !byId) || (name && !byName)) return null;
   if (byId && byName && byId.organizationId !== byName.organizationId) return null;
   const organization = byId || byName;
-  if (!organization) return null;
+  if (!organization?.organizationId) return null;
 
   return {
     name: organization.name,
@@ -64,6 +77,7 @@ function findOrganizationsInText(text) {
 
 module.exports = {
   BOOKS_ORGANIZATIONS,
+  readOrganizationIds,
   compactName,
   findOrganizationsInText,
   organizationById,
