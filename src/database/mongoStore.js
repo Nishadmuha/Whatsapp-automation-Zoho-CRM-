@@ -463,7 +463,6 @@ class MongoMessageStore {
       { col: 'crm_contacts', key: { contact_key: 1 }, options: { unique: true } },
       { col: 'crm_outgoing', key: { id: 1 }, options: { unique: true } },
       { col: 'crm_outgoing', key: { request_key: 1 }, options: { unique: true } },
-      { col: 'crm_outgoing', key: { message_id: 1 } },
       { col: 'lead_groups', key: { id: 1 }, options: { unique: true } },
       { col: 'lead_messages', key: { message_id: 1 } },
       { col: 'lead_attachments', key: { id: 1 } },

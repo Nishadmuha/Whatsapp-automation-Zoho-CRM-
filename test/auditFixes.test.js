@@ -172,6 +172,44 @@ test('required MongoDB index failures stop initialization', async () => {
   assert.equal(store.initialized, false);
 });
 
+test('CRM outgoing initialization skips unused message ID index and keeps unique guards', async () => {
+  const indexes = [];
+  const db = {
+    collection(collection) {
+      return {
+        async createIndex(key, options) {
+          indexes.push({ collection, key, options });
+          if (collection === 'crm_outgoing' && key.message_id === 1) {
+            throw new Error('legacy message ID index conflict');
+          }
+        },
+      };
+    },
+  };
+  const store = new MongoMessageStore({ mongoUri: 'mongodb://synthetic/app', db });
+  await store.init();
+  assert.equal(store.initialized, true);
+  assert.deepEqual(indexes.filter(index => index.collection === 'crm_outgoing'), [
+    { collection: 'crm_outgoing', key: { id: 1 }, options: { unique: true } },
+    { collection: 'crm_outgoing', key: { request_key: 1 }, options: { unique: true } },
+  ]);
+
+  const guardedStore = new MongoMessageStore({
+    mongoUri: 'mongodb://synthetic/app',
+    db: {
+      collection(collection) {
+        return {
+          async createIndex(key) {
+            if (collection === 'crm_outgoing' && key.request_key === 1) throw new Error('required index failed');
+          },
+        };
+      },
+    },
+  });
+  await assert.rejects(guardedStore.init(), /Required MongoDB index initialization failed for crm_outgoing/);
+  assert.equal(guardedStore.initialized, false);
+});
+
 test('new Zoho leads carry NOT QUALIFIED status while updates preserve CRM status', () => {
   const record = mapLeadToZoho({ name: 'A Customer', phone: '+971501234567', company: 'A Co' }, 'hello');
   assert.equal(record.Lead_Status, 'None');
