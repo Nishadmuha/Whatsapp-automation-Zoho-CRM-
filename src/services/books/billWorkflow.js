@@ -834,6 +834,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       if (vendorResult) return vendorResult;
       if (zohoBooksClient.prepareBill) await zohoBooksClient.prepareBill(accountingBill, vendor, { organizationId: bill.organization.organizationId });
     } catch (error) {
+      log('error', { event: 'books.bill_preflight_failed', code: error?.code || 'UNKNOWN', operation: error?.operation || null });
       return reviewFailure('Zoho vendor, currency, tax or duplicate validation failed. Nothing was created.');
     }
     await billStore.updateBill(session.bill_id, { status: 'CREATING', zoho_status: 'SYNCING', zoho_vendor_id: vendor.id });
