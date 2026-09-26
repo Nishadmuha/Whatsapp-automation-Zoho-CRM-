@@ -227,37 +227,67 @@ function createZohoBooksClient({
 
   async function searchVendor({ name = '', searchText = '', organizationId = null } = {}) {
     const term = (searchText || name || '').trim();
-    if (!term) {
-      return [];
-    }
-
+    if (!term) return [];
     return requestWithRetry(async (token) => {
-      const response = await http.get(`${cleanBaseUrl}/contacts`, {
-        params: {
-          organization_id: resolveOrganizationId(organizationId),
-          contact_type: 'vendor',
-          search_text: term,
-        },
-        headers: {
-          Authorization: `Zoho-oauthtoken ${token}`,
-        },
-        timeout,
-        httpsAgent,
-      });
-
-      const contacts = response?.data?.contacts || [];
-      if (response?.data?.code !== undefined && response.data.code !== 0) throw new ZohoBooksError('VENDOR_LOOKUP_FAILED', 'Zoho rejected the vendor lookup.');
-      return contacts.map((c) => ({
+      const contacts = [];
+      for (let page = 1; page <= 100; page += 1) {
+        const response = await http.get(`${cleanBaseUrl}/contacts`, {
+          params: {
+            organization_id: resolveOrganizationId(organizationId),
+            contact_type: 'vendor',
+            filter_by: 'Status.All',
+            page,
+            per_page: 200,
+          },
+          headers: { Authorization: `Zoho-oauthtoken ${token}` },
+          timeout,
+          httpsAgent,
+        });
+        if (response?.data?.code !== undefined && response.data.code !== 0) throw new ZohoBooksError('VENDOR_LOOKUP_FAILED', 'Zoho rejected the vendor lookup.');
+        if (!Array.isArray(response?.data?.contacts)) throw new ZohoBooksError('VENDOR_LOOKUP_FAILED', 'Zoho returned an invalid vendor list.');
+        contacts.push(...response.data.contacts);
+        if (!response?.data?.page_context?.has_more_page) break;
+        if (page === 100) throw new ZohoBooksError('VENDOR_LOOKUP_INCOMPLETE', 'Zoho vendor lookup could not be completed safely.');
+      }
+      const seen = new Set();
+      return contacts.filter(c => !c.contact_type || c.contact_type === 'vendor').map((c) => ({
         id: String(c.contact_id || c.id),
         name: c.contact_name || c.vendor_name || c.company_name || '',
         companyName: c.company_name || null,
         email: c.email || null,
         phone: c.phone || c.mobile || null,
-        trn: c.tax_registration_number || c.tax_treatment || c.gst_no || c.trn || null,
+        trn: c.tax_registration_number || c.gst_no || c.trn || null,
         status: c.status || null,
+        organizationId: c.organization_id ? String(c.organization_id) : null,
         raw: c,
-      }));
+      })).filter(vendor => {
+        if (!vendor.id || vendor.id === 'undefined' || seen.has(vendor.id)) return false;
+        seen.add(vendor.id);
+        return true;
+      });
     }, 'searchVendor', organizationId);
+  }
+
+  async function createVendor({ name, organizationId = null } = {}) {
+    const contactName = nullableText(name);
+    if (!contactName) throw new ZohoBooksError('INVALID_INPUT', 'Vendor name is required.');
+    return requestWithRetry(async token => {
+      const response = await http.post(`${cleanBaseUrl}/contacts`, { contact_name: contactName, contact_type: 'vendor' }, {
+        params: { organization_id: resolveOrganizationId(organizationId) },
+        headers: { Authorization: `Zoho-oauthtoken ${token}`, 'Content-Type': 'application/json' },
+        timeout,
+        httpsAgent,
+      });
+      const contact = response?.data?.contact;
+      const id = nullableText(contact?.contact_id);
+      if (response?.data?.code !== 0 || !id || (contact.contact_type && contact.contact_type !== 'vendor')) {
+        throw new ZohoBooksError('ZOHO_BOOKS_INVALID_RESPONSE', 'Zoho did not confirm a created vendor ID.');
+      }
+      return {
+        id, name: contact.contact_name || contactName, companyName: contact.company_name || null,
+        status: contact.status || null, organizationId, raw: contact,
+      };
+    }, 'createVendor', organizationId);
   }
 
   async function searchCustomer({ searchText = '', organizationId = null } = {}) {
@@ -539,6 +569,7 @@ function createZohoBooksClient({
     getAccessToken,
     invalidateToken,
     searchVendor,
+    createVendor,
     searchCustomer,
     getCustomer,
     checkDuplicateBill,

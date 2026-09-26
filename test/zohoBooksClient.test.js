@@ -175,7 +175,7 @@ test('5. Authentication failure (401 / expired token) causes exactly one token r
   assert.strictEqual(vendors[0].name, 'Success Vendor');
 });
 
-test('6. searchVendor() sends the correct vendor search request and parameters', async () => {
+test('6. searchVendor() lists all organization vendors without narrowing the provider search', async () => {
   const http = createMockHttp();
   http.setHandler('post', async () => ({
     status: 200,
@@ -185,7 +185,10 @@ test('6. searchVendor() sends the correct vendor search request and parameters',
     assert.ok(url.endsWith('/contacts'));
     assert.strictEqual(options.params.organization_id, 'books_org_999');
     assert.strictEqual(options.params.contact_type, 'vendor');
-    assert.strictEqual(options.params.search_text, 'Gulf Supplies');
+    assert.strictEqual(options.params.search_text, undefined);
+    assert.strictEqual(options.params.filter_by, 'Status.All');
+    assert.strictEqual(options.params.page, 1);
+    assert.strictEqual(options.params.per_page, 200);
     assert.strictEqual(options.headers.Authorization, 'Zoho-oauthtoken valid_token');
 
     return {
@@ -233,6 +236,48 @@ test('7. searchVendor() returns empty array when none found and does NOT create 
   // Ensure NO post request to /contacts was made
   const postContactsCalls = http.calls.filter(c => c.method === 'POST' && c.url.includes('/contacts'));
   assert.strictEqual(postContactsCalls.length, 0);
+});
+
+test('vendor lookup scans later pages, includes inactive contacts, and keeps the selected organization', async () => {
+  const http = createMockHttp();
+  http.setHandler('post', async () => ({ data: { access_token: 'fixture-token' } }));
+  http.setHandler('get', async (_url, options) => {
+    assert.equal(options.params.organization_id, '828765858');
+    assert.equal(options.params.contact_type, 'vendor');
+    assert.equal(options.params.filter_by, 'Status.All');
+    return options.params.page === 1
+      ? { data: { code: 0, contacts: [{ contact_id: 'other', contact_name: 'Other Vendor', contact_type: 'vendor', status: 'active' }], page_context: { has_more_page: true } } }
+      : { data: { code: 0, contacts: [{ contact_id: 'meitech', contact_name: 'Meitech International FZC', contact_type: 'vendor', status: 'active', organization_id: '828765858' }, { contact_id: 'inactive', contact_name: 'Inactive Vendor', contact_type: 'vendor', status: 'inactive' }], page_context: { has_more_page: false } } };
+  });
+  const client = createZohoBooksClient({ ...mockConfig, http });
+  const vendors = await client.searchVendor({ name: 'Meitech International FZC', organizationId: '828765858' });
+  assert.deepEqual(vendors.map(vendor => vendor.id), ['other', 'meitech', 'inactive']);
+  assert.equal(vendors[1].organizationId, '828765858');
+  assert.deepEqual(http.calls.filter(call => call.method === 'GET').map(call => call.options.params.page), [1, 2]);
+});
+
+test('incomplete vendor pagination fails closed before a vendor can be created', async () => {
+  const http = createMockHttp();
+  http.setHandler('post', async () => ({ data: { access_token: 'fixture-token' } }));
+  http.setHandler('get', async () => ({ data: { code: 0, contacts: [], page_context: { has_more_page: true } } }));
+  const client = createZohoBooksClient({ ...mockConfig, http });
+  await assert.rejects(client.searchVendor({ name: 'Missing', organizationId: '828765858' }), /vendor lookup could not be completed safely/i);
+  assert.equal(http.calls.filter(call => call.method === 'GET').length, 100);
+  assert.equal(http.calls.some(call => call.method === 'POST' && call.url.endsWith('/contacts')), false);
+});
+
+test('createVendor posts only a vendor to the selected organization and requires a confirmed ID', async () => {
+  const http = createMockHttp();
+  http.setHandler('post', async (url, payload, options) => {
+    if (url.endsWith('/oauth/v2/token')) return { data: { access_token: 'fixture-token' } };
+    assert.ok(url.endsWith('/contacts'));
+    assert.equal(options.params.organization_id, '802911060');
+    assert.deepEqual(payload, { contact_name: 'New Vendor LLC', contact_type: 'vendor' });
+    return { data: { code: 0, contact: { contact_id: 'new-vendor', contact_name: 'New Vendor LLC', contact_type: 'vendor' } } };
+  });
+  const client = createZohoBooksClient({ ...mockConfig, http });
+  assert.equal((await client.createVendor({ name: 'New Vendor LLC', organizationId: '802911060' })).id, 'new-vendor');
+  await assert.rejects(client.createVendor({ name: '', organizationId: '802911060' }), error => error.code === 'INVALID_INPUT');
 });
 
 test('7a. searchCustomer() reads Zoho Books customers without creating contacts', async () => {

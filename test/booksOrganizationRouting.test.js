@@ -135,7 +135,8 @@ for (const organization of [
   const first = await f.send('invoice');
   assert.equal(first.state, 'AWAITING_FINAL_CONFIRMATION');
   await f.send('SAVE');
-  assert.deepEqual(routed.slice(0, 4), [
+  assert.deepEqual(routed.slice(0, 5), [
+    ['vendor', organization.organizationId],
     ['vendor', organization.organizationId],
     ['duplicate', organization.organizationId],
     ['prepare', organization.organizationId],
@@ -255,6 +256,7 @@ for (const organization of BOOKS_ORGANIZATIONS) {
     const lookups = [];
     const f = fixture({ bill: { ...validBill(), organization: resolveOrganization(organization), customer_details: null }, zohoOverrides: {
       async searchCustomer({ organizationId }) { lookups.push(organizationId); return [{ contactId: `customer-${organizationId}`, contactName: 'Company Contact' }]; },
+      async searchVendor({ organizationId }) { return [{ id: `vendor-${organizationId}`, name: 'Supplier LLC', organizationId }]; },
     } });
     const first = await f.send('invoice');
     await f.send('1');
@@ -268,7 +270,7 @@ for (const organization of BOOKS_ORGANIZATIONS) {
     assert.equal(changed.state, 'WAITING_FOR_CUSTOMER_SELECTION');
     assert.equal(changed.bill.customer_details, null);
     assert.equal(changed.bill.currency_id, null);
-    assert.equal(changed.bill.zoho_vendor_id, null);
+    assert.equal(changed.bill.zoho_vendor_id, `vendor-${other.organizationId}`, 'The vendor is re-resolved in the newly selected organization.');
     assert.equal(changed.bill.line_items[0].tax_id, undefined);
     assert.equal(changed.bill.currency, 'AED');
     assert.equal(changed.bill.payment_type, 'Credit Card');
@@ -293,7 +295,7 @@ for (const organization of BOOKS_ORGANIZATIONS) {
       session.bill_data.customer_details = { contact_id: 'wrong-customer', customer_name: 'Wrong Contact', organization_id: scope };
       const saved = await f.send('1 SAVE');
       assert.match(saved.replyText, /does not belong/);
-      assert.equal(f.calls.some(call => ['vendor', 'create'].includes(call[0])), false);
+      assert.equal(f.calls.some(call => call[0] === 'create'), false);
       assert.equal((await f.billStore.getBill(first.billId)).customer_details, null);
     }
   });
@@ -348,7 +350,8 @@ test('direct image extraction can identify organization when OCR is unavailable'
   const f = fixture({ extractionOverrides: service, aiOverrides: { async extractMediaText() { throw Error('Synthetic OCR outage'); } } });
   const result = await f.send('', { messageType: 'image', mediaId: 'invoice' });
   assert.equal(result.bill.organization.organizationId, '802911060');
-  assert.equal(result.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.equal(result.state, 'WAITING_FOR_ADDITIONAL_INFO');
+  assert.doesNotMatch(result.replyText, /BILL DETAILS|1 SAVE/);
 });
 
 test('DELETE clears a selected organization, customer IDs and options from both pending records', async () => {
@@ -415,7 +418,7 @@ for (const organization of BOOKS_ORGANIZATIONS) {
           return { data: { code: 0, attachment_id: `attachment-${orgId}` } };
         },
         async get(url, options) {
-          requests.push({ method: 'GET', url, organizationId: options.params.organization_id, page: options.params.page });
+          requests.push({ method: 'GET', url, organizationId: options.params.organization_id, page: options.params.page, contactType: options.params.contact_type });
           assert.equal(options.params.organization_id, orgId);
           if (url.endsWith('/contacts') && options.params.contact_type === 'customer') {
             return { data: { code: 0, contacts: options.params.page === 1 ? [] : [contact], page_context: { has_more_page: options.params.page === 1 } } };
@@ -443,7 +446,8 @@ for (const organization of BOOKS_ORGANIZATIONS) {
     assert.equal(requests.length, 0, 'No API operation before required currency and organization are known.');
     const currency = await f.send('aed');
     assert.equal(currency.state, 'WAITING_FOR_CUSTOMER_SELECTION');
-    assert.match(currency.replyText, /AED/);
+    assert.equal(currency.bill.currency, 'AED');
+    assert.doesNotMatch(currency.replyText, /BILL DETAILS|1 SAVE/);
     assert.equal((await billStore.getBill(first.billId)).currency, 'AED');
     assert.equal((await billStore.getBillSession(first.sessionId)).bill_data.currency, 'AED');
     await f.send('1');
@@ -465,7 +469,8 @@ for (const organization of BOOKS_ORGANIZATIONS) {
     assert.equal(requests.filter(r => r.method === 'POST' && r.url.endsWith('/bills')).length, 1);
     assert.equal(requests.filter(r => r.url.endsWith('/attachment')).length, 1);
     assert.equal(requests.every(r => r.organizationId === orgId), true);
-    assert.deepEqual(requests.filter(r => r.url.endsWith('/contacts') && r.page).map(r => r.page), [1, 2]);
+    assert.deepEqual(requests.filter(r => r.url.endsWith('/contacts') && r.contactType === 'customer').map(r => r.page), [1, 2]);
+    assert.ok(requests.some(r => r.url.endsWith('/contacts') && r.contactType === 'vendor' && r.page === 1));
     const document = f.calls.find(call => call[0] === 'document')[2];
     assert.equal(document.buffer.subarray(0, 5).toString(), '%PDF-');
     assert.equal(await billStore.getActiveBillSession(require('./billFixtures').WORKER), null);

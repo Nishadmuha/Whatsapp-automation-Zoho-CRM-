@@ -43,7 +43,7 @@ function transport({ scopes = true } = {}) {
 
 test('minimal scope sets cover existing endpoints, without accounts or broad write grants', () => {
   assert.deepEqual(CRM_SCOPES, ['ZohoCRM.modules.leads.READ', 'ZohoCRM.modules.leads.CREATE', 'ZohoCRM.modules.leads.UPDATE', 'ZohoCRM.modules.attachments.READ', 'ZohoCRM.modules.attachments.CREATE', 'ZohoSearch.securesearch.READ']);
-  assert.deepEqual(BOOKS_SCOPES, ['ZohoBooks.contacts.READ', 'ZohoBooks.bills.READ', 'ZohoBooks.bills.CREATE', 'ZohoBooks.settings.READ']);
+  assert.deepEqual(BOOKS_SCOPES, ['ZohoBooks.contacts.READ', 'ZohoBooks.contacts.CREATE', 'ZohoBooks.bills.READ', 'ZohoBooks.bills.CREATE', 'ZohoBooks.settings.READ']);
 });
 test('scope coverage is operation-specific, not a substring permission check', () => {
   const report = scopeReport('ZohoCRM.modules.leads.READ,ZohoCRM.modules.attachments.READ', CRM_SCOPES);

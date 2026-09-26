@@ -12,6 +12,7 @@ const CRM_SCOPES = Object.freeze([
 ]);
 const BOOKS_SCOPES = Object.freeze([
   'ZohoBooks.contacts.READ',
+  'ZohoBooks.contacts.CREATE',
   'ZohoBooks.bills.READ',
   'ZohoBooks.bills.CREATE',
   // Existing prepareBill validates configured currency and tax IDs.
