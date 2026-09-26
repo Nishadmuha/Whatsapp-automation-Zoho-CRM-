@@ -11,6 +11,7 @@ const REVIEW = WORKFLOW_STATES.AWAITING_FINAL_CONFIRMATION;
 const EDIT = WORKFLOW_STATES.WAITING_FOR_EDIT_INSTRUCTION;
 const SAVING = WORKFLOW_STATES.SAVING;
 const CURRENCY_PROMPT = 'Currency not detected. Please enter the currency (e.g. AED, USD, EUR).';
+const CUSTOMER_DETAILS_PROMPT = 'Please send the customer details. You can type the customer/company name, phone number, email, location, or any available customer details.';
 const PIPELINE_FAILURES = Object.freeze({
   DOWNLOAD: 'A_MEDIA_DOWNLOAD_FAILURE',
   EXTRACTION: 'B_OCR_VISION_EXTRACTION_FAILURE',
@@ -100,6 +101,37 @@ function normalizeCustomerRecord(customer = {}) {
 function isSafeContactId(value) {
   return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 }
+function customerNameKey(value) {
+  return String(value || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+}
+function parseManualCustomerDetails(text) {
+  const source = String(text || '').trim().slice(0, 500)
+    .replace(/^(?:customer|client)(?:\s+(?:details|name))?\s*[:=-]\s*/i, '');
+  if (!source) return null;
+  const details = {};
+  for (const part of source.split(/[,;\n]+/).map(value => value.trim()).filter(Boolean)) {
+    const label = part.match(/^(?:customer|client|company|name|phone|mobile|email|location|site|project)\s*[:=-]\s*/i)?.[0] || '';
+    const email = part.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
+    const phone = part.match(/\+?\d[\d\s()-]{6,}\d/);
+    if (email) details.customer_email = email.slice(0, 200);
+    if (phone) details.customer_phone = phone[0].replace(/[\s()-]/g, '').slice(0, 20);
+    const remaining = part.replace(label, '').replace(email || '', '').replace(phone?.[0] || '', '').trim();
+    if (!remaining) continue;
+    if (/^(?:location|site|project)/i.test(label) || (!details.customer_name && /\bsite\b/i.test(remaining))) {
+      details.project_site = remaining.slice(0, 200);
+    } else if (!details.customer_name) {
+      details.customer_name = remaining.slice(0, 160);
+    } else {
+      details.project_site = [details.project_site, remaining].filter(Boolean).join(', ').slice(0, 200);
+    }
+  }
+  return Object.keys(details).length ? details : null;
+}
+function hasManualCustomerFallback(bill) {
+  const customer = bill.customer_details;
+  return customer?.customer_source === 'manual' && customer.customer_lookup_status === 'not_found'
+    && customer.organization_id === bill.organization?.organizationId;
+}
 function parseWorkerDetails(text, { allowShorthand = true, allowVendor = true } = {}) {
   const source = String(text || '').trim();
   if (!source) return {};
@@ -155,12 +187,34 @@ function mergeWorkerDetails(currentBill, text, parsed = parseWorkerDetails(text)
 function vendorNameKey(value) {
   return String(value || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 }
+function isUnpricedSourceLine(item) {
+  return item && item.rate == null && item.amount == null;
+}
+function reconciledUnpricedLines(bill) {
+  if (!Array.isArray(bill.line_items) || ![bill.subtotal, bill.tax_amount, bill.total_amount].every(Number.isFinite)) return [];
+  const unpriced = bill.line_items.flatMap((item, index) => isUnpricedSourceLine(item) ? [index] : []);
+  if (!unpriced.length) return [];
+  const priced = bill.line_items.filter(item => !isUnpricedSourceLine(item));
+  if (!priced.length || priced.some(item => !Number.isFinite(item.quantity) || item.quantity <= 0
+      || !Number.isFinite(item.rate) || item.rate < 0
+      || (item.amount != null && (!Number.isFinite(item.amount) || Math.abs(item.quantity * item.rate - item.amount) > 0.05))
+      || !Number.isFinite(item.tax_percentage) || item.tax_percentage < 0 || item.tax_percentage > 100)) return [];
+  const subtotal = priced.reduce((sum, item) => sum + item.quantity * item.rate, 0);
+  const tax = priced.reduce((sum, item) => sum + item.quantity * item.rate * item.tax_percentage / 100, 0);
+  return Math.abs(subtotal - bill.subtotal) <= 0.05
+    && Math.abs(tax - bill.tax_amount) <= 0.05
+    && Math.abs(bill.subtotal + bill.tax_amount - bill.total_amount) <= 0.05 ? unpriced : [];
+}
 function taxAllocation(bill, requireAccounting) {
   if (!requireAccounting || !(bill.tax_amount > 0) || !Array.isArray(bill.line_items)) return { missingLines: [], mismatch: false };
-  const missingLines = bill.line_items.flatMap((item, index) =>
-    Number.isFinite(item?.tax_percentage) && item.tax_percentage >= 0 && item.tax_percentage <= 100 ? [] : [index + 1]);
-  const calculated = missingLines.length ? null : bill.line_items.reduce((sum, item) =>
-    sum + item.quantity * item.rate * item.tax_percentage / 100, 0);
+  const priced = bill.line_items.filter(item => !isUnpricedSourceLine(item));
+  const missingLines = bill.line_items.flatMap((item, index) => isUnpricedSourceLine(item)
+    || (Number.isFinite(item?.tax_percentage) && item.tax_percentage >= 0 && item.tax_percentage <= 100) ? [] : [index + 1]);
+  // An unpriced source line may contain the remaining tax base. Until the
+  // subtotal proves it contributes nothing, ask for its amounts, not its rate.
+  const calculated = missingLines.length || priced.length !== bill.line_items.length
+    || priced.some(item => !Number.isFinite(item.quantity) || !Number.isFinite(item.rate))
+    ? null : priced.reduce((sum, item) => sum + item.quantity * item.rate * item.tax_percentage / 100, 0);
   return { missingLines, mismatch: calculated !== null && Math.abs(calculated - bill.tax_amount) > 0.05 };
 }
 function parseLineTaxInput(text, bill) {
@@ -180,18 +234,21 @@ function parseLineTaxInput(text, bill) {
 }
 function billMissingFields(bill, { requireCustomerId = false, requireAccounting = false } = {}) {
   const validation = validateBill(bill);
+  const sourceOnlyLines = reconciledUnpricedLines(bill);
   const missing = [];
   if (!bill.vendor_name) missing.push('vendor name');
   if (!bill.bill_number) missing.push('bill number');
   if (!bill.bill_date) missing.push('bill date');
   if (!bill.currency) missing.push('currency');
-  if (!bill.customer_details?.customer_name || (requireCustomerId && !(bill.customer_details.contact_id || bill.customer_details.customer_id))) missing.push('customer');
+  if (!bill.customer_details?.customer_name || (requireCustomerId && !(bill.customer_details.contact_id || bill.customer_details.customer_id)
+      && !hasManualCustomerFallback(bill))) missing.push('customer');
   if (!bill.payment_type) missing.push('payment method');
-  if (!bill.line_items?.length || bill.line_items.some(item => !item.name || !Number.isFinite(item.quantity) || item.quantity <= 0 || !Number.isFinite(item.rate) || item.rate < 0)) missing.push('line items with quantity and rate');
+  if (!bill.line_items?.length || bill.line_items.some((item, index) => !item.name || (!sourceOnlyLines.includes(index)
+      && (!Number.isFinite(item.quantity) || item.quantity <= 0 || !Number.isFinite(item.rate) || item.rate < 0)))) missing.push('line items with quantity and rate');
   if (requireAccounting && (bill.subtotal == null || bill.tax_amount == null)) missing.push('subtotal and tax');
   const tax = taxAllocation(bill, requireAccounting);
   if (tax.missingLines.length || tax.mismatch) missing.push('line-item tax allocation');
-  return { missing, validation, tax };
+  return { missing, validation, tax, sourceOnlyLines };
 }
 function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient, whatsappService = null, aiService = null, store = null, config = {}, logger = null } = {}) {
   function log(level, metadata) {
@@ -234,7 +291,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     bill.zoho_vendor_id = vendorResolution.vendor?.id || null;
     await billStore.updateBill(session.bill_id, { zoho_vendor_id: bill.zoho_vendor_id });
     const customer = bill.customer_details || {};
-    if (typeof zohoBooksClient?.searchCustomer === 'function'
+    if (typeof zohoBooksClient?.searchCustomer === 'function' && !hasManualCustomerFallback(bill)
         && (!(customer.contact_id || customer.customer_id) || customer.organization_id !== bill.organization.organizationId)) {
       const customerPrompt = await askForCustomer(session, bill);
       if (customerPrompt) return customerPrompt;
@@ -243,7 +300,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill_data: bill, last_message_id: messageId });
       return reply(session, `Before SAVE, send payment method: ${PAYMENT_METHODS.join(' / ')}`, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill });
     }
-    const { missing, validation, tax } = billMissingFields(bill, { requireCustomerId: typeof zohoBooksClient?.searchCustomer === 'function', requireAccounting: typeof zohoBooksClient?.prepareBill === 'function' });
+    const { missing, validation, tax, sourceOnlyLines } = billMissingFields(bill, { requireCustomerId: typeof zohoBooksClient?.searchCustomer === 'function', requireAccounting: typeof zohoBooksClient?.prepareBill === 'function' });
     if (tax.missingLines.length || tax.mismatch) {
       await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill_data: bill, last_message_id: messageId });
       const detail = tax.missingLines.length ? `Tax percentage missing for line ${tax.missingLines.join(', ')}.` : 'Line-item tax does not match the bill tax total.';
@@ -251,10 +308,14 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     }
     if (missing.length || !validation.valid) {
       await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill_data: bill, last_message_id: messageId });
+      if (missing.includes('customer') && !customer.customer_name) return reply(session, CUSTOMER_DETAILS_PROMPT, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill });
       return reply(session, `Cannot review yet: ${missing.length ? `Please supply ${missing.join(', ')}.` : validation.issues[0].message} Reply EDIT with the missing or corrected details.`, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill });
     }
     await billStore.updateBillSession(session.session_id, { state: REVIEW, bill_data: bill, last_message_id: messageId });
-    return reply(session, formatInitialReviewPrompt(bill), { state: REVIEW, bill });
+    const review = formatInitialReviewPrompt(bill);
+    const sourceLineNotice = sourceOnlyLines.length
+      ? `\nUnpriced source line(s) ${sourceOnlyLines.map(index => index + 1).join(', ')} are shown for reference but will not be created as Zoho bill items.` : '';
+    return reply(session, `${review}${sourceLineNotice}`, { state: REVIEW, bill });
   }
   async function resolveVendor(bill) {
     const organizationId = bill.organization.organizationId;
@@ -295,15 +356,16 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill_data: bill, attachments, customer_options: [], last_message_id: incoming.messageId });
     return continueAfterOrganization(session, bill, incoming.messageId);
   }
-  async function askForCustomer(session, bill, searchText = '') {
+  async function askForCustomer(session, bill, searchText = '', { manualInput = false, messageId = null } = {}) {
     if (!bill.organization?.organizationId) return requestOrganization(session, bill);
     if (typeof zohoBooksClient?.searchCustomer !== 'function') return null;
+    const detailsPrompt = bill.customer_details?.customer_name ? '' : `${CUSTOMER_DETAILS_PROMPT}\n`;
     let customers;
     try {
       customers = await zohoBooksClient.searchCustomer({ searchText, organizationId: bill.organization?.organizationId });
     } catch {
       await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, bill_data: bill, customer_options: [] });
-      return reply(session, 'I could not load the Zoho Books customer list. Reply EDIT with the customer name, or try again.', { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, bill });
+      return reply(session, `${detailsPrompt}I could not load the Zoho Books customer list. Reply EDIT with the customer name, or try again.`, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, bill });
     }
     const options = (customers || []).map(customer => {
       const scope = customer.organizationId || customer.organization_id || customer.raw?.organization_id;
@@ -326,13 +388,33 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
         organizationId: bill.organization?.organizationId,
       };
     }).filter(Boolean);
+    const continueWithManualCustomer = async () => {
+      const customerDetails = { ...bill.customer_details, customer_lookup_status: 'not_found', organization_id: bill.organization.organizationId };
+      const manualBill = { ...bill, customer_details: customerDetails };
+      await billStore.updateBill(session.bill_id, { customer_details: customerDetails });
+      await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill_data: manualBill, customer_options: [], last_message_id: messageId });
+      return continueAfterOrganization(session, manualBill, messageId);
+    };
     if (!options.length) {
+      if (manualInput && bill.customer_details?.customer_name) return continueWithManualCustomer();
       await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, bill_data: bill, customer_options: [] });
-      return reply(session, searchText ? 'No matching Zoho Books customer was found. Reply with another customer name.' : 'No Zoho Books customers were found. Reply EDIT with the customer name.', { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, bill });
+      return reply(session, `${detailsPrompt}${searchText ? 'No matching Zoho Books customer was found. Reply with another customer name.' : 'No Zoho Books customers were found. Reply EDIT with the customer name.'}`, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, bill });
+    }
+    if (manualInput && bill.customer_details?.customer_name) {
+      const name = customerNameKey(bill.customer_details.customer_name);
+      const exact = options.filter(option => [option.contactName, option.companyName].some(value => customerNameKey(value) === name));
+      if (exact.length === 1 && (!exact[0].contactType || exact[0].contactType === 'customer')
+          && (!exact[0].status || exact[0].status.toLowerCase() === 'active')) {
+        await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, customer_options: options, bill_data: bill });
+        return selectCustomer({ ...session, customer_options: options, bill_data: bill }, {
+          interactiveId: `zoho-customer:${exact[0].contactId}`, messageId, manualInput: true,
+        });
+      }
+      if (!exact.length) return continueWithManualCustomer();
     }
     const visibleOptions = options.slice(0, 10);
-    await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, customer_options: options, bill_data: bill });
-    return reply(session, formatCustomerSelectionPrompt(visibleOptions), {
+    await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, customer_options: visibleOptions, bill_data: bill });
+    return reply(session, `${detailsPrompt}${formatCustomerSelectionPrompt(visibleOptions)}`, {
       state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION,
       bill,
       replyInteractive: {
@@ -366,21 +448,26 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     if (customer.contactType && customer.contactType !== 'customer') return reply(session, 'The selected Zoho Books customer could not be verified. Please select it again.', { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION });
     if (customer.status && customer.status.toLowerCase() !== 'active') return reply(session, 'The selected Zoho Books customer is inactive. Please select another customer.', { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION });
     // Zoho is authoritative, including missing values; do not retain OCR guesses.
+    const currentDetails = { ...(session.bill_data?.customer_details || {}) };
+    delete currentDetails.customer_source;
+    delete currentDetails.customer_lookup_status;
+    const manualDetails = incoming.manualInput ? currentDetails : null;
     const customerDetails = {
-      ...(session.bill_data?.customer_details || {}),
+      ...currentDetails,
       customer_id: customer.contactId,
       contact_id: customer.contactId,
       organization_id: organizationId,
-      customer_name: customer.displayName,
+      customer_name: manualDetails?.customer_name || customer.displayName,
       contact_name: customer.contactName,
       company_name: customer.companyName,
       customer_contact_name: customer.contactName,
       customer_company_name: customer.companyName,
-      customer_phone: customer.phone,
+      customer_phone: manualDetails?.customer_phone || customer.phone,
       customer_mobile: customer.mobile,
-      customer_email: customer.email,
+      customer_email: manualDetails?.customer_email || customer.email,
       customer_contact_type: customer.contactType,
       customer_status: customer.status,
+      ...(manualDetails ? { customer_source: 'manual' } : {}),
     };
     const bill = { ...session.bill_data, customer_details: customerDetails };
     await billStore.updateBill(session.bill_id, { ...bill, status: 'PENDING_REVIEW' });
@@ -537,6 +624,13 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
         if (existing?.zoho_bill_id && cmd === 'SAVE') return finishCreated(session, existing);
         return reply(session, existing?.zoho_bill_id ? `Bill already created (ID: ${existing.zoho_bill_id}). Reply SAVE to retry any failed attachment or PDF delivery. No new bill will be created.` : 'The save outcome is unconfirmed. Your draft is retained and locked to prevent duplicates. Please ask an administrator to reconcile it in Zoho Books.');
       }
+      if (session.state === WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION && !media) {
+        const choice = String(incoming.text || '').trim();
+        const hasDisplayedOptions = Boolean(session.customer_options?.length);
+        if (incoming.interactiveId || (/^[+-]?\d+$/.test(choice) && (hasDisplayedOptions || !/^0\d{7,}$/.test(choice)))) {
+          return selectCustomer(session, incoming);
+        }
+      }
       if (!media && cmd === 'DELETE') {
         await billStore.updateBill(session.bill_id, { status: 'CANCELLED', line_items: [], attachments: [], notes: null, organization: null, currency: null, currency_id: null, customer_details: null, zoho_vendor_id: null });
         await billStore.updateBillSession(session.session_id, { state: 'CANCELLED', bill_data: {}, customer_options: [], attachments: [], last_message_id: incoming.messageId });
@@ -548,9 +642,6 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
           return reply(session, 'Send the organization name or number (1 or 2), or another correction.', { state: EDIT });
         }
         return applyOrganization(session, incoming);
-      }
-      if (session.state === WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION && !media && (incoming.interactiveId || /^\d+$/.test(String(incoming.text || '').trim()))) {
-        return selectCustomer(session, incoming);
       }
       if (!media && cmd === 'SAVE') {
         const key = createHash('sha256').update(`${session.bill_data?.vendor_name || ''}\n${session.bill_data?.bill_number || ''}`.trim().toLowerCase().replace(/\s+/g, ' ')).digest('hex');
@@ -566,15 +657,41 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       }
       if (session.state === WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION && !media) {
         if (parseOrganizationInput(incoming.text)) return applyOrganization(session, incoming);
-        if (incoming.interactiveId || /^\d+$/.test(String(incoming.text || '').trim())) return selectCustomer(session, incoming);
-        const parsed = parseWorkerDetails(incoming.text);
-        if (parsed.customer_details) {
-          const bill = mergeWorkerDetails(session.bill_data, incoming.text, parsed);
-          await billStore.updateBill(session.bill_id, { customer_details: bill.customer_details });
-          await billStore.updateBillSession(session.session_id, { bill_data: bill, customer_options: [], last_message_id: incoming.messageId });
-          return askForCustomer(session, bill, bill.customer_details.customer_name || '');
+        if (/^(?:customer|client)(?:\s+(?:details|name))?\s*[:=-]/i.test(String(incoming.text || '').trim())) {
+          const parsed = parseWorkerDetails(incoming.text);
+          if (parsed.customer_details) {
+            const bill = mergeWorkerDetails(session.bill_data, incoming.text, parsed);
+            await billStore.updateBill(session.bill_id, { customer_details: bill.customer_details });
+            await billStore.updateBillSession(session.session_id, { bill_data: bill, customer_options: [], last_message_id: incoming.messageId });
+            return askForCustomer(session, bill, bill.customer_details.customer_name || '');
+          }
         }
-        return askForCustomer(session, session.bill_data, String(incoming.text || '').trim());
+        const parsed = parseManualCustomerDetails(incoming.text);
+        if (!parsed) return reply(session, CUSTOMER_DETAILS_PROMPT, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, bill: session.bill_data });
+        const previous = session.bill_data?.customer_details || {};
+        const customerDetails = {
+          ...(parsed.customer_name && previous.customer_source !== 'manual' ? {} : previous), ...parsed,
+          customer_id: null, contact_id: null, organization_id: session.bill_data.organization.organizationId,
+          customer_source: 'manual', customer_lookup_status: null,
+        };
+        const bill = { ...session.bill_data, customer_details: customerDetails };
+        await billStore.updateBill(session.bill_id, { customer_details: customerDetails });
+        await billStore.updateBillSession(session.session_id, { bill_data: bill, customer_options: [], last_message_id: incoming.messageId });
+        if (!customerDetails.customer_name) return reply(session, CUSTOMER_DETAILS_PROMPT, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, bill });
+        if (typeof zohoBooksClient?.searchCustomer !== 'function') return continueAfterOrganization(session, bill, incoming.messageId);
+        return askForCustomer(session, bill, customerDetails.customer_name, { manualInput: true, messageId: incoming.messageId });
+      }
+      if (session.state === WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO && !media && !session.bill_data?.customer_details?.customer_name
+          && typeof zohoBooksClient?.searchCustomer !== 'function' && !Object.keys(parseWorkerDetails(incoming.text)).length) {
+        const parsed = parseManualCustomerDetails(incoming.text);
+        if (parsed) {
+          const previous = session.bill_data?.customer_details || {};
+          const customerDetails = { ...previous, ...parsed, customer_source: 'manual' };
+          const bill = { ...session.bill_data, customer_details: customerDetails };
+          await billStore.updateBill(session.bill_id, { customer_details: customerDetails });
+          await billStore.updateBillSession(session.session_id, { bill_data: bill, last_message_id: incoming.messageId });
+          return continueAfterOrganization(session, bill, incoming.messageId);
+        }
       }
       const lineItemsWithTax = !media && !cmd && session.state === WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO
         ? parseLineTaxInput(incoming.text, session.bill_data) : null;
@@ -673,8 +790,10 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     // Manually supplied legacy customer details remain supported when the
     // Contacts lookup is unavailable. A customer selected from Zoho always
     // carries the verified contact_id and it is forwarded to bill creation.
-    const { missing } = billMissingFields(bill, { requireCustomerId: typeof zohoBooksClient?.searchCustomer === 'function', requireAccounting: typeof zohoBooksClient?.prepareBill === 'function' });
+    const { missing, sourceOnlyLines } = billMissingFields(bill, { requireCustomerId: typeof zohoBooksClient?.searchCustomer === 'function', requireAccounting: typeof zohoBooksClient?.prepareBill === 'function' });
     if (session.state !== REVIEW || !validation.valid || missing.length) return continueAfterOrganization(session, bill, messageId);
+    const accountingBill = sourceOnlyLines.length
+      ? { ...bill, line_items: bill.line_items.filter((_, index) => !sourceOnlyLines.includes(index)) } : bill;
     if (!await billStore.claimBillSave(session.session_id, messageId)) return reply(session, 'This bill is already being saved. Please wait.');
     await billStore.updateBill(session.bill_id, { payment_type: bill.payment_type, customer_details: bill.customer_details, organization: bill.organization });
     const reviewFailure = async text => {
@@ -713,15 +832,15 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
         ? await store.withContactLock(`books-vendor:${vendorKey}`, resolveAndCreateVendor)
         : await resolveAndCreateVendor();
       if (vendorResult) return vendorResult;
-      if (zohoBooksClient.prepareBill) await zohoBooksClient.prepareBill(bill, vendor, { organizationId: bill.organization.organizationId });
+      if (zohoBooksClient.prepareBill) await zohoBooksClient.prepareBill(accountingBill, vendor, { organizationId: bill.organization.organizationId });
     } catch (error) {
       return reviewFailure('Zoho vendor, currency, tax or duplicate validation failed. Nothing was created.');
     }
     await billStore.updateBill(session.bill_id, { status: 'CREATING', zoho_status: 'SYNCING', zoho_vendor_id: vendor.id });
     try {
-      const detailNote = [`Payment method: ${bill.payment_type}`, `Customer: ${customer.customer_name}`, customerId ? `Zoho customer ID: ${customerId}` : null, customer.customer_phone ? `Customer phone: ${customer.customer_phone}` : null, customer.project_site ? `Project/site: ${customer.project_site}` : null].filter(Boolean).join(' | ');
+      const detailNote = [`Payment method: ${bill.payment_type}`, `Customer: ${customer.customer_name}`, customerId ? `Zoho customer ID: ${customerId}` : null, customer.customer_phone ? `Customer phone: ${customer.customer_phone}` : null, customer.customer_source === 'manual' && customer.customer_email ? `Customer email: ${customer.customer_email}` : null, customer.project_site ? `Project/site: ${customer.project_site}` : null].filter(Boolean).join(' | ');
       const notes = [bill.notes, detailNote].filter(Boolean).join('\n');
-      const created = await zohoBooksClient.createBill({ vendorId: vendor.id, billNumber: bill.bill_number, billDate: bill.bill_date, dueDate: bill.due_date, lineItems: bill.line_items, total: bill.total_amount, currency: bill.currency, currencyId: bill.currency_id, customerId: customerId || null, paymentType: bill.payment_type, notes, organizationId: bill.organization.organizationId });
+      const created = await zohoBooksClient.createBill({ vendorId: vendor.id, billNumber: bill.bill_number, billDate: bill.bill_date, dueDate: bill.due_date, lineItems: accountingBill.line_items, total: bill.total_amount, currency: bill.currency, currencyId: accountingBill.currency_id, customerId: customerId || null, paymentType: bill.payment_type, notes, organizationId: bill.organization.organizationId });
       if (!created?.id) throw new Error('MISSING_ZOHO_ID');
       // Persist the returned ID BEFORE any attachment or outbound document work.
       await billStore.updateBill(session.bill_id, { zoho_bill_id: created.id, zoho_bill_url: zohoBooksClient.buildZohoBillUrl(created.id, bill.organization.organizationId), zoho_status: 'SYNCED', status: 'COMPLETED', organization: bill.organization });

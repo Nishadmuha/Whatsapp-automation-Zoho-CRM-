@@ -34,6 +34,118 @@ test('taxed line missing its percentage is collected before exactly one final re
   assert.equal(prepared, 1);
   assert.equal([first, review, saved].filter(result => /BILL DETAILS/.test(result.replyText)).length, 1);
 });
+test('reconciled priced lines permit an unpriced source line without a false tax mismatch', async () => {
+  const bill = { ...validBill(), subtotal: 60, tax_amount: 3, total_amount: 63, line_items: [
+    { name: 'Priced one', quantity: 1, rate: 40, amount: 40, tax_percentage: 5 },
+    { name: 'Priced two', quantity: 1, rate: 20, amount: 20, tax_percentage: 5 },
+    { name: 'Source description', quantity: null, rate: null, amount: null, tax_percentage: 5 },
+  ] };
+  let prepared = 0, created = 0;
+  const f = fixture({ bill, zohoOverrides: {
+    async prepareBill(candidate) { prepared++; assert.deepEqual(candidate.line_items.map(item => item.name), ['Priced one', 'Priced two']); },
+    async createBill(data) { created++; assert.deepEqual(data.lineItems.map(item => item.name), ['Priced one', 'Priced two']); return { id: 'bill-1' }; },
+  } });
+  const review = await f.send('Invoice details');
+  assert.equal(review.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.match(review.replyText, /BILL DETAILS/);
+  assert.match(review.replyText, /Unpriced source line\(s\) 3/);
+  assert.doesNotMatch(review.replyText, /Line-item tax does not match|Line 1 tax: 5%/);
+  assert.equal((await f.billStore.getBill(review.billId)).line_items.length, 3);
+  assert.equal(prepared, 0);
+  assert.equal(created, 0);
+  assert.equal((await f.send('SAVE')).state, 'COMPLETED');
+  assert.equal(prepared, 1);
+  assert.equal(created, 1);
+});
+test('missing tax on a priced line still blocks review even with an unpriced source line', async () => {
+  const bill = { ...validBill(), subtotal: 60, tax_amount: 3, total_amount: 63, line_items: [
+    { name: 'Priced one', quantity: 1, rate: 40, amount: 40, tax_percentage: 5 },
+    { name: 'Priced two', quantity: 1, rate: 20, amount: 20, tax_percentage: null },
+    { name: 'Unpriced note', quantity: null, rate: null, amount: null, tax_percentage: 5 },
+  ] };
+  const f = fixture({ bill, zohoOverrides: { async prepareBill() {} } });
+  const first = await f.send('Invoice details');
+  assert.equal(first.state, 'WAITING_FOR_ADDITIONAL_INFO');
+  assert.match(first.replyText, /Tax percentage missing for line 2/);
+  assert.doesNotMatch(first.replyText, /BILL DETAILS|1 SAVE/);
+  const review = await f.send('Line 2 tax: 5%');
+  assert.equal(review.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.match(review.replyText, /BILL DETAILS/);
+});
+test('priced line without a tax percentage retains the existing required-tax prompt', async () => {
+  const bill = validBill();
+  bill.line_items[0].tax_percentage = null;
+  const f = fixture({ bill, zohoOverrides: { async prepareBill() {} } });
+  const first = await f.send('Invoice details');
+  assert.match(first.replyText, /Tax percentage missing for line 1/);
+  assert.doesNotMatch(first.replyText, /BILL DETAILS|1 SAVE/);
+});
+test('unpriced source line keeps null monetary fields and never fabricates a tax amount', async () => {
+  const bill = { ...validBill(), line_items: [
+    { name: 'Priced', quantity: 2, rate: 50, amount: 100, tax_percentage: 5 },
+    { name: 'Unpriced', quantity: null, rate: null, amount: null, tax_percentage: 5 },
+  ] };
+  const f = fixture({ bill, zohoOverrides: {
+    async prepareBill(candidate) { assert.equal(candidate.line_items.length, 1); },
+  } });
+  const review = await f.send('Invoice details');
+  assert.equal(review.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.doesNotMatch(review.replyText, /Line-item tax does not match/);
+  assert.deepEqual((await f.billStore.getBill(review.billId)).line_items[1], bill.line_items[1]);
+  await f.send('SAVE');
+  assert.deepEqual(f.calls.find(call => call[0] === 'create')[1].lineItems.map(item => item.name), ['Priced']);
+});
+test('unpriced line follows the existing 0.05 tax rounding tolerance', async () => {
+  for (const [taxAmount, expectedState] of [[5.04, 'AWAITING_FINAL_CONFIRMATION'], [5.06, 'WAITING_FOR_ADDITIONAL_INFO']]) {
+    const bill = { ...validBill(), tax_amount: taxAmount, total_amount: 100 + taxAmount, line_items: [
+      { name: 'Priced', quantity: 1, rate: 100, amount: 100, tax_percentage: 5 },
+      { name: 'Unpriced', quantity: null, rate: null, amount: null, tax_percentage: 5 },
+    ] };
+    const f = fixture({ bill, zohoOverrides: { async prepareBill() {} } });
+    const first = await f.send('Invoice details');
+    assert.equal(first.state, expectedState);
+    if (expectedState === 'AWAITING_FINAL_CONFIRMATION') assert.match(first.replyText, /BILL DETAILS/);
+    else {
+      assert.doesNotMatch(first.replyText, /BILL DETAILS|1 SAVE|Line 1 tax: 5%/);
+      assert.equal(f.calls.some(call => call[0] === 'create'), false);
+    }
+  }
+});
+test('real invoice totals reach one final review and SAVE without an invented fourth-line value', async () => {
+  const bill = { ...validBill(), subtotal: 397, tax_amount: 19.85, total_amount: 416.85, line_items: [
+    { name: 'First', quantity: 1, rate: 360, amount: 360, tax_percentage: 5 },
+    { name: 'Second', quantity: 1, rate: 16, amount: 16, tax_percentage: 5 },
+    { name: 'Third', quantity: 1, rate: 21, amount: 21, tax_percentage: 5 },
+    { name: 'Description only', quantity: null, rate: null, amount: null, tax_percentage: 5 },
+  ] };
+  const f = fixture({ bill, zohoOverrides: {
+    async prepareBill(candidate) {
+      assert.equal(candidate.line_items.length, 3);
+      assert.equal(candidate.line_items.reduce((sum, item) => sum + item.quantity * item.rate * item.tax_percentage / 100, 0), 19.85);
+    },
+  } });
+  const review = await f.send('Invoice details');
+  assert.equal(review.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.match(review.replyText, /BILL DETAILS/);
+  assert.match(review.replyText, /1 SAVE\n2 EDIT\n3 DELETE/);
+  assert.doesNotMatch(review.replyText, /Line-item tax does not match|Line 1 tax: 5%/);
+  assert.deepEqual((await f.billStore.getBill(review.billId)).line_items[3], bill.line_items[3]);
+  const saved = await f.send('SAVE');
+  assert.equal(saved.state, 'COMPLETED');
+  assert.equal(f.calls.find(call => call[0] === 'create')[1].lineItems.length, 3);
+  assert.equal([review, saved].filter(result => /BILL DETAILS/.test(result.replyText)).length, 1);
+});
+test('unpriced line with unaccounted subtotal remains blocked for monetary correction', async () => {
+  const bill = { ...validBill(), subtotal: 110, tax_amount: 5, total_amount: 115, line_items: [
+    { name: 'Priced', quantity: 1, rate: 100, amount: 100, tax_percentage: 5 },
+    { name: 'Unresolved', quantity: null, rate: null, amount: null, tax_percentage: 5 },
+  ] };
+  const f = fixture({ bill, zohoOverrides: { async prepareBill() {} } });
+  const first = await f.send('Invoice details');
+  assert.equal(first.state, 'WAITING_FOR_ADDITIONAL_INFO');
+  assert.match(first.replyText, /line items with quantity and rate/);
+  assert.doesNotMatch(first.replyText, /BILL DETAILS|Line 1 tax: 5%/);
+});
 test('currency detected automatically remains normalized and reaches Zoho on SAVE', async () => {
   const f = fixture(); const first = await f.send('Invoice details');
   assert.equal(first.bill.currency, 'AED');
