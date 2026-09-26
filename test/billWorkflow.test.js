@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { fixture, validBill, memoryStore, WORKER } = require('./billFixtures');
 const { createBillWorkflow, parseYesNo } = require('../src/services/books/billWorkflow');
+const { createZohoBooksClient } = require('../src/services/books/zohoBooksClient');
 const count = (f, name) => f.calls.filter(call => call[0] === name).length;
 
 test('worker greeting requests a bill without extraction or Zoho calls', async () => {
@@ -13,6 +14,53 @@ test('initial text persists pending bill and explicit options without creating i
   assert.equal(r.state, 'AWAITING_FINAL_CONFIRMATION');
   assert.match(r.replyText, /1 SAVE\n2 EDIT\n3 DELETE/); assert.match(r.replyText, /AED 105.00/);
   assert.equal((await f.billStore.getBill(r.billId)).status, 'PENDING_REVIEW'); assert.equal(count(f, 'create'), 0);
+});
+test('VAT-inclusive invoice lines reach review and one mocked Zoho bill POST only after SAVE', async () => {
+  const posts = [];
+  const client = createZohoBooksClient({ env: {}, clientId: 'synthetic-client', clientSecret: 'synthetic-secret', refreshToken: 'synthetic-refresh', http: {
+    async post(url, payload, options) {
+      if (url.endsWith('/oauth/v2/token')) return { data: { access_token: 'synthetic-access', expires_in: 3600 } };
+      assert.ok(url.endsWith('/bills'));
+      assert.equal(options.params.organization_id, '828765858');
+      posts.push(payload);
+      return { data: { code: 0, bill: { bill_id: 'synthetic-bill-id' } } };
+    },
+    async get(url, options) {
+      assert.equal(options.params.organization_id, '828765858');
+      if (url.endsWith('/settings/currencies')) return { data: { code: 0, currencies: [{ currency_id: 'aed1', currency_code: 'AED' }] } };
+      if (url.endsWith('/settings/taxes')) return { data: { code: 0, taxes: [{ tax_id: 'vat5', tax_type: 'tax', tax_percentage: 5 }] } };
+      assert.fail('Unexpected Books lookup');
+    },
+  } });
+  const bill = { ...validBill(), subtotal: 370, tax_amount: 18.5, total_amount: 388.5, line_items: [
+    { name: 'Lamp', quantity: 1, rate: 90, amount: 94.5, tax_percentage: 5 },
+    { name: 'Lamp assembly', quantity: 1, rate: 160, amount: 168, tax_percentage: 5 },
+    { name: 'Grille', quantity: 1, rate: 120, amount: 126, tax_percentage: 5 },
+  ] };
+  const f = fixture({ bill, zohoOverrides: { prepareBill: client.prepareBill, createBill: client.createBill } });
+  const review = await f.send('Synthetic image', { messageType: 'image', mediaId: 'synthetic-image' });
+  assert.equal(review.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.deepEqual(review.bill.line_items.map(item => item.amount), [94.5, 168, 126]);
+  assert.equal(posts.length, 0);
+  const saved = await f.send('SAVE');
+  assert.equal(saved.state, 'COMPLETED');
+  assert.equal(posts.length, 1);
+  assert.deepEqual(posts[0].line_items.map(item => item.rate), [90, 160, 120]);
+  assert.ok(posts[0].line_items.every(item => item.tax_id === 'vat5' && item.item_total === undefined));
+});
+test('preflight failure logs only its safe code and retains the review draft', async () => {
+  const logs = [];
+  const f = fixture({ logger: { error(entry) { logs.push(entry); } }, zohoOverrides: {
+    async prepareBill() { const error = new Error('Synthetic private provider detail'); error.code = 'TAX_AMBIGUOUS'; throw error; },
+  } });
+  await f.send('Synthetic bill');
+  const result = await f.send('SAVE');
+  assert.equal(result.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.match(result.replyText, /Nothing was created/);
+  assert.deepEqual(logs.find(entry => entry.event === 'books.bill_preflight_failed'), {
+    event: 'books.bill_preflight_failed', code: 'TAX_AMBIGUOUS', operation: null,
+  });
+  assert.doesNotMatch(JSON.stringify(logs), /Synthetic private provider detail/);
 });
 test('taxed line missing its percentage is collected before exactly one final review', async () => {
   const bill = validBill();

@@ -33,6 +33,14 @@ function nullableText(value) {
   return text || null;
 }
 
+function isTaxInclusiveSourceAmount(item) {
+  const net = item.quantity * item.rate;
+  const percentage = item.tax_percentage ?? item.tax;
+  return Number.isFinite(net) && Number.isFinite(item.amount) && Number.isFinite(percentage)
+    && percentage > 0 && percentage <= 100 && Math.abs(net - item.amount) > 0.05
+    && Math.abs(net * (1 + percentage / 100) - item.amount) <= 0.05;
+}
+
 function normalizeCustomerContact(contact = {}) {
   const contactId = nullableText(contact.contact_id ?? contact.contactId ?? contact.id);
   if (!contactId) return null;
@@ -416,7 +424,7 @@ function createZohoBooksClient({
         quantity: typeof item.quantity === 'number' ? item.quantity : 1,
         tax_id: item.tax_id || item.taxId || undefined,
         tax_percentage: item.tax_percentage || item.tax || undefined,
-        item_total: typeof item.amount === 'number' ? item.amount : undefined,
+        item_total: typeof item.amount === 'number' && !isTaxInclusiveSourceAmount(item) ? item.amount : undefined,
       }))
       : [
         {
@@ -535,7 +543,7 @@ function createZohoBooksClient({
     bill.currency_id = currency.currency_id;
     if (vendor.raw?.currency_id && String(vendor.raw.currency_id) !== String(currency.currency_id)) throw new ZohoBooksError('VENDOR_CURRENCY_MISMATCH', 'Vendor currency differs from the source bill.');
     const calculatedSubtotal = bill.line_items.reduce((sum, item) => sum + item.quantity * item.rate, 0);
-    if (bill.line_items.some(item => item.amount != null && Math.abs(item.quantity * item.rate - item.amount) > 0.05)) throw new ZohoBooksError('LINE_AMOUNT_MISMATCH', 'A line amount differs from its quantity and rate.');
+    if (bill.line_items.some(item => item.amount != null && Math.abs(item.quantity * item.rate - item.amount) > 0.05 && !isTaxInclusiveSourceAmount(item))) throw new ZohoBooksError('LINE_AMOUNT_MISMATCH', 'A line amount differs from its quantity and rate.');
     if (bill.subtotal == null || bill.tax_amount == null || Math.abs(calculatedSubtotal - bill.subtotal) > 0.05) throw new ZohoBooksError('TOTAL_MISMATCH', 'Confirm subtotal, tax, quantity and rates before saving.');
     if (bill.tax_amount > 0) {
       const taxes = await getJson('/settings/taxes', {}, organizationId);

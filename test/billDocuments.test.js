@@ -89,6 +89,48 @@ test('bill preparation does not require an expense account or Chart of Accounts 
   } });
   await assert.doesNotReject(client.prepareBill(require('./billFixtures').validBill(), {}, { organizationId: credentials.organizationId }));
 });
+for (const organizationId of ['802911060', '828765858']) test(`VAT-inclusive printed line amounts save as net rates plus tax in organization ${organizationId}`, async () => {
+  const posts = [];
+  const client = createZohoBooksClient({ ...credentials, env: {}, http: {
+    async post(url, payload, options) {
+      if (url.endsWith('/oauth/v2/token')) return { data: { access_token: 'synthetic-access', expires_in: 3600 } };
+      assert.ok(url.endsWith('/bills'));
+      assert.equal(options.params.organization_id, organizationId);
+      posts.push(payload);
+      return { data: { code: 0, bill: { bill_id: 'synthetic-bill-id' } } };
+    },
+    async get(url, options) {
+      assert.equal(options.params.organization_id, organizationId);
+      if (url.endsWith('/settings/currencies')) return { data: { code: 0, currencies: [{ currency_id: 'aed1', currency_code: 'AED' }] } };
+      if (url.endsWith('/settings/taxes')) return { data: { code: 0, taxes: [{ tax_id: 'vat5', tax_type: 'tax', tax_percentage: 5 }] } };
+      assert.fail('Unexpected Books lookup');
+    },
+  } });
+  const bill = { ...require('./billFixtures').validBill(), subtotal: 370, tax_amount: 18.5, total_amount: 388.5, line_items: [
+    { name: 'Lamp', quantity: 1, rate: 90, amount: 94.5, tax_percentage: 5 },
+    { name: 'Lamp assembly', quantity: 1, rate: 160, amount: 168, tax_percentage: 5 },
+    { name: 'Grille', quantity: 1, rate: 120, amount: 126, tax_percentage: 5 },
+  ] };
+  await client.prepareBill(bill, {}, { organizationId });
+  assert.deepEqual(bill.line_items.map(item => item.amount), [94.5, 168, 126], 'The source draft remains faithful to the invoice.');
+  assert.deepEqual(bill.line_items.map(item => item.tax_id), ['vat5', 'vat5', 'vat5']);
+  await client.createBill({ vendorId: 'vendor-1', billNumber: bill.bill_number, billDate: bill.bill_date,
+    lineItems: bill.line_items, currency: bill.currency, currencyId: bill.currency_id, organizationId });
+  assert.equal(posts.length, 1);
+  assert.deepEqual(posts[0].line_items.map(item => item.rate), [90, 160, 120]);
+  assert.ok(posts[0].line_items.every(item => item.tax_id === 'vat5'));
+  assert.ok(posts[0].line_items.every(item => item.item_total === undefined), 'Zoho calculates the taxable line totals.');
+});
+test('unexplained line amount mismatch still blocks Zoho bill creation', async () => {
+  const client = createZohoBooksClient({ ...credentials, env: {}, http: {
+    async post(url) { assert.ok(url.endsWith('/oauth/v2/token')); return { data: { access_token: 'synthetic-access', expires_in: 3600 } }; },
+    async get() { return { data: { code: 0, currencies: [{ currency_id: 'aed1', currency_code: 'AED' }] } }; },
+  } });
+  const bill = { ...require('./billFixtures').validBill(), line_items: [
+    { name: 'Lamp', quantity: 1, rate: 90, amount: 95, tax_percentage: 5 },
+  ] };
+  await assert.rejects(client.prepareBill(bill, {}, { organizationId: credentials.organizationId }), { code: 'LINE_AMOUNT_MISMATCH' });
+});
 test('duplicate check follows all pages and rejects provider errors', async () => {
   const pages = [];
   const client = createZohoBooksClient({ ...credentials, env: {}, http: {
