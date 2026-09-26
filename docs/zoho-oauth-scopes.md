@@ -20,15 +20,15 @@ The refreshed live token reported `ZohoCRM.modules.ALL`. That broad grant covers
 
 ## B. Books scopes
 
-Minimum scope string for the existing implementation:
+Minimum scope string for the current Books implementation (including vendor creation on SAVE):
 
 ```text
-ZohoBooks.contacts.READ,ZohoBooks.bills.READ,ZohoBooks.bills.CREATE,ZohoBooks.settings.READ
+ZohoBooks.contacts.READ,ZohoBooks.contacts.CREATE,ZohoBooks.bills.READ,ZohoBooks.bills.CREATE,ZohoBooks.settings.READ
 ```
 
 `settings.READ` is genuinely used by `prepareBill()` for configured currency and tax IDs. Removing it without redesigning validation would break existing bills or require guessing accounting data. It is NOT Chart of Accounts permission. [Currency list](https://www.zoho.com/books/api/v3/currency/) and [tax list](https://www.zoho.com/books/api/v3/taxes/) document this permission. Source-bill attachment upload uses `bills.CREATE`, not an extra update scope, per [the Bills API](https://www.zoho.com/books/api/v3/bills/).
 
-The refreshed live token reported all four scopes above plus `ZohoBooks.bills.UPDATE`. No required Books scope is missing. The UPDATE grant is unnecessary and should be omitted from the replacement authorization. No contacts CREATE, accountants, vendor-payment, settings write or full-access scope is required.
+At the time of this historical read-only audit, the refreshed live token reported contacts.READ, bills.READ, bills.CREATE and settings.READ plus `ZohoBooks.bills.UPDATE`. The current vendor-creation workflow additionally requires contacts.CREATE; this document does not verify whether the current production token grants it. The UPDATE grant and `ZohoBooks.bills.DELETE` are not required by the current workflow. No accountants, vendor-payment, settings write or full-access scope is required.
 
 ## C. Chart of Accounts
 

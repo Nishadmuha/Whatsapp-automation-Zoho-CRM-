@@ -1,7 +1,7 @@
 'use strict';
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { fixture, validBill, WORKER } = require('./billFixtures');
+const { fixture, validBill, memoryStore, WORKER } = require('./billFixtures');
 const { createBillWorkflow, parseYesNo } = require('../src/services/books/billWorkflow');
 const count = (f, name) => f.calls.filter(call => call[0] === name).length;
 
@@ -13,6 +13,26 @@ test('initial text persists pending bill and explicit options without creating i
   assert.equal(r.state, 'AWAITING_FINAL_CONFIRMATION');
   assert.match(r.replyText, /1 SAVE\n2 EDIT\n3 DELETE/); assert.match(r.replyText, /AED 105.00/);
   assert.equal((await f.billStore.getBill(r.billId)).status, 'PENDING_REVIEW'); assert.equal(count(f, 'create'), 0);
+});
+test('taxed line missing its percentage is collected before exactly one final review', async () => {
+  const bill = validBill();
+  bill.line_items = [{ ...bill.line_items[0], tax_percentage: null }];
+  let prepared = 0;
+  const f = fixture({ bill, zohoOverrides: {
+    async prepareBill(candidate) { prepared++; assert.equal(candidate.line_items[0].tax_percentage, 5); },
+  } });
+  const first = await f.send('Invoice details');
+  assert.equal(first.state, 'WAITING_FOR_ADDITIONAL_INFO');
+  assert.match(first.replyText, /Tax percentage missing for line 1/);
+  assert.doesNotMatch(first.replyText, /BILL DETAILS|1 SAVE/);
+  const review = await f.send('Line 1 tax: 5%');
+  assert.equal(review.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.match(review.replyText, /BILL DETAILS/);
+  assert.equal((await f.billStore.getBill(first.billId)).line_items[0].tax_percentage, 5);
+  const saved = await f.send('SAVE');
+  assert.equal(saved.state, 'COMPLETED');
+  assert.equal(prepared, 1);
+  assert.equal([first, review, saved].filter(result => /BILL DETAILS/.test(result.replyText)).length, 1);
 });
 test('currency detected automatically remains normalized and reaches Zoho on SAVE', async () => {
   const f = fixture(); const first = await f.send('Invoice details');
@@ -65,16 +85,93 @@ test('currency entry continues customer selection and payment type workflows', a
   assert.equal(first.state, 'WAITING_FOR_CURRENCY');
   const currency = await f.send('AED');
   assert.equal(currency.state, 'WAITING_FOR_CUSTOMER_SELECTION');
-  assert.match(currency.replyText, /AED 105\.00/);
+  assert.doesNotMatch(currency.replyText, /BILL DETAILS|1 SAVE/);
+  assert.equal(currency.bill.currency, 'AED');
   const selected = await f.send('Select', { interactiveId: 'zoho-customer:customer-1' });
-  assert.equal(selected.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.equal(selected.state, 'WAITING_FOR_ADDITIONAL_INFO');
+  assert.doesNotMatch(selected.replyText, /BILL DETAILS|1 SAVE/);
   const payment = await f.send('Cash');
   assert.equal(payment.bill.payment_type, 'Cash');
+  assert.equal(payment.state, 'AWAITING_FINAL_CONFIRMATION');
   await f.send('SAVE');
   assert.equal(count(f, 'create'), 1);
   assert.equal(f.calls.find(call => call[0] === 'create')[1].currency, 'AED');
   assert.equal(f.calls.find(call => call[0] === 'create')[1].customerId, 'customer-1');
   assert.equal((await f.billStore.getBill(first.billId)).payment_type, 'Cash');
+});
+
+test('multiple missing fields produce one final review only after currency, customer and payment are complete', async () => {
+  const f = fixture({
+    bill: { ...validBill(), currency: null, customer_details: null, payment_type: null },
+    zohoOverrides: {
+      async searchCustomer() { return [{ contactId: 'cust-1', contactName: 'Project Customer', status: 'active' }]; },
+    },
+  });
+  const replies = [await f.send('Invoice details')];
+  assert.equal(replies[0].state, 'WAITING_FOR_CURRENCY');
+  replies.push(await f.send('AED'));
+  assert.equal(replies[1].state, 'WAITING_FOR_CUSTOMER_SELECTION');
+  replies.push(await f.send('Select', { interactiveId: 'zoho-customer:cust-1' }));
+  assert.equal(replies[2].state, 'WAITING_FOR_ADDITIONAL_INFO');
+  replies.push(await f.send('Cash'));
+  assert.equal(replies[3].state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.deepEqual(replies.map(result => (result.replyText.match(/BILL DETAILS/g) || []).length), [0, 0, 0, 1]);
+  assert.deepEqual(replies.map(result => /1 SAVE\n2 EDIT\n3 DELETE/.test(result.replyText)), [false, false, false, true]);
+});
+
+test('missing vendor is requested as extraction information, not reported absent from Zoho', async () => {
+  const f = fixture({ bill: { ...validBill(), vendor_name: null } });
+  const first = await f.send('Invoice details');
+  assert.match(first.replyText, /Vendor was not detected/);
+  assert.doesNotMatch(first.replyText, /Vendor not found|BILL DETAILS|1 SAVE/);
+  assert.equal(count(f, 'vendor'), 0);
+  const supplied = await f.send('Vendor: Supplier LLC');
+  assert.equal(supplied.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.equal(supplied.bill.vendor_name, 'Supplier LLC');
+});
+
+test('explicit customer correction clears the old ID until the new customer is selected', async () => {
+  const old = { customer_name: '800 MOTOR GURU', contact_id: 'old-id', customer_id: 'old-id', organization_id: '828765858', customer_phone: '+971500000000', customer_email: 'old@example.invalid' };
+  const newCustomer = { contactId: 'new-id', contactName: 'ABC Contact', companyName: 'ABC Contracting', phone: '+971501234567', email: 'new@example.invalid', status: 'active', contactType: 'customer' };
+  const f = fixture({ bill: { ...validBill(), customer_details: old }, zohoOverrides: {
+    async searchCustomer({ organizationId }) { assert.equal(organizationId, '828765858'); return [newCustomer]; },
+    async getCustomer(id, { organizationId }) { assert.equal(id, 'new-id'); assert.equal(organizationId, '828765858'); return newCustomer; },
+  } });
+  const first = await f.send('Invoice details');
+  assert.equal(first.state, 'AWAITING_FINAL_CONFIRMATION');
+  const changed = await f.send('Customer: ABC Contracting, 0501234567, Dubai site');
+  assert.equal(changed.state, 'WAITING_FOR_CUSTOMER_SELECTION');
+  assert.equal(changed.bill.customer_details.customer_name, 'ABC Contracting');
+  assert.equal(changed.bill.customer_details.contact_id, undefined);
+  assert.equal(changed.bill.customer_details.customer_email, undefined);
+  assert.equal((await f.billStore.getBill(first.billId)).customer_details.contact_id, undefined);
+  assert.doesNotMatch(changed.replyText, /BILL DETAILS|1 SAVE/);
+  const selected = await f.send('Select', { interactiveId: 'zoho-customer:new-id' });
+  assert.equal(selected.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.equal(selected.bill.customer_details.contact_id, 'new-id');
+  assert.equal(selected.bill.customer_details.customer_email, 'new@example.invalid');
+  assert.equal(selected.bill.customer_details.customer_status, 'active');
+  await f.send('SAVE');
+  assert.equal(f.calls.find(call => call[0] === 'create')[1].customerId, 'new-id');
+});
+
+test('customer name supplied during selection replaces stale OCR details and searches the selected organization', async () => {
+  const searches = [];
+  const f = fixture({ bill: { ...validBill(), customer_details: null }, zohoOverrides: {
+    async searchCustomer({ searchText, organizationId }) {
+      searches.push([searchText, organizationId]);
+      return searchText ? [{ contactId: 'new-customer', contactName: 'ABC Contracting', status: 'active' }]
+        : [{ contactId: 'old-customer', contactName: '800 MOTOR GURU', status: 'active' }];
+    },
+  } });
+  const first = await f.send('Invoice details');
+  assert.equal(first.state, 'WAITING_FOR_CUSTOMER_SELECTION');
+  const updated = await f.send('Customer: ABC Contracting, 0501234567, Dubai site');
+  assert.equal(updated.state, 'WAITING_FOR_CUSTOMER_SELECTION');
+  assert.deepEqual(searches, [['', '828765858'], ['ABC Contracting', '828765858']]);
+  assert.equal(updated.replyInteractive.sections[0].rows[0].id, 'zoho-customer:new-customer');
+  const selected = await f.send('Select', { interactiveId: 'zoho-customer:new-customer' });
+  assert.equal(selected.bill.customer_details.contact_id, 'new-customer');
 });
 test('EDIT can change the pending bill currency', async () => {
   const f = fixture();
@@ -94,7 +191,7 @@ test('DELETE clears a pending bill waiting for currency', async () => {
 test('SAVE requires payment type and customer details, then accepts both before creation', async () => {
   const f = fixture({ bill: { ...validBill(), payment_type: null, customer_details: null } });
   const first = await f.send('Invoice details');
-  assert.match((await f.send('SAVE')).replyText, /payment method and customer details/i);
+  assert.match((await f.send('SAVE')).replyText, /payment method/i);
   await f.send('EDIT');
   const updated = await f.send('Payment method: Bank transfer; Customer: Gulf Client, +971501112233, Abu Dhabi site');
   assert.equal(updated.bill.payment_type, 'Bank Transfer');
@@ -118,11 +215,13 @@ test('Zoho customer selection is requested before payment and preserves the sele
   assert.equal(first.state, 'WAITING_FOR_CUSTOMER_SELECTION');
   assert.equal(first.replyInteractive.sections[0].rows[0].id, 'zoho-customer:cust-1');
   const selected = await f.send('Gulf Client', { messageType: 'interactive', interactiveId: 'zoho-customer:cust-1' });
-  assert.equal(selected.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.equal(selected.state, 'WAITING_FOR_ADDITIONAL_INFO');
   assert.match(selected.replyText, /payment method: Cash \/ Bank Remittance \/ Bank Transfer \/ Credit Card \/ Cheque/i);
+  assert.doesNotMatch(selected.replyText, /BILL DETAILS|1 SAVE/);
   assert.equal(selected.bill.customer_details.customer_id, 'cust-1');
   const method = await f.send('Cash');
   assert.equal(method.bill.payment_type, 'Cash');
+  assert.equal(method.state, 'AWAITING_FINAL_CONFIRMATION');
   assert.equal((await f.billStore.getBill(first.billId)).payment_type, 'Cash');
 });
 test('media is persisted and OCR runs even when an image has a caption', async () => {
@@ -309,12 +408,157 @@ for (const cmd of ['SAVE', '1']) test(`${cmd} creates once, persists ID before P
   await f.send(cmd); assert.equal(count(f, 'create'), 1); assert.equal(count(f, 'document'), 1);
 });
 for (const changes of [{ vendor_name: null }, { bill_date: '2026-02-31' }, { total_amount: -1 }, { bill_number: null }, { line_items: [] }]) test(`incomplete/invalid bill blocks SAVE: ${Object.keys(changes)[0]}`, async () => {
-  const f = fixture({ bill: { ...validBill(), ...changes } }); await f.send('Bill'); const r = await f.send('SAVE'); assert.match(r.replyText, /Cannot save/); assert.equal(count(f, 'create'), 0);
+  const f = fixture({ bill: { ...validBill(), ...changes } }); const first = await f.send('Bill'); const r = await f.send('SAVE');
+  assert.doesNotMatch(first.replyText, /BILL DETAILS|1 SAVE/);
+  assert.doesNotMatch(r.replyText, /BILL DETAILS|1 SAVE/);
+  assert.equal(count(f, 'create'), 0);
 });
-test('missing and ambiguous vendor never creates a vendor or bill', async () => {
-  for (const vendors of [[], [{ id: '1', name: 'Supplier LLC' }, { id: '2', name: 'Supplier LLC' }]]) {
-    const f = fixture({ zohoOverrides: { async searchVendor() { return vendors; } } }); await f.send('Bill'); assert.match((await f.send('SAVE')).replyText, /not found or ambiguous/); assert.equal(count(f, 'create'), 0);
+test('vendor absent without creation support or ambiguous vendor never creates a bill', async () => {
+  const absent = fixture({ zohoOverrides: { async searchVendor() { return []; } } });
+  await absent.send('Bill');
+  assert.match((await absent.send('SAVE')).replyText, /Vendor not found or ambiguous/);
+  assert.equal(count(absent, 'create'), 0);
+  const ambiguous = fixture({ zohoOverrides: { async searchVendor() { return [{ id: '1', name: 'Supplier LLC' }, { id: '2', name: 'Supplier LLC' }]; } } });
+  const first = await ambiguous.send('Bill');
+  assert.match(first.replyText, /Multiple vendors match/);
+  assert.doesNotMatch(first.replyText, /BILL DETAILS|1 SAVE/);
+  assert.equal(count(ambiguous, 'create'), 0);
+});
+
+test('punctuation and case differences reuse the exact existing vendor ID without creating a duplicate', async () => {
+  const f = fixture({ bill: { ...validBill(), vendor_name: 'Meitech International FZC' }, zohoOverrides: {
+    async searchVendor({ organizationId }) {
+      assert.equal(organizationId, '828765858');
+      return [{ id: 'meitech-existing', name: 'MEITECH International F.Z.C.', status: 'active', organizationId }];
+    },
+    async createVendor() { assert.fail('Existing vendor must not be duplicated'); },
+  } });
+  const first = await f.send('Invoice details');
+  assert.equal(first.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.equal(first.bill.zoho_vendor_id, 'meitech-existing');
+  await f.send('SAVE');
+  assert.equal(f.calls.find(call => call[0] === 'create')[1].vendorId, 'meitech-existing');
+  assert.equal((await f.billStore.getBill(first.billId)).zoho_vendor_id, 'meitech-existing');
+});
+
+test('vendor absent after complete lookup is created only on SAVE and its new ID is used once', async () => {
+  let vendorCreates = 0;
+  const f = fixture({ zohoOverrides: {
+    async searchVendor({ organizationId }) { assert.equal(organizationId, '828765858'); return []; },
+    async createVendor({ name, organizationId }) {
+      vendorCreates++;
+      assert.equal(name, 'Supplier LLC');
+      assert.equal(organizationId, '828765858');
+      return { id: 'new-vendor', name, organizationId, status: 'active' };
+    },
+  } });
+  const first = await f.send('Invoice details');
+  assert.equal(first.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.equal(vendorCreates, 0);
+  await f.send('SAVE');
+  assert.equal(vendorCreates, 1);
+  assert.equal(f.calls.find(call => call[0] === 'create')[1].vendorId, 'new-vendor');
+  assert.equal((await f.billStore.getBill(first.billId)).zoho_vendor_id, 'new-vendor');
+  await f.send('SAVE');
+  assert.equal(vendorCreates, 1);
+  assert.equal(count(f, 'create'), 1);
+});
+
+test('two concurrent bill saves reuse one newly created vendor within the same organization', async () => {
+  const billStore = memoryStore();
+  const tails = new Map();
+  const sourceStore = { async withContactLock(key, run) {
+    const prior = tails.get(key) || Promise.resolve();
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    const next = prior.then(() => held);
+    tails.set(key, next);
+    await prior;
+    try { return await run(); } finally { release(); if (tails.get(key) === next) tails.delete(key); }
+  } };
+  let vendor = null, creates = 0;
+  const zohoOverrides = {
+    async searchVendor() { return vendor ? [vendor] : []; },
+    async createVendor({ name, organizationId }) {
+      creates++;
+      await new Promise(resolve => setTimeout(resolve, 10));
+      vendor = { id: 'shared-vendor', name, organizationId, status: 'active' };
+      return vendor;
+    },
+  };
+  const a = fixture({ billStore, sourceStore, zohoOverrides, bill: { ...validBill(), bill_number: 'INV-A' } });
+  const b = fixture({ billStore, sourceStore, zohoOverrides, bill: { ...validBill(), bill_number: 'INV-B' } });
+  await Promise.all([a.send('Invoice A'), b.send('Invoice B', { senderPhone: '+971501234567' })]);
+  const results = await Promise.all([a.send('SAVE'), b.send('SAVE', { senderPhone: '+971501234567' })]);
+  assert.deepEqual(results.map(result => result.state), ['COMPLETED', 'COMPLETED']);
+  assert.equal(creates, 1);
+  assert.equal(a.calls.find(call => call[0] === 'create')[1].vendorId, 'shared-vendor');
+  assert.equal(b.calls.find(call => call[0] === 'create')[1].vendorId, 'shared-vendor');
+  assert.equal((await billStore.getBill(results[0].billId)).zoho_vendor_id, 'shared-vendor');
+  assert.equal((await billStore.getBill(results[1].billId)).zoho_vendor_id, 'shared-vendor');
+});
+
+test('ambiguous, inactive, and cross-organization vendor results block review and creation', async () => {
+  for (const [vendors, expected] of [
+    [[{ id: 'a', name: 'Supplier LLC' }, { id: 'b', name: 'Supplier L.L.C.' }], /Multiple vendors match/],
+    [[{ id: 'inactive', name: 'Supplier LLC', status: 'inactive' }], /inactive/],
+    [[{ id: 'other-org', name: 'Supplier LLC', organizationId: '802911060' }], /does not belong/],
+  ]) {
+    const f = fixture({ zohoOverrides: {
+      async searchVendor() { return vendors; },
+      async createVendor() { assert.fail('Unsafe vendor creation'); },
+    } });
+    const first = await f.send('Invoice details');
+    assert.match(first.replyText, expected);
+    assert.doesNotMatch(first.replyText, /BILL DETAILS|1 SAVE/);
+    await f.send('SAVE');
+    assert.equal(count(f, 'create'), 0);
   }
+});
+
+test('worker vendor TRN disambiguates same-name vendors without guessing', async () => {
+  const f = fixture({ zohoOverrides: {
+    async searchVendor() { return [
+      { id: 'wrong-trn', name: 'Supplier LLC', trn: '100000000000001', status: 'active' },
+      { id: 'right-trn', name: 'Supplier L.L.C.', trn: '100000000000002', status: 'active' },
+    ]; },
+  } });
+  const first = await f.send('Invoice details');
+  assert.equal(first.state, 'WAITING_FOR_ADDITIONAL_INFO');
+  const corrected = await f.send('Vendor TRN: 100000000000002');
+  assert.equal(corrected.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.equal(corrected.bill.zoho_vendor_id, 'right-trn');
+  await f.send('SAVE');
+  assert.equal(f.calls.find(call => call[0] === 'create')[1].vendorId, 'right-trn');
+});
+
+test('a previously created vendor ID is not discarded or duplicated when a later lookup misses it', async () => {
+  let vendorCreates = 0;
+  const f = fixture({ zohoOverrides: {
+    async searchVendor() { return []; },
+    async createVendor({ name }) { vendorCreates++; return { id: 'created-vendor', name }; },
+    async createBill() { throw Object.assign(Error('definite validation rejection'), { httpStatus: 400, providerCode: 100 }); },
+  } });
+  const first = await f.send('Invoice details');
+  await f.send('SAVE');
+  assert.equal((await f.billStore.getBillSession(first.sessionId)).bill_data.zoho_vendor_id, 'created-vendor');
+  const retry = await f.send('SAVE');
+  assert.match(retry.replyText, /reviewed vendor has changed/i);
+  assert.equal(vendorCreates, 1);
+  assert.equal((await f.billStore.getBillSession(first.sessionId)).bill_data.zoho_vendor_id, 'created-vendor');
+});
+
+test('uncertain new-vendor creation keeps the draft locked and never retries the vendor POST', async () => {
+  let vendorCreates = 0;
+  const f = fixture({ zohoOverrides: {
+    async searchVendor() { return []; },
+    async createVendor() { vendorCreates++; throw Error('uncertain result'); },
+  } });
+  await f.send('Invoice details');
+  assert.match((await f.send('SAVE')).replyText, /locked to prevent duplicate vendors/);
+  await f.send('SAVE');
+  assert.equal(vendorCreates, 1);
+  assert.equal(count(f, 'create'), 0);
 });
 test('Zoho duplicate or lookup failure prevents POST', async () => {
   for (const check of [async () => ({ found: true, bills: [{ id: 'existing' }] }), async () => { throw Error('secret'); }]) {
@@ -343,6 +587,83 @@ test('unknown PDF delivery is never auto resent; explicit failure can retry', as
 test('attachment failure is reported but never recreates the saved bill', async () => {
   const f = fixture({ zohoOverrides: { async attachBillFile() { throw Error('upload'); } } }); await f.send('', { mediaId: '1', messageType: 'image' });
   assert.match((await f.send('SAVE')).replyText, /attachment upload failed/); await f.send('SAVE'); assert.equal(count(f, 'create'), 1);
+});
+test('successful attachment upload retains original image bytes, bill ID and organization, without duplicate upload', async () => {
+  const original = Buffer.from('original-worker-image');
+  let attempts = 0;
+  const f = fixture({ whatsappOverrides: {
+    async downloadMedia() { return { buffer: original, mimeType: 'image/jpeg' }; },
+  }, zohoOverrides: {
+    async attachBillFile({ billId, buffer, organizationId }) {
+      attempts++;
+      assert.equal(billId, '123456');
+      assert.equal(organizationId, '828765858');
+      assert.equal(buffer.equals(original), true);
+      return { attachmentId: 'attachment-1', success: true };
+    },
+  } });
+  const first = await f.send('', { mediaId: 'image-1', messageType: 'image' });
+  const result = await f.send('SAVE');
+  assert.equal(result.state, 'COMPLETED');
+  const saved = await f.billStore.getBill(first.billId);
+  assert.equal(saved.zoho_bill_id, '123456');
+  assert.equal(saved.attachments[0].zoho_upload_status, 'uploaded');
+  assert.equal(saved.attachments[0].zoho_attachment_id, 'attachment-1');
+  assert.equal(attempts, 1);
+  await f.send('SAVE');
+  assert.equal(attempts, 1);
+});
+test('definite attachment failure retains bill and original PDF, then SAVE retries upload only', async () => {
+  const original = Buffer.from('%PDF-worker-original');
+  let attempts = 0;
+  const f = fixture({ whatsappOverrides: {
+    async downloadMedia() { return { buffer: original, mimeType: 'application/pdf' }; },
+  }, zohoOverrides: {
+    async attachBillFile({ billId, buffer, organizationId }) {
+      attempts++;
+      assert.equal(billId, '123456');
+      assert.equal(organizationId, '828765858');
+      assert.equal(buffer.equals(original), true);
+      if (attempts === 1) throw Object.assign(Error('rejected'), { httpStatus: 422 });
+      return { id: 'pdf-attachment' };
+    },
+  } });
+  const first = await f.send('', { mediaId: 'pdf-1', messageType: 'document' });
+  const failed = await f.send('SAVE');
+  assert.equal(failed.state, 'CREATING_IN_ZOHO');
+  assert.match(failed.replyText, /Attachment upload failed/);
+  assert.equal((await f.billStore.getBill(first.billId)).attachments[0].zoho_upload_status, 'failed');
+  assert.equal((await f.billStore.getBill(first.billId)).zoho_bill_id, '123456');
+  assert.ok(await f.billStore.getActiveBillSession(WORKER));
+  const retried = await f.send('SAVE');
+  assert.equal(retried.state, 'COMPLETED');
+  assert.equal((await f.billStore.getBill(first.billId)).attachments[0].zoho_upload_status, 'uploaded');
+  assert.equal(attempts, 2);
+  assert.equal(count(f, 'create'), 1);
+  assert.equal(count(f, 'document'), 1);
+});
+test('successful upload with uncertain status persistence does not POST a second time', async () => {
+  const billStore = memoryStore();
+  const update = billStore.updateBill.bind(billStore);
+  let failOnce = true, attempts = 0;
+  billStore.updateBill = async (id, values) => {
+    if (failOnce && values.attachments?.some(item => item.zoho_upload_status === 'uploaded')) {
+      failOnce = false;
+      throw Error('write acknowledgement lost');
+    }
+    return update(id, values);
+  };
+  const f = fixture({ billStore, zohoOverrides: {
+    async attachBillFile() { attempts++; return { id: 'remote-attachment' }; },
+  } });
+  const first = await f.send('', { mediaId: 'image-1', messageType: 'image' });
+  const result = await f.send('SAVE');
+  assert.equal(result.state, 'CREATING_IN_ZOHO');
+  assert.equal((await billStore.getBill(first.billId)).attachments[0].zoho_upload_status, 'uncertain');
+  assert.match(result.replyText, /reconcile/);
+  await f.send('SAVE');
+  assert.equal(attempts, 1);
+  assert.equal(count(f, 'create'), 1);
 });
 test('duplicate message and concurrent SAVE cannot create twice', async () => {
   const f = fixture(); await f.send('Bill', { messageId: 'same' }); assert.equal((await f.send('Bill', { messageId: 'same' })).idempotent, true);
