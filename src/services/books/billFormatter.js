@@ -29,6 +29,7 @@ function formatBillSummary(bill = {}) {
   const customer = bill.customer_details || {};
   lines.push(`• *Customer:* ${customer.customer_name || '⚠️ [Required before SAVE]'}`);
   if (customer.customer_phone) lines.push(`  Phone: ${customer.customer_phone}`);
+  if (customer.customer_source === 'manual' && customer.customer_email) lines.push(`  Email: ${customer.customer_email}`);
   if (customer.project_site) lines.push(`  Project/site: ${customer.project_site}`);
 
   if (Array.isArray(bill.line_items) && bill.line_items.length > 0) {
