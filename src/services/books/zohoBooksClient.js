@@ -614,6 +614,19 @@ function createZohoBooksClient({
 
   async function prepareBill(bill, vendor, { organizationId = null } = {}) {
     billAccounts.clear(bill.line_items);
+    // SAVE has just re-read this vendor in the selected organization. UAE
+    // purchase VAT is not allowed for a non-VAT-registered vendor (71538).
+    // Never infer registration or reverse charge from an invoice's 5% rate,
+    // and never discard source VAT to make that conflicting bill acceptable.
+    // Zoho inherits the vendor's treatment when POST /bills omits it.
+    if (vendor.raw?.tax_treatment === 'vat_not_registered'
+        && (bill.tax_amount > 0 || bill.line_items.some(item =>
+          (item.tax_percentage ?? item.tax) > 0 || item.tax_id || item.taxId
+          || item.tax_exemption_id || item.tax_exemption_code))) {
+      throw new ZohoBooksError('VENDOR_VAT_TREATMENT_CONFLICT',
+        'Source VAT conflicts with the vendor VAT treatment in Zoho Books. An administrator must verify the vendor tax setup; source VAT was not changed.',
+        { operation: 'prepareBill' });
+    }
     const currencies = await getJson('/settings/currencies', {}, organizationId);
     const currency = (currencies.currencies || []).find(item => item.currency_code === bill.currency);
     if (!currency?.currency_id) throw new ZohoBooksError('CURRENCY_NOT_FOUND', 'Currency is not configured in Zoho Books.');
