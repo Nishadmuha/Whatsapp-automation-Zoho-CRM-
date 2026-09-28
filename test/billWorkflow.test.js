@@ -315,9 +315,9 @@ test('explicit customer correction clears the old ID until the new customer is s
   const changed = await f.send('Customer: ABC Contracting, 0501234567, Dubai site');
   assert.equal(changed.state, 'WAITING_FOR_CUSTOMER_SELECTION');
   assert.equal(changed.bill.customer_details.customer_name, 'ABC Contracting');
-  assert.equal(changed.bill.customer_details.contact_id, undefined);
+  assert.equal(changed.bill.customer_details.contact_id, null);
   assert.equal(changed.bill.customer_details.customer_email, undefined);
-  assert.equal((await f.billStore.getBill(first.billId)).customer_details.contact_id, undefined);
+  assert.equal((await f.billStore.getBill(first.billId)).customer_details.contact_id, null);
   assert.doesNotMatch(changed.replyText, /BILL DETAILS|1 SAVE/);
   const selected = await f.send('Select', { interactiveId: 'zoho-customer:new-id' });
   assert.equal(selected.state, 'AWAITING_FINAL_CONFIRMATION');

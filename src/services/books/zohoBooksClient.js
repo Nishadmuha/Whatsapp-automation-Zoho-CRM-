@@ -3,6 +3,7 @@
 const axios = require('axios');
 const { Agent } = require('node:https');
 const { createBillAccountResolver } = require('./billAccountResolver');
+const { customerBillNotes } = require('./customerDetails');
 
 const httpsAgent = new Agent({ rejectUnauthorized: true, keepAlive: true });
 
@@ -42,7 +43,7 @@ function sanitizeBillProviderMessage(message, secrets, payload) {
       privateValues.push(value.trim());
       // Workflow notes contain labelled customer fields separated by pipes.
       for (const part of value.split(/[|\r\n]/)) {
-        const field = part.match(/^\s*(?:Customer(?: phone| email)?|Zoho customer ID|Project\/site)\s*:\s*(.+)/i);
+        const field = part.match(/^\s*(?:Customer(?: [a-z ]+)?|Zoho customer ID|Project\/site)\s*:\s*(.+)/i);
         if (field) privateValues.push(field[1].trim());
       }
     } else if (Array.isArray(value)) value.forEach(collect);
@@ -93,7 +94,7 @@ function isTaxInclusiveSourceAmount(item) {
 }
 
 function normalizeCustomerContact(contact = {}) {
-  const contactId = nullableText(contact.contact_id ?? contact.contactId ?? contact.id);
+  const contactId = nullableText(contact.contact_id ?? contact.customer_id ?? contact.contactId ?? contact.id);
   if (!contactId) return null;
 
   const contactName = nullableText(contact.contact_name ?? contact.contactName);
@@ -103,9 +104,8 @@ function normalizeCustomerContact(contact = {}) {
   const mobile = nullableText(contact.mobile);
   const contactType = nullableText(contact.contact_type ?? contact.contactType);
   const status = nullableText(contact.status);
-  const displayName = companyName && contactName && companyName !== contactName
-    ? `${companyName} (${contactName})`
-    : companyName || contactName;
+  const displayName = nullableText(contact.display_name ?? contact.displayName)
+    || (companyName && contactName && companyName !== contactName ? `${companyName} (${contactName})` : companyName || contactName);
 
   return {
     // Canonical fields. These are kept separate because Zoho does not promise
@@ -389,7 +389,8 @@ function createZohoBooksClient({
           httpsAgent,
         });
         if (response?.data?.code !== undefined && response.data.code !== 0) throw new ZohoBooksError('CUSTOMER_LOOKUP_FAILED', 'Zoho rejected the customer lookup.');
-        const pageContacts = Array.isArray(response?.data?.contacts) ? response.data.contacts : [];
+        if (!Array.isArray(response?.data?.contacts)) throw new ZohoBooksError('CUSTOMER_LOOKUP_FAILED', 'Zoho returned an invalid customer list.');
+        const pageContacts = response.data.contacts;
         contacts.push(...pageContacts);
         _logger?.debug?.({
           event: 'zoho.books.customer_lookup.page',
@@ -409,7 +410,7 @@ function createZohoBooksClient({
       });
       if (!term) return mapped;
       const needle = term.toLowerCase();
-      return mapped.filter(contact => [contact.contactName, contact.companyName, contact.phone, contact.mobile, contact.email]
+      return mapped.filter(contact => [contact.contactName, contact.companyName, contact.displayName, contact.phone, contact.mobile, contact.email, contact.raw.customer_code, contact.raw.contact_number]
         .filter(Boolean).some(value => String(value).toLowerCase().includes(needle)));
     }, 'searchCustomer', organizationId);
   }
@@ -470,6 +471,7 @@ function createZohoBooksClient({
     currency = 'AED',
     currencyId = null,
     customerId = null,
+    customerDetails = null,
     paymentType = null,
     notes = null,
     referenceNumber = null,
@@ -495,6 +497,9 @@ function createZohoBooksClient({
         // Only an organization-scoped, verified backend default can supply
         // this accounting metadata; never trust IDs from invoice extraction.
         ...(accountId ? { account_id: accountId } : {}),
+        // Zoho associates bill customers on line items. Never invent an ID
+        // for a manual customer or enable billable/rebilling implicitly.
+        ...(customerId ? { customer_id: String(customerId).trim() } : {}),
         description: item.description || item.name || 'Purchased Item',
         rate: typeof item.rate === 'number' ? item.rate : (typeof item.amount === 'number' ? item.amount : 0),
         quantity: typeof item.quantity === 'number' ? item.quantity : 1,
@@ -523,6 +528,7 @@ function createZohoBooksClient({
     const paymentNote = paymentType ? `Payment method: ${String(paymentType).trim()}` : null;
     const customerNote = customerId ? `Zoho customer ID: ${String(customerId).trim()}` : null;
     const combinedNotes = [notes,
+      ...customerBillNotes(customerDetails || {}).filter(note => !String(notes || '').includes(note)),
       paymentNote && !/payment method\s*:/i.test(String(notes || '')) ? paymentNote : null,
       customerNote && !/zoho customer id\s*:/i.test(String(notes || '')) ? customerNote : null,
     ].filter(Boolean).join('\n');

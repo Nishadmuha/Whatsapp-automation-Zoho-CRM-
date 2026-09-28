@@ -28,6 +28,11 @@ for (const [label, phone, email] of [
     customer_contact_name: customer.contactName, customer_company_name: customer.companyName, customer_mobile: null,
     customer_contact_type: 'customer', customer_status: 'active',
     organization_id: '828765858',
+    display_name: 'Selected Company (Selected Contact)',
+    zoho_contact: {
+      contactId: customer.contactId, contactName: customer.contactName, companyName: customer.companyName,
+      contactType: 'customer', status: 'active', ...(phone ? { phone } : {}), ...(email ? { email } : {}),
+    },
   };
   assert.deepEqual((await f.billStore.getBill(first.billId)).customer_details, expected);
   assert.deepEqual((await f.billStore.getBillSession(first.sessionId)).bill_data.customer_details, expected);
