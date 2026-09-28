@@ -418,7 +418,9 @@ function createZohoBooksClient({
 
     const items = Array.isArray(lineItems) && lineItems.length > 0
       ? lineItems.map((item) => ({
-        account_id: item.account_id || item.accountId || undefined,
+        // Worker bills intentionally use Zoho's descriptive line-item form.
+        // An account or item ID is organization-specific accounting metadata,
+        // not a worker input and not a prerequisite for this create request.
         description: item.description || item.name || 'Purchased Item',
         rate: typeof item.rate === 'number' ? item.rate : (typeof item.amount === 'number' ? item.amount : 0),
         quantity: typeof item.quantity === 'number' ? item.quantity : 1,

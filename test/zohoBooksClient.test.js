@@ -398,6 +398,8 @@ test('9. createBill() sends the expected payload to Zoho Books', async () => {
       assert.strictEqual(data.line_items[0].description, 'LED Lights');
       assert.strictEqual(data.line_items[0].rate, 50);
       assert.strictEqual(data.line_items[0].quantity, 10);
+      assert.equal(Object.hasOwn(data.line_items[0], 'account_id'), false);
+      assert.equal(Object.hasOwn(data.line_items[0], 'item_id'), false);
       assert.strictEqual(data.notes, 'Payment terms: Net 30\nPayment method: Cheque');
 
       return {
@@ -446,6 +448,23 @@ test('9. createBill() sends the expected payload to Zoho Books', async () => {
   assert.strictEqual(created.id, 'zb_new_999');
   assert.strictEqual(created.billNumber, 'BILL-1234');
   assert.strictEqual(created.total, 500);
+});
+
+test('9b. createBill() remains valid without account or item IDs', async () => {
+  const http = createMockHttp();
+  http.setHandler('post', async (url, data) => {
+    if (url.includes('/oauth/v2/token')) return { status: 200, data: { access_token: 'valid_token', expires_in: 3600 } };
+    assert.equal(url.endsWith('/bills'), true);
+    assert.equal(Object.hasOwn(data.line_items[0], 'account_id'), false);
+    assert.equal(Object.hasOwn(data.line_items[0], 'item_id'), false);
+    return { status: 201, data: { code: 0, bill: { bill_id: 'bill-without-account-id' } } };
+  });
+  const client = createZohoBooksClient({ ...mockConfig, http });
+  const created = await client.createBill({ organizationId: mockConfig.organizationId,
+    vendorId: 'v-1', billNumber: 'INV-NO-ACCOUNT', billDate: '2026-03-15',
+    lineItems: [{ name: 'Unmapped service', quantity: 1, rate: 100 }],
+  });
+  assert.equal(created.id, 'bill-without-account-id');
 });
 
 test('9a. createBill() forwards the selected Zoho contact_id as customer_id', async () => {

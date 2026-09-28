@@ -47,6 +47,7 @@ test('VAT-inclusive invoice lines reach review and one mocked Zoho bill POST onl
   assert.equal(posts.length, 1);
   assert.deepEqual(posts[0].line_items.map(item => item.rate), [90, 160, 120]);
   assert.ok(posts[0].line_items.every(item => item.tax_id === 'vat5' && item.item_total === undefined));
+  assert.ok(posts[0].line_items.every(item => !Object.hasOwn(item, 'account_id') && !Object.hasOwn(item, 'item_id')));
 });
 test('preflight failure logs only its safe code and retains the review draft', async () => {
   const logs = [];
