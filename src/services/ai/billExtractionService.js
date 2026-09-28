@@ -48,9 +48,10 @@ const BILL_MEDIA_EXTRACTION_INSTRUCTIONS = [
   'Preserve useful supplier, customer, delivery, address, and reference details that do not have a dedicated field in notes.',
 ].join(' ');
 
-function safeError(code, message) {
+function safeError(code, message, reason) {
   const error = new Error(message);
   error.code = code;
+  if (reason) error.reason = reason;
   return error;
 }
 
@@ -75,22 +76,33 @@ function getConfiguration(env) {
     key: key.trim(),
     model,
     timeout: readInteger(env.AI_TIMEOUT_MS, 20000, 1000, 60000),
-    maxOutputTokens: readInteger(env.AI_MAX_OUTPUT_TOKENS, 4096, 256, 16384),
+    // A complete bill envelope needs a separate budget from short chat replies.
+    // Preserve larger legacy budgets when no Books-specific override is set.
+    maxOutputTokens: readInteger(env.AI_BOOKS_MAX_OUTPUT_TOKENS,
+      Math.max(4096, readInteger(env.AI_MAX_OUTPUT_TOKENS, 4096, 256, 16384)), 256, 16384),
   };
 }
 
 function openAiText(data) {
+  if (data?.status === 'incomplete') {
+    const reason = data.incomplete_details?.reason === 'max_output_tokens' ? 'OUTPUT_TOKEN_LIMIT'
+      : data.incomplete_details?.reason === 'content_filter' ? 'CONTENT_FILTER' : 'INCOMPLETE_RESPONSE';
+    throw safeError('AI_MALFORMED_RESPONSE', 'Incomplete model response.', reason);
+  }
   if (!data || data.status !== 'completed' || data.error || data.incomplete_details || !Array.isArray(data.output)) {
-    throw safeError('AI_MALFORMED_RESPONSE', 'Incomplete model response.');
+    throw safeError('AI_MALFORMED_RESPONSE', 'Incomplete model response.', 'INVALID_RESPONSE_ENVELOPE');
   }
   const messages = data.output.filter((item) => item?.type === 'message');
   if (messages.length !== 1 || data.output.some((item) => !['message', 'reasoning'].includes(item?.type))) {
-    throw safeError('AI_MALFORMED_RESPONSE', 'Unexpected model response structure.');
+    throw safeError('AI_MALFORMED_RESPONSE', 'Unexpected model response structure.', 'UNEXPECTED_OUTPUT_STRUCTURE');
   }
   const message = messages[0];
+  if (Array.isArray(message.content) && message.content.some((part) => part?.type === 'refusal')) {
+    throw safeError('AI_MALFORMED_RESPONSE', 'Refused or invalid model response.', 'MODEL_REFUSAL');
+  }
   if (message.role !== 'assistant' || message.status !== 'completed' || !Array.isArray(message.content)
       || message.content.length === 0 || message.content.some((part) => part?.type !== 'output_text' || typeof part.text !== 'string')) {
-    throw safeError('AI_MALFORMED_RESPONSE', 'Refused or invalid model response.');
+    throw safeError('AI_MALFORMED_RESPONSE', 'Refused or invalid model response.', 'INVALID_MESSAGE_CONTENT');
   }
   return message.content.map((part) => part.text).join('');
 }
@@ -343,7 +355,7 @@ function parseExtractionResponse(response, sourceText = null) {
     parsedText = openAiText(response?.data);
   } catch (err) {
     const classified = classifyError(err);
-    return { success: false, bill: null, error: { code: classified.code, message: classified.message } };
+    return { success: false, bill: null, error: { code: classified.code, message: classified.message, reason: err.reason } };
   }
 
   let rawJson;
@@ -353,7 +365,7 @@ function parseExtractionResponse(response, sourceText = null) {
     return {
       success: false,
       bill: null,
-      error: { code: 'AI_MALFORMED_RESPONSE', message: 'Model response could not be parsed as JSON.' },
+      error: { code: 'AI_MALFORMED_RESPONSE', message: 'Model response could not be parsed as JSON.', reason: 'INVALID_JSON' },
     };
   }
 
@@ -365,6 +377,7 @@ function parseExtractionResponse(response, sourceText = null) {
       error: {
         code: 'AI_MALFORMED_RESPONSE',
         message: 'Model response violated structured bill schema.',
+        reason: 'BILL_SCHEMA_MISMATCH',
         details: envelopeParsed.error.issues.map((issue) => issue.message),
       },
     };
@@ -428,7 +441,7 @@ function createBillExtractionService({ env = process.env, http = axios, logger }
     const routing = resolveModel({ task: 'bill_extraction', text, ...opts }, env);
     const model = routing.model;
 
-    log('info', { event: 'ai.bill_extraction.started', tier: routing.tier, model });
+    log('info', { event: 'ai.bill_extraction.started', tier: routing.tier, model, max_output_tokens: maxOutputTokens });
     try { logger?.info?.(formatRouterLog(routing)); } catch { /* Ignore */ }
 
     const reqOpts = requestOptions(timeout);
@@ -484,7 +497,7 @@ function createBillExtractionService({ env = process.env, http = axios, logger }
     const result = parseExtractionResponse(response, text);
     log(result.success ? 'info' : 'error', {
       event: result.success ? 'ai.bill_extraction.succeeded' : 'ai.bill_extraction.failed',
-      ...(result.success ? { valid: result.validation.valid } : { code: result.error.code }),
+      ...(result.success ? { valid: result.validation.valid } : { code: result.error.code, reason: result.error.reason, max_output_tokens: maxOutputTokens }),
     });
     logTiming('bill_text_extraction', startedAt, { outcome: result.success ? 'succeeded' : 'failed' });
     return result;
@@ -529,7 +542,7 @@ function createBillExtractionService({ env = process.env, http = axios, logger }
         : { type: 'input_file', filename: file.filename, file_data: `data:${file.mimeType};base64,${file.buffer.toString('base64')}` }),
     ];
 
-    log('info', { event: 'ai.bill_media_extraction.started', tier: routing.tier, model: routing.model, mediaCount: normalizedFiles.length });
+    log('info', { event: 'ai.bill_media_extraction.started', tier: routing.tier, model: routing.model, mediaCount: normalizedFiles.length, max_output_tokens: maxOutputTokens });
     try { logger?.info?.(formatRouterLog(routing)); } catch { /* Ignore */ }
 
     let response;
@@ -560,7 +573,7 @@ function createBillExtractionService({ env = process.env, http = axios, logger }
     const result = parseExtractionResponse(response);
     log(result.success ? 'info' : 'error', {
       event: result.success ? 'ai.bill_media_extraction.succeeded' : 'ai.bill_media_extraction.failed',
-      ...(result.success ? { valid: result.validation.valid } : { code: result.error.code }),
+      ...(result.success ? { valid: result.validation.valid } : { code: result.error.code, reason: result.error.reason, max_output_tokens: maxOutputTokens }),
     });
     logTiming('bill_media_extraction', startedAt, { outcome: result.success ? 'succeeded' : 'failed', media_count: normalizedFiles.length });
     return result;

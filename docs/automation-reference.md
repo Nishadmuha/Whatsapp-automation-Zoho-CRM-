@@ -75,6 +75,7 @@ Use `.env.example` as the checklist. Leave external credentials blank until acco
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | Historical settings; Gemini is not an enabled automation provider. |
 | `AI_TIMEOUT_MS` | Default `20000`; range `1000`â€“`60000`. |
 | `AI_MAX_OUTPUT_TOKENS` | Default `4096`; range `256`â€“`16384`. |
+| `AI_BOOKS_MAX_OUTPUT_TOKENS` | Independent structured Books bill output budget for text, vision, edits and additional details; range `256`-`16384`. If unset, uses the greater of `4096` and `AI_MAX_OUTPUT_TOKENS`. Does not change chat, CRM or OCR budgets. Text/vision response parsing failure logs include a safe `reason` (such as `OUTPUT_TOKEN_LIMIT`, `INVALID_JSON` or `BILL_SCHEMA_MISMATCH`) and the configured `max_output_tokens`, without logging provider output. |
 | `ZOHO_CLIENT_ID`, `ZOHO_CLIENT_SECRET`, `ZOHO_REFRESH_TOKEN` | OAuth client and offline refresh credential. |
 | `ZOHO_ACCOUNTS_URL` | Official regional Accounts origin, e.g. `https://accounts.zoho.com`. |
 | `ZOHO_API_BASE_URL` | Matching CRM environment and version, e.g. `https://www.zohoapis.com/crm/v8`. |

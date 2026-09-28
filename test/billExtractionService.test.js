@@ -788,3 +788,113 @@ test('33. Malformed direct-vision JSON returns a controlled error', async () => 
   assert.equal(result.bill, null);
   assert.equal(result.error.code, 'AI_MALFORMED_RESPONSE');
 });
+
+function completeSyntheticBill() {
+  return { bill: billCoreSchema.parse({
+    vendor_name: 'Synthetic Supplier', bill_number: 'TEST-100', bill_date: '2026-09-26',
+    currency: 'AED', subtotal: 370, tax_amount: 18.5, total_amount: 388.5,
+    line_items: [
+      { name: 'Lamp', quantity: 1, rate: 90, amount: 94.5, tax_percentage: 5 },
+      { name: 'Lamp assembly', quantity: 1, rate: 160, amount: 168, tax_percentage: 5 },
+      { name: 'Grille', quantity: 1, rate: 120, amount: 126, tax_percentage: 5 },
+    ],
+  }), confidence: {} };
+}
+
+const syntheticMedia = () => [{ buffer: Buffer.from('synthetic-invoice-image'), mimeType: 'image/jpeg' }];
+
+for (const model of ['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol']) {
+  test(`Books output budget is independent of short replies for ${model}`, async () => {
+    const env = mockEnvironment({ OPENAI_MODEL: model, AI_MAX_OUTPUT_TOKENS: '512', AI_MEDIA_MAX_OUTPUT_TOKENS: '8192' });
+    const originalEnv = { ...env };
+    const payload = completeSyntheticBill();
+    const { service, calls } = setupService({ env, responseOutcome: mockOpenAiResponse(payload) });
+    const results = [
+      await service.extractBillFromText({ text: 'Synthetic Supplier TEST-100 AED 370 VAT 18.50 Total 388.50' }),
+      await service.extractBillFromMedia({ media: syntheticMedia() }),
+      await service.mergeAdditionalInfo({ currentBill: payload.bill, additionalText: 'Confirm the invoice details.' }),
+      await service.applyEditInstructions({ currentBill: payload.bill, editInstruction: 'Keep the invoice details.' }),
+    ];
+    assert.ok(results.every(result => result.success && result.bill.line_items.length === 3));
+    assert.equal(calls.length, 4, 'One request per operation, with no added retry calls.');
+    for (const [, body] of calls) {
+      assert.equal(body.max_output_tokens, 4096);
+      assert.equal(body.model, model);
+      assert.equal(body.text.format.strict, true);
+      assert.equal(body.store, false);
+    }
+    assert.deepEqual(env, originalEnv);
+  });
+}
+
+test('Books budget preserves a larger shared budget and accepts a dedicated override', async () => {
+  for (const [shared, books, expected] of [
+    [undefined, undefined, 4096], ['8192', undefined, 8192], ['512', '', 4096],
+    ['512', '8192', 8192], ['8192', '4096', 4096],
+  ]) {
+    const { service, calls } = setupService({
+      env: mockEnvironment({ AI_MAX_OUTPUT_TOKENS: shared, AI_BOOKS_MAX_OUTPUT_TOKENS: books }),
+      responseOutcome: mockOpenAiResponse(completeSyntheticBill()),
+    });
+    assert.equal((await service.extractBillFromMedia({ media: syntheticMedia() })).success, true);
+    assert.equal(calls[0][1].max_output_tokens, expected);
+  }
+});
+
+test('invalid dedicated Books budgets fail before any provider request', async () => {
+  for (const value of ['0', '255', '16385', 'invalid']) {
+    const { service, calls } = setupService({ env: mockEnvironment({ AI_BOOKS_MAX_OUTPUT_TOKENS: value }) });
+    const result = await service.extractBillFromText({ text: 'Synthetic invoice' });
+    assert.equal(result.success, false);
+    assert.equal(result.error.code, 'AI_CONFIGURATION_ERROR');
+    assert.equal(calls.length, 0);
+  }
+});
+
+test('dedicated Books budget does not change shared replies or OCR budgets', async () => {
+  const { createAiService } = require('../src/services/ai/aiService');
+  const calls = [];
+  const service = createAiService({
+    env: { ...mockEnvironment({ AI_MAX_OUTPUT_TOKENS: '512', AI_BOOKS_MAX_OUTPUT_TOKENS: '8192', AI_MEDIA_MAX_OUTPUT_TOKENS: '3072' }), AI_PROVIDER: 'openai' },
+    http: { async post(url, body) {
+      calls.push(body);
+      return mockOpenAiResponse('Synthetic Supplier invoice TEST-100. Total AED 388.50.');
+    } },
+  });
+  await service.generateReply('Hello');
+  await service.extractMediaText({ ...syntheticMedia()[0], type: 'image' });
+  assert.deepEqual(calls.map(body => body.max_output_tokens), [512, 3072]);
+});
+
+const diagnosticCases = [
+  ['OUTPUT_TOKEN_LIMIT', () => ({ ...mockOpenAiResponse(completeSyntheticBill()), data: {
+    ...mockOpenAiResponse(completeSyntheticBill()).data, status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' },
+  } })],
+  ['CONTENT_FILTER', () => ({ data: { status: 'incomplete', incomplete_details: { reason: 'content_filter' } } })],
+  ['INCOMPLETE_RESPONSE', () => ({ data: { status: 'incomplete', incomplete_details: { reason: 'PRIVATE_PROVIDER_DETAIL' } } })],
+  ['INVALID_RESPONSE_ENVELOPE', () => ({ data: { status: 'completed', error: { message: 'PRIVATE_PROVIDER_DETAIL' } } })],
+  ['UNEXPECTED_OUTPUT_STRUCTURE', () => ({ data: { status: 'completed', output: [] } })],
+  ['MODEL_REFUSAL', () => ({ data: { status: 'completed', output: [{ type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'refusal', refusal: 'PRIVATE_PROVIDER_DETAIL' }] }] } })],
+  ['INVALID_MESSAGE_CONTENT', () => ({ data: { status: 'completed', output: [{ type: 'message', role: 'assistant', status: 'incomplete', content: [] }] } })],
+  ['INVALID_JSON', () => mockOpenAiResponse('PRIVATE_PROVIDER_DETAIL {not-json')],
+  ['BILL_SCHEMA_MISMATCH', () => mockOpenAiResponse({ bill: { vendor_name: 'PRIVATE_PROVIDER_DETAIL', line_items: 'invalid' } })],
+];
+for (const [reason, response] of diagnosticCases) {
+  test(`Books text and vision failures distinguish ${reason} without logging private output`, async () => {
+    const { service, logs, calls } = setupService({ responseOutcome: () => response() });
+    for (const result of [
+      await service.extractBillFromText({ text: 'Synthetic invoice' }),
+      await service.extractBillFromMedia({ media: syntheticMedia() }),
+    ]) {
+      assert.equal(result.success, false);
+      assert.equal(result.bill, null, 'Incomplete or invalid output must never become a bill.');
+      assert.equal(result.error.code, 'AI_MALFORMED_RESPONSE');
+      assert.equal(result.error.reason, reason);
+    }
+    assert.equal(calls.length, 2);
+    const failures = logs.filter(entry => entry.event?.endsWith('.failed'));
+    assert.equal(failures.length, 2);
+    assert.ok(failures.every(entry => entry.reason === reason && entry.max_output_tokens === 4096));
+    assert.doesNotMatch(JSON.stringify(logs), /PRIVATE_PROVIDER_DETAIL|synthetic-invoice-image|test-mock-secret-key/);
+  });
+}
