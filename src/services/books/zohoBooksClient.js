@@ -2,17 +2,21 @@
 
 const axios = require('axios');
 const { Agent } = require('node:https');
+const { createBillAccountResolver } = require('./billAccountResolver');
 
 const httpsAgent = new Agent({ rejectUnauthorized: true, keepAlive: true });
 
 class ZohoBooksError extends Error {
-  constructor(code, message, { httpStatus = null, providerCode = null, operation = null } = {}) {
+  constructor(code, message, { httpStatus = null, providerCode = null, providerMessage = null, operation = null, method = null, endpoint = null } = {}) {
     super(message);
     this.name = 'ZohoBooksError';
     this.code = code;
     if (httpStatus) this.httpStatus = httpStatus;
-    if (providerCode) this.providerCode = providerCode;
+    if (providerCode !== null) this.providerCode = providerCode;
+    if (providerMessage !== null) this.providerMessage = providerMessage;
     if (operation) this.operation = operation;
+    if (method) this.method = method;
+    if (endpoint) this.endpoint = endpoint;
   }
 }
 
@@ -25,6 +29,53 @@ function sanitizeErrorMessage(message, secrets = []) {
     }
   }
   return clean;
+}
+
+// Provider messages can echo submitted values. Never retain the HTTP error,
+// headers, response body or bill payload in a diagnostic event.
+function sanitizeBillProviderMessage(message, secrets, payload) {
+  if (typeof message !== 'string' || !message.trim()) return null;
+  if (message.length > 8192) return '[Provider message omitted: exceeds diagnostic limit]';
+  const privateValues = [];
+  function collect(value) {
+    if (typeof value === 'string' && value.trim()) {
+      privateValues.push(value.trim());
+      // Workflow notes contain labelled customer fields separated by pipes.
+      for (const part of value.split(/[|\r\n]/)) {
+        const field = part.match(/^\s*(?:Customer(?: phone| email)?|Zoho customer ID|Project\/site)\s*:\s*(.+)/i);
+        if (field) privateValues.push(field[1].trim());
+      }
+    } else if (Array.isArray(value)) value.forEach(collect);
+    else if (value && typeof value === 'object') Object.values(value).forEach(collect);
+  }
+  collect(payload);
+  let clean = message;
+  for (const secret of secrets.filter(value => typeof value === 'string' && value)) {
+    for (const variant of new Set([secret, encodeURIComponent(secret)])) clean = clean.replaceAll(variant, '[REDACTED]');
+  }
+  for (const value of [...new Set(privateValues.filter(value => typeof value === 'string' && value))].sort((a, b) => b.length - a.length)) {
+    for (const variant of new Set([value, encodeURIComponent(value)])) {
+      const escaped = variant.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      clean = clean.replace(new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, 'giu'), '[REDACTED]');
+    }
+  }
+  clean = clean
+    .replace(/\b(?:Zoho-oauthtoken|Bearer|Basic)\s+\S+/gi, '[REDACTED]')
+    .replace(/\b(?:access_token|refresh_token|client_secret|authorization|api_key|password)\s*[:=]\s*[^\s,;]+/gi, '[REDACTED]')
+    .replace(/\b(?:https?:\/\/|mongodb(?:\+srv)?:\/\/)\S+/gi, '[REDACTED]')
+    .replace(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi, '[REDACTED]')
+    .replace(/\+?\d(?:[\d ().-]{5,}\d)/g, '[REDACTED]')
+    .replace(/\b((?:vendor|customer|contact)(?:[ _]+(?:name|email|phone|mobile))?\s*[:=]\s*)[^;\r\n|]+/gi, '$1[REDACTED]')
+    .replace(/\b((?:vendor|customer|contact)\s+)(?!(?:id|name|email|phone|mobile|is|was|has|does|must|should|cannot|can|could|not|details|information|provided|specified|selected|field|with|for|of|in|and|or)\b)[^;\r\n]+?(?=\s+(?:is|was|has|does|must|should|cannot|can|could|not)\b|[.;\r\n]|$)/gi, '$1[REDACTED]')
+    .replace(/(["'`])([^"'`\r\n]+)\1/g, (match, quote, value) => {
+      const field = value.replace(/^line_items(?:\[\d+\])?\./, '');
+      return ['account_id', 'item_id', 'vendor_id', 'customer_id', 'organization_id', 'currency_id',
+        'bill_number', 'date', 'due_date', 'line_items', 'description', 'quantity', 'rate',
+        'tax_id', 'tax_percentage', 'item_total', 'tax_treatment', 'place_of_supply', 'location_id',
+        'custom_fields', 'reference_number', 'notes'].includes(field) ? match : `${quote}[REDACTED]${quote}`;
+    })
+    .replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+  return clean.length > 1024 ? `${clean.slice(0, 1024)} [truncated]` : clean;
 }
 
 function nullableText(value) {
@@ -105,6 +156,9 @@ function createZohoBooksClient({
   const cleanBaseUrl = typeof baseUrl === 'string' ? baseUrl.trim().replace(/\/+$/, '') : 'https://www.zohoapis.com/books/v3';
 
   const secrets = [cleanClientSecret, cleanRefreshToken];
+  const billAccounts = createBillAccountResolver({ env,
+    readAccount: (accountId, organizationId) => getJson(`/chartofaccounts/${accountId}`, {}, organizationId),
+  });
 
   function resolveOrganizationId(value = null) {
     const candidate = typeof value === 'string' ? value.trim() : '';
@@ -187,7 +241,7 @@ function createZohoBooksClient({
     tokenExpiresAt = 0;
   }
 
-  async function requestWithRetry(requestFn, operationName, organizationId = null) {
+  async function requestWithRetry(requestFn, operationName, organizationId = null, diagnosticPayload = null) {
     validateCredentials({ organizationId });
 
     let token = await getAccessToken();
@@ -207,15 +261,34 @@ function createZohoBooksClient({
         try {
           return await requestFn(token);
         } catch (retryErr) {
-          handleRequestError(retryErr, operationName);
+          handleRequestError(retryErr, operationName, diagnosticPayload, organizationId);
         }
       } else {
-        handleRequestError(firstErr, operationName);
+        handleRequestError(firstErr, operationName, diagnosticPayload, organizationId);
       }
     }
   }
 
-  function handleRequestError(err, operation) {
+  function handleRequestError(err, operation, diagnosticPayload = null, organizationId = null) {
+    if (operation === 'createBill') {
+      // A rejected HTTP-200 envelope is normalized here inside createBill.
+      if (err instanceof ZohoBooksError && err.endpoint === '/bills' && err.method === 'POST') throw err;
+      const status = err?.response?.status;
+      const code = err?.response?.data?.code;
+      const diagnosticSecrets = [...secrets, cleanClientId, organizationId,
+        ...Object.entries(env).filter(([key]) => /TOKEN|SECRET|PASSWORD|API_KEY|DATABASE_URL|MONGODB_URI/.test(key)).map(([, value]) => value)];
+      let providerMessage = null;
+      try { providerMessage = sanitizeBillProviderMessage(err?.response?.data?.message, diagnosticSecrets, diagnosticPayload); } catch { /* Omit text if sanitization fails. */ }
+      const diagnostic = {
+        httpStatus: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
+        providerCode: Number.isSafeInteger(code) || (typeof code === 'string' && /^-?\d{1,12}$/.test(code)) ? code : null,
+        providerMessage,
+        operation: 'createBill', method: 'POST', endpoint: '/bills',
+      };
+      try { _logger?.error?.({ event: 'zoho.books.bill_create_failed', ...diagnostic }); } catch { /* Logging must not change save/retry semantics. */ }
+      throw new ZohoBooksError('ZOHO_BOOKS_API_ERROR',
+        `Zoho Books createBill failed: ${diagnostic.providerMessage || 'Zoho did not confirm a created bill ID.'}`, diagnostic);
+    }
     const status = err?.response?.status || null;
     const data = err?.response?.data;
     const providerCode = data?.code || null;
@@ -416,11 +489,12 @@ function createZohoBooksClient({
       throw new ZohoBooksError('INVALID_INPUT', 'Every bill item requires an explicit quantity and rate.');
     }
 
+    const accountId = await billAccounts.forCreate(lineItems, resolveOrganizationId(organizationId));
     const items = Array.isArray(lineItems) && lineItems.length > 0
       ? lineItems.map((item) => ({
-        // Worker bills intentionally use Zoho's descriptive line-item form.
-        // An account or item ID is organization-specific accounting metadata,
-        // not a worker input and not a prerequisite for this create request.
+        // Only an organization-scoped, verified backend default can supply
+        // this accounting metadata; never trust IDs from invoice extraction.
+        ...(accountId ? { account_id: accountId } : {}),
         description: item.description || item.name || 'Purchased Item',
         rate: typeof item.rate === 'number' ? item.rate : (typeof item.amount === 'number' ? item.amount : 0),
         quantity: typeof item.quantity === 'number' ? item.quantity : 1,
@@ -470,7 +544,7 @@ function createZohoBooksClient({
 
       const bill = response?.data?.bill || response?.data || {};
       const createdId = String(bill.bill_id || bill.id || '');
-      if (response?.data?.code !== 0 || !createdId) throw new ZohoBooksError('ZOHO_BOOKS_INVALID_RESPONSE', 'Zoho did not confirm a created bill ID.');
+      if (response?.data?.code !== 0 || !createdId) handleRequestError({ response }, 'createBill', payload, organizationId);
 
       return {
         id: createdId,
@@ -484,7 +558,7 @@ function createZohoBooksClient({
         currencyCode: bill.currency_code || currency || 'AED',
         raw: response.data,
       };
-    }, 'createBill', organizationId);
+    }, 'createBill', organizationId, payload);
   }
 
   async function attachBillFile({ billId, buffer, filename, mimeType = 'application/pdf', organizationId = null } = {}) {
@@ -539,6 +613,7 @@ function createZohoBooksClient({
   }
 
   async function prepareBill(bill, vendor, { organizationId = null } = {}) {
+    billAccounts.clear(bill.line_items);
     const currencies = await getJson('/settings/currencies', {}, organizationId);
     const currency = (currencies.currencies || []).find(item => item.currency_code === bill.currency);
     if (!currency?.currency_id) throw new ZohoBooksError('CURRENCY_NOT_FOUND', 'Currency is not configured in Zoho Books.');
@@ -561,6 +636,9 @@ function createZohoBooksClient({
       }
       if (Math.abs(calculatedTax - bill.tax_amount) > 0.05) throw new ZohoBooksError('TAX_MISMATCH', 'Line tax differs from the source bill.');
     }
+    // Resolve before the workflow records create intent, so an invalid mapping
+    // follows the existing safe preflight failure/review path (no bill POST).
+    await billAccounts.prepare(bill.line_items, resolveOrganizationId(organizationId));
     return bill;
   }
 

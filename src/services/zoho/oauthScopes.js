@@ -17,6 +17,8 @@ const BOOKS_SCOPES = Object.freeze([
   'ZohoBooks.bills.CREATE',
   // Existing prepareBill validates configured currency and tax IDs.
   'ZohoBooks.settings.READ',
+  // Organization-specific bill account validation; no account write grant.
+  'ZohoBooks.accountants.READ',
 ]);
 
 function scopeReport(raw, required) {
