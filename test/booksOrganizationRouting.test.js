@@ -435,7 +435,7 @@ for (const organization of BOOKS_ORGANIZATIONS) {
         },
       },
     });
-    const extraction = mockedExtraction(null, { currency: null, payment_type: null });
+    const extraction = mockedExtraction({ name: organization.name, organizationId: orgId, confidence: 1 }, { currency: null, payment_type: null });
     const f = fixture({ billStore, zohoOverrides: client, extractionOverrides: extraction, aiOverrides: {
       async extractMediaText() { return `Supplier LLC TAX INVOICE INV-100\nBill to: ${organization.name.replace('LLC', 'L.L.C.')}\n2026-09-19 Cable 2 50 100 VAT 5 Total 105`; },
     } });

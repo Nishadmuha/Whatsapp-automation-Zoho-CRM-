@@ -31,7 +31,7 @@ for (const [label, phone, email] of [
   };
   assert.deepEqual((await f.billStore.getBill(first.billId)).customer_details, expected);
   assert.deepEqual((await f.billStore.getBillSession(first.sessionId)).bill_data.customer_details, expected);
-  const extractions = f.calls.filter(call => call[0] === 'extract').length;
+  const extractions = f.calls.filter(call => ['extract', 'vision'].includes(call[0])).length;
   assert.equal(extractions, 1, 'selection must not ask AI to regenerate customer details');
 });
 

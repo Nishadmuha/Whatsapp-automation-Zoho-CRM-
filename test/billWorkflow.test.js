@@ -4,6 +4,7 @@ const { test } = require('node:test');
 const { fixture, validBill, memoryStore, WORKER } = require('./billFixtures');
 const { createBillWorkflow, parseYesNo } = require('../src/services/books/billWorkflow');
 const { createZohoBooksClient } = require('../src/services/books/zohoBooksClient');
+const { formatBillSummary } = require('../src/services/books/billFormatter');
 const count = (f, name) => f.calls.filter(call => call[0] === name).length;
 
 test('worker greeting requests a bill without extraction or Zoho calls', async () => {
@@ -14,6 +15,19 @@ test('initial text persists pending bill and explicit options without creating i
   assert.equal(r.state, 'AWAITING_FINAL_CONFIRMATION');
   assert.match(r.replyText, /1 SAVE\n2 EDIT\n3 DELETE/); assert.match(r.replyText, /AED 105.00/);
   assert.equal((await f.billStore.getBill(r.billId)).status, 'PENDING_REVIEW'); assert.equal(count(f, 'create'), 0);
+});
+test('bill summary does not label extracted amounts as not detected when currency is missing', () => {
+  const summary = formatBillSummary({
+    currency: null,
+    line_items: [{ name: 'Machine screw', quantity: 4, rate: 17, amount: 68 }],
+    subtotal: 68,
+    tax_amount: 3.4,
+    total_amount: 71.4,
+  });
+  assert.match(summary, /68\.00/);
+  assert.match(summary, /3\.40/);
+  assert.match(summary, /71\.40/);
+  assert.doesNotMatch(summary, /\[Not detected\] 68\.00/);
 });
 test('VAT-inclusive invoice lines reach review and one mocked Zoho bill POST only after SAVE', async () => {
   const posts = [];
@@ -63,25 +77,22 @@ test('preflight failure logs only its safe code and retains the review draft', a
   });
   assert.doesNotMatch(JSON.stringify(logs), /Synthetic private provider detail/);
 });
-test('taxed line missing its percentage is collected before exactly one final review', async () => {
+test('single-line tax is derived from extracted totals without asking the worker twice', async () => {
   const bill = validBill();
   bill.line_items = [{ ...bill.line_items[0], tax_percentage: null }];
   let prepared = 0;
   const f = fixture({ bill, zohoOverrides: {
     async prepareBill(candidate) { prepared++; assert.equal(candidate.line_items[0].tax_percentage, 5); },
   } });
-  const first = await f.send('Invoice details');
-  assert.equal(first.state, 'WAITING_FOR_ADDITIONAL_INFO');
-  assert.match(first.replyText, /Tax percentage missing for line 1/);
-  assert.doesNotMatch(first.replyText, /BILL DETAILS|1 SAVE/);
-  const review = await f.send('Line 1 tax: 5%');
+  const review = await f.send('Invoice details');
   assert.equal(review.state, 'AWAITING_FINAL_CONFIRMATION');
   assert.match(review.replyText, /BILL DETAILS/);
-  assert.equal((await f.billStore.getBill(first.billId)).line_items[0].tax_percentage, 5);
+  assert.doesNotMatch(review.replyText, /Tax percentage missing/);
+  assert.equal((await f.billStore.getBill(review.billId)).line_items[0].tax_percentage, 5);
   const saved = await f.send('SAVE');
   assert.equal(saved.state, 'COMPLETED');
   assert.equal(prepared, 1);
-  assert.equal([first, review, saved].filter(result => /BILL DETAILS/.test(result.replyText)).length, 1);
+  assert.equal([review, saved].filter(result => /BILL DETAILS/.test(result.replyText)).length, 1);
 });
 test('reconciled priced lines permit an unpriced source line without a false tax mismatch', async () => {
   const bill = { ...validBill(), subtotal: 60, tax_amount: 3, total_amount: 63, line_items: [
@@ -121,13 +132,14 @@ test('missing tax on a priced line still blocks review even with an unpriced sou
   assert.equal(review.state, 'AWAITING_FINAL_CONFIRMATION');
   assert.match(review.replyText, /BILL DETAILS/);
 });
-test('priced line without a tax percentage retains the existing required-tax prompt', async () => {
+test('single priced line without a tax percentage is reconciled from bill totals', async () => {
   const bill = validBill();
   bill.line_items[0].tax_percentage = null;
   const f = fixture({ bill, zohoOverrides: { async prepareBill() {} } });
-  const first = await f.send('Invoice details');
-  assert.match(first.replyText, /Tax percentage missing for line 1/);
-  assert.doesNotMatch(first.replyText, /BILL DETAILS|1 SAVE/);
+  const review = await f.send('Invoice details');
+  assert.equal(review.state, 'AWAITING_FINAL_CONFIRMATION');
+  assert.match(review.replyText, /BILL DETAILS|1 SAVE/);
+  assert.doesNotMatch(review.replyText, /Tax percentage missing/);
 });
 test('unpriced source line keeps null monetary fields and never fabricates a tax amount', async () => {
   const bill = { ...validBill(), line_items: [
@@ -385,9 +397,10 @@ test('Zoho customer selection is requested before payment and preserves the sele
   assert.equal(method.state, 'AWAITING_FINAL_CONFIRMATION');
   assert.equal((await f.billStore.getBill(first.billId)).payment_type, 'Cash');
 });
-test('media is persisted and OCR runs even when an image has a caption', async () => {
+test('bill image is persisted and uses one direct vision extraction even when it has a caption', async () => {
   const f = fixture(); const r = await f.send('Fuel expense', { messageType: 'image', mediaId: '123' });
-  assert.equal(count(f, 'ocr'), 1); assert.match(f.calls.find(c => c[0] === 'extract')[1].text, /Supplier LLC[\s\S]*Fuel expense/);
+  assert.equal(count(f, 'ocr'), 0); assert.equal(count(f, 'vision'), 1); assert.equal(count(f, 'extract'), 0);
+  assert.equal(f.calls.find(c => c[0] === 'vision')[1].caption, 'Fuel expense');
   assert.equal((await f.billStore.getBillSession(r.sessionId)).attachments.length, 1); assert.equal(f.media.size, 1); assert.match(r.replyText, /SAVE/);
 });
 test('clear invoice image reaches the existing Zoho customer-selection workflow', async () => {
@@ -399,7 +412,7 @@ test('clear invoice image reaches the existing Zoho customer-selection workflow'
   assert.equal((await f.billStore.getBillSession(result.sessionId)).attachments.length, 1);
   assert.match(result.replyText, /select the customer/i);
 });
-test('photographed invoice with a large table falls back to direct vision', async () => {
+test('photographed invoice with a large table uses direct vision once', async () => {
   const tableBill = { ...validBill(), line_items: Array.from({ length: 24 }, (_, index) => ({ name: `Table item ${index + 1}`, quantity: 1, rate: 10, amount: 10, tax_percentage: null })) };
   const f = fixture({
     zohoOverrides: { async searchCustomer() { return [{ id: 'customer-1', name: 'Voltronix Contracting LLC' }]; } },
@@ -412,7 +425,7 @@ test('photographed invoice with a large table falls back to direct vision', asyn
   const result = await f.send('', { messageType: 'image', mediaId: 'large-table-photo' });
   assert.equal(result.state, 'WAITING_FOR_CUSTOMER_SELECTION');
   assert.equal(result.bill.line_items.length, 24);
-  assert.equal(count(f, 'extract'), 1);
+  assert.equal(count(f, 'extract'), 0);
   assert.equal(count(f, 'vision'), 1);
 });
 test('partially unreadable optional fields remain null while customer selection continues', async () => {
@@ -450,27 +463,26 @@ test('multi-page PDF keeps every original page for extraction and Zoho attachmen
   const attachments = f.calls.filter(call => call[0] === 'attach').map(call => call[1].buffer.toString());
   assert.deepEqual(attachments, ['%PDF-page-1', '%PDF-page-2']);
 });
-test('low-quality but readable image falls back from failed OCR to structured vision', async () => {
+test('low-quality but readable image uses structured vision directly', async () => {
   const logs = [];
   const f = fixture({
-    aiOverrides: { async extractMediaText() { throw Object.assign(Error('unreadable OCR'), { code: 'AI_MEDIA_EXTRACTION_FAILED' }); } },
     logger: { info: (entry) => logs.push(entry), warn: (entry) => logs.push(entry), error: (entry) => logs.push(entry) },
   });
   const result = await f.send('', { messageType: 'image', mediaId: 'low-quality' });
   assert.equal(count(f, 'vision'), 1);
   assert.equal(count(f, 'extract'), 0);
   assert.match(result.replyText, /SAVE/);
-  assert.ok(logs.some((entry) => entry.event === 'books.bill_media_pipeline.vision_fallback' && entry.reason === 'OCR_FAILED'));
+  assert.ok(logs.some((entry) => entry.event === 'books.bill_media_pipeline.vision_fallback' && entry.reason === 'DIRECT_VISION'));
 });
-test('partial OCR text uses direct vision and does not require every optional field', async () => {
+test('direct vision does not require every optional field', async () => {
   const partialBill = { ...validBill(), due_date: null, subtotal: null, tax_amount: null, notes: null };
   const f = fixture({
     bill: partialBill,
-    aiOverrides: { async extractMediaText(input) { f.calls.push(['ocr', input]); return 'Supplier LLC INV-100'; } },
   });
   const result = await f.send('', { messageType: 'image', mediaId: 'partial' });
   assert.equal(count(f, 'vision'), 1);
   assert.equal(count(f, 'extract'), 0);
+  assert.equal(count(f, 'ocr'), 0);
   assert.equal(result.bill.total_amount, 105);
   assert.equal(result.bill.due_date, null);
 });
@@ -552,9 +564,14 @@ for (const type of ['image', 'audio', 'document']) test(`EDIT accepts ${type} co
   await f.send('EDIT'); await f.send('extra page', { messageType: type, mediaId: '2' });
   assert.equal((await f.billStore.getBillSession(first.sessionId)).attachments.length, 2); assert.equal(count(f, 'merge'), 1); assert.equal(count(f, 'create'), 0);
 });
-test('unrequested second bill cannot overwrite the current review', async () => {
+test('a new bill image clears the pending draft before starting a new bill', async () => {
   const f = fixture(); const first = await f.send('Bill'); const r = await f.send('', { mediaId: '2', messageType: 'image' });
-  assert.match(r.replyText, /already pending/); assert.equal(r.sessionId, first.sessionId); assert.equal(count(f, 'extract'), 1);
+  assert.notEqual(r.sessionId, first.sessionId);
+  assert.equal((await f.billStore.getBillSession(first.sessionId)).state, 'CANCELLED');
+  assert.deepEqual((await f.billStore.getBillSession(first.sessionId)).bill_data, {});
+  assert.equal((await f.billStore.getBill(first.billId)).status, 'CANCELLED');
+  assert.equal(count(f, 'extract'), 1);
+  assert.equal(count(f, 'vision'), 1);
 });
 for (const cmd of ['DELETE', '3']) test(`${cmd} cancels only this pending draft and allows a fresh session`, async () => {
   const f = fixture(); const first = await f.send('Bill'); await f.send(cmd);

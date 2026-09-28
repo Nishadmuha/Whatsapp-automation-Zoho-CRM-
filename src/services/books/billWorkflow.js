@@ -217,6 +217,25 @@ function taxAllocation(bill, requireAccounting) {
     ? null : priced.reduce((sum, item) => sum + item.quantity * item.rate * item.tax_percentage / 100, 0);
   return { missingLines, mismatch: calculated !== null && Math.abs(calculated - bill.tax_amount) > 0.05 };
 }
+function inferSingleLineTaxPercentage(bill = {}) {
+  if (!Array.isArray(bill.line_items) || bill.line_items.length !== 1) return bill;
+  const item = bill.line_items[0];
+  if (Number.isFinite(item?.tax_percentage)
+      || !Number.isFinite(bill.tax_amount) || bill.tax_amount <= 0
+      || !Number.isFinite(bill.total_amount)) return bill;
+  const base = Number.isFinite(item?.amount)
+    ? item.amount
+    : Number.isFinite(item?.quantity) && Number.isFinite(item?.rate)
+      ? item.quantity * item.rate : null;
+  if (!Number.isFinite(base) || base <= 0) return bill;
+  const subtotal = Number.isFinite(bill.subtotal) ? bill.subtotal : base;
+  if (Math.abs(subtotal - base) > 0.05 || Math.abs(subtotal + bill.tax_amount - bill.total_amount) > 0.05) return bill;
+  const percentage = bill.tax_amount / base * 100;
+  const rounded = Math.round((percentage + Number.EPSILON) * 100) / 100;
+  if (!Number.isFinite(rounded) || rounded < 0 || rounded > 100
+      || Math.abs(base * rounded / 100 - bill.tax_amount) > 0.05) return bill;
+  return { ...bill, line_items: [{ ...item, tax_percentage: rounded }] };
+}
 function parseLineTaxInput(text, bill) {
   const source = String(text || '').trim();
   const updates = new Map();
@@ -299,6 +318,12 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     if (!bill.payment_type) {
       await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill_data: bill, last_message_id: messageId });
       return reply(session, `Before SAVE, send payment method: ${PAYMENT_METHODS.join(' / ')}`, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill });
+    }
+    const reconciledBill = inferSingleLineTaxPercentage(bill);
+    if (reconciledBill !== bill) {
+      bill = reconciledBill;
+      await billStore.updateBill(session.bill_id, { line_items: bill.line_items });
+      await billStore.updateBillSession(session.session_id, { bill_data: bill });
     }
     const { missing, validation, tax, sourceOnlyLines } = billMissingFields(bill, { requireCustomerId: typeof zohoBooksClient?.searchCustomer === 'function', requireAccounting: typeof zohoBooksClient?.prepareBill === 'function' });
     if (tax.missingLines.length || tax.mismatch) {
@@ -474,7 +499,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill_data: bill, customer_options: [], last_message_id: incoming.messageId });
     return continueAfterOrganization(session, bill, incoming.messageId);
   }
-  async function readSingleInput(incoming) {
+  async function readSingleInput(incoming, { skipOcr = false } = {}) {
     const media = Boolean(incoming.mediaId || incoming.mediaBuffer || ['image', 'document', 'pdf', 'audio'].includes(incoming.messageType));
     if (!media) return { text: incoming.text || '', attachment: null, media: null, ocrError: null };
     let buffer = incoming.mediaBuffer;
@@ -498,7 +523,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       .then(() => store.saveMediaFile({ messageId: incoming.messageId, mediaId: incoming.mediaId, buffer, mimeType, filename }))
       .catch(error => { throw pipelineError(PIPELINE_FAILURES.STORAGE, error?.code || 'MEDIA_PERSIST_FAILED'); });
     let ocrError = null;
-    const ocrPromise = Promise.resolve().then(async () => {
+    const ocrPromise = skipOcr ? Promise.resolve('') : Promise.resolve().then(async () => {
       if (typeof aiService?.extractMediaText !== 'function') throw Object.assign(new Error(), { code: 'OCR_SERVICE_UNAVAILABLE' });
       const result = await aiService.extractMediaText({ buffer, mimeType, type: kind });
       if (typeof result !== 'string' || !result.trim()) throw Object.assign(new Error(), { code: 'OCR_EMPTY_RESULT' });
@@ -521,10 +546,15 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       ocrError,
     };
   }
-  async function readInput(incoming) {
+  async function readInput(incoming, options = {}) {
     const startedAt = Date.now();
     const items = Array.isArray(incoming.items) && incoming.items.length ? incoming.items : [incoming];
-    const settled = await Promise.allSettled(items.map(readSingleInput));
+    const settled = await Promise.allSettled(items.map(item => readSingleInput(item, {
+      ...options,
+      skipOcr: options.skipOcrForBillMedia
+        ? ['image', 'document', 'pdf'].includes(String(item.messageType || '').toLowerCase())
+        : options.skipOcr,
+    })));
     const text = [];
     const attachments = [];
     const media = [];
@@ -571,7 +601,6 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
   }
   async function extractBillFromInput(input, sourceType) {
     const directMedia = (input.media || []).filter((item) => ['image', 'document'].includes(item.kind));
-    const weakText = isWeakBillText(input.text);
     const attempts = [];
     const tryText = async () => {
       if (!input.text?.trim()) return null;
@@ -583,7 +612,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       if (!directMedia.length || typeof billExtractionService.extractBillFromMedia !== 'function') return null;
       log('info', {
         event: 'books.bill_media_pipeline.vision_fallback',
-        reason: input.ocrErrors?.length ? 'OCR_FAILED' : weakText ? 'OCR_TEXT_WEAK' : 'TEXT_EXTRACTION_FAILED',
+        reason: input.ocrErrors?.length ? 'OCR_FAILED' : 'DIRECT_VISION',
         mediaCount: directMedia.length,
       });
       const result = await billExtractionService.extractBillFromMedia({ media: directMedia, caption: input.text || '', sourceType });
@@ -591,13 +620,13 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       return result;
     };
 
-    if (!weakText || !directMedia.length) {
+    if (!directMedia.length) {
       const textResult = await tryText();
       if (textResult?.success && textResult.bill && hasBillInformation(textResult.bill)) return textResult;
     }
     const mediaResult = await tryMedia();
     if (mediaResult?.success && mediaResult.bill && hasBillInformation(mediaResult.bill)) return mediaResult;
-    if (weakText && input.text?.trim() && directMedia.length) {
+    if (directMedia.length && input.text?.trim()) {
       const textResult = await tryText();
       if (textResult?.success && textResult.bill && hasBillInformation(textResult.bill)) return textResult;
     }
@@ -610,14 +639,59 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     }
     throw pipelineError(PIPELINE_FAILURES.EXTRACTION, attempts.find((result) => result?.error?.code)?.error.code || input.ocrErrors?.[0] || 'OCR_AND_VISION_FAILED');
   }
+  async function clearPendingBill(session, messageId) {
+    await billStore.updateBill(session.bill_id, {
+      status: 'CANCELLED',
+      zoho_status: 'NOT_SYNCED',
+      vendor_name: null,
+      vendor_phone: null,
+      vendor_email: null,
+      vendor_trn: null,
+      zoho_vendor_id: null,
+      payment_type: null,
+      customer_details: null,
+      bill_number: null,
+      bill_date: null,
+      due_date: null,
+      currency: null,
+      currency_id: null,
+      organization: null,
+      subtotal: null,
+      tax_amount: null,
+      discount_amount: 0,
+      total_amount: null,
+      line_items: [],
+      notes: null,
+      additional_information: null,
+      attachments: [],
+      zoho_bill_id: null,
+      zoho_bill_url: null,
+      zoho_error: null,
+    });
+    await billStore.updateBillSession(session.session_id, {
+      state: 'CANCELLED',
+      bill_data: {},
+      customer_options: [],
+      attachments: [],
+      last_message_id: messageId,
+    });
+  }
   async function processUnlocked(incoming) {
     if (!incoming.senderPhone) return reply(null, 'Sender phone is required.', { success: false });
     if (config.booksSenders && !config.booksSenders.has(incoming.senderPhone)) return reply(null, null, { success: false, error: { code: 'NOT_AUTHORIZED' } });
-    const session = await billStore.getActiveBillSession(incoming.senderPhone);
+    let session = await billStore.getActiveBillSession(incoming.senderPhone);
     const cmd = command(incoming.text);
     const sourceItems = Array.isArray(incoming.items) && incoming.items.length ? incoming.items : [incoming];
     const media = sourceItems.some(item => Boolean(item.mediaId || item.mediaBuffer || ['image', 'document', 'pdf', 'audio'].includes(item.messageType)));
+    const billMedia = sourceItems.some(item => ['image', 'document', 'pdf'].includes(String(item.messageType || '').toLowerCase()));
     if (session?.last_message_id === incoming.messageId && incoming.messageId) return reply(session, null, { idempotent: true });
+    if (session && billMedia && session.state !== SAVING && session.state !== EDIT) {
+      const existing = await billStore.getBill(session.bill_id);
+      if (!existing?.zoho_bill_id) {
+        await clearPendingBill(session, incoming.messageId);
+        session = null;
+      }
+    }
     if (session) {
       const existing = await billStore.getBill(session.bill_id);
       if (session.state === SAVING || existing?.zoho_bill_id) {
@@ -717,7 +791,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       if (!media && session.state === EDIT && editDetails.currency) return applyCurrency(session, incoming);
       if (!media && session.state === EDIT && editDetails.organization) return applyOrganization(session, incoming);
       try {
-        const input = await readInput(incoming);
+        const input = await readInput(incoming, { skipOcrForBillMedia: billMedia && !session });
         let edited;
         let directMediaExtraction = false;
         if (media && isWeakBillText(input.text) && input.media?.some((item) => ['image', 'document'].includes(item.kind))) {
@@ -748,7 +822,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     }
     if (!media && (cmd || /^(hi|hello|hey|salaam|start|\?)[.!?]*$/i.test((incoming.text || '').trim()) || !(incoming.text || '').trim())) return reply(null, 'Please send the bill image, PDF, or bill details.');
     try {
-      const input = await readInput(incoming);
+      const input = await readInput(incoming, { skipOcrForBillMedia: billMedia && !session });
       const extracted = await extractBillFromInput(input, incoming.messageType || 'text');
       const grounded = groundedBill(extracted);
       const bill = normalizeBillOrganization(validateBill(mergeWorkerDetails(mergeWorkerDetails(grounded, input.text, parseWorkerDetails(input.text, { allowShorthand: false, allowVendor: false })), input.text, parseWorkerDetails(input.text, { allowVendor: false }))).normalizedBill);

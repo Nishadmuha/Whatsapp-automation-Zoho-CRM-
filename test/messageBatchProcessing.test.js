@@ -168,9 +168,9 @@ function billExtractionCalls(calls) {
 
 const booksCases = [
   ['Worker text only produces one final reply', [{ text: 'typed bill facts' }], 0],
-  ['Worker image only produces one final reply', [{ type: 'image', mediaId: 'image', mimeType: 'image/jpeg' }], 1],
-  ['Worker text plus image produces one extraction and one final reply', [{ text: 'typed bill facts' }, { type: 'image', mediaId: 'image', mimeType: 'image/jpeg' }], 1],
-  ['Worker text, image, PDF and voice produce one extraction and one final reply', [{ text: 'typed bill facts' }, { type: 'image', mediaId: 'image', mimeType: 'image/jpeg' }, { type: 'document', mediaId: 'pdf', mimeType: 'application/pdf' }, { type: 'audio', mediaId: 'voice', mimeType: 'audio/ogg' }], 3],
+  ['Worker image only produces one final reply', [{ type: 'image', mediaId: 'image', mimeType: 'image/jpeg' }], 0],
+  ['Worker text plus image produces one extraction and one final reply', [{ text: 'typed bill facts' }, { type: 'image', mediaId: 'image', mimeType: 'image/jpeg' }], 0],
+  ['Worker text, image, PDF and voice produce one extraction and one final reply', [{ text: 'typed bill facts' }, { type: 'image', mediaId: 'image', mimeType: 'image/jpeg' }, { type: 'document', mediaId: 'pdf', mimeType: 'application/pdf' }, { type: 'audio', mediaId: 'voice', mimeType: 'audio/ogg' }], 1],
 ];
 for (const [name, items, expectedMedia] of booksCases) test(name, async t => {
   const h = booksHarness(t, items);
@@ -238,8 +238,8 @@ test('one failed Worker media extraction retains successful content and sends on
 });
 
 test('concurrent media extraction is parallel and concurrent worker ticks send one final reply', async t => {
-  const items = [{ text: 'typed bill facts' }, { type: 'image', mediaId: 'image', mimeType: 'image/jpeg' },
-    { type: 'document', mediaId: 'pdf', mimeType: 'application/pdf' }, { type: 'audio', mediaId: 'voice', mimeType: 'audio/ogg' }];
+  const items = [{ text: 'typed bill facts' }, { type: 'audio', mediaId: 'voice-1', mimeType: 'audio/ogg' },
+    { type: 'audio', mediaId: 'voice-2', mimeType: 'audio/ogg' }];
   const h = booksHarness(t, items, { holdMedia: true });
   await Promise.all([h.worker.tick(), h.worker.tick(), h.worker.tick()]);
   assert.ok(h.getMaxActiveMedia() > 1);

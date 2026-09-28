@@ -41,10 +41,10 @@ function formatBillSummary(bill = {}) {
         parts.push(`Qty: ${item.quantity}`);
       }
       if (item.rate !== null && item.rate !== undefined) {
-        parts.push(`Rate: ${formatAmount(item.rate, currency)}`);
+        parts.push(`Rate: ${formatAmount(item.rate, bill.currency || '')}`);
       }
       if (item.amount !== null && item.amount !== undefined) {
-        parts.push(`Amount: ${formatAmount(item.amount, currency)}`);
+        parts.push(`Amount: ${formatAmount(item.amount, bill.currency || '')}`);
       }
       const itemDetails = parts.length > 0 ? ` (${parts.join(', ')})` : '';
       lines.push(`  ${index + 1}. ${String(item.name || 'Item').slice(0, 80)}${itemDetails}`);
@@ -54,12 +54,12 @@ function formatBillSummary(bill = {}) {
 
   lines.push('');
   if (bill.subtotal !== null && bill.subtotal !== undefined) {
-    lines.push(`• *Subtotal:* ${formatAmount(bill.subtotal, currency)}`);
+    lines.push(`• *Subtotal:* ${formatAmount(bill.subtotal, bill.currency || '')}`);
   }
   if (bill.tax_amount !== null && bill.tax_amount !== undefined) {
-    lines.push(`• *VAT / Tax:* ${formatAmount(bill.tax_amount, currency)}`);
+    lines.push(`• *VAT / Tax:* ${formatAmount(bill.tax_amount, bill.currency || '')}`);
   }
-  lines.push(`• *Total:* ${bill.total_amount !== null && bill.total_amount !== undefined ? formatAmount(bill.total_amount, currency) : '⚠️ [Not detected]'}`);
+  lines.push(`• *Total:* ${bill.total_amount !== null && bill.total_amount !== undefined ? formatAmount(bill.total_amount, bill.currency || '') : '⚠️ [Not detected]'}`);
 
   if (bill.notes) {
     lines.push(`• *Notes:* ${String(bill.notes).slice(0, 300)}`);
