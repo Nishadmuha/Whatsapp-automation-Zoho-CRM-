@@ -35,7 +35,9 @@ async function renderCreatedBillPdf(bill, { fontPath, organizationName = 'Voltro
   if (doc.y > 650) doc.addPage();
   doc.moveDown().fillColor('#111827').fontSize(11).text(`Subtotal: ${money(bill.sub_total)}`);
   doc.text(`Tax: ${money(bill.tax_total)}`);
+  if (Number.isFinite(bill.adjustment) && bill.adjustment !== 0) doc.text(`Rounding adjustment: ${money(bill.adjustment)}`);
   doc.moveDown(0.4).fontSize(16).text(`Total: ${money(bill.total)}`);
+  if (Number.isFinite(bill.balance)) doc.fontSize(11).text(`Balance due: ${money(bill.balance)}`);
   if (bill.notes) doc.moveDown().fontSize(10).text(`Notes: ${bill.notes}`, { lineGap: 3 });
   const pages = doc.bufferedPageRange();
   for (let page = 0; page < pages.count; page++) {

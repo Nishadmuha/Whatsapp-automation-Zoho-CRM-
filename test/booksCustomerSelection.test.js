@@ -103,10 +103,11 @@ test('customer numbers are limited to the options actually displayed, and valid 
     async searchCustomer() { return customers; },
     async getCustomer(id) { return customers.find(customer => customer.contactId === id); },
   } });
-  for (const number of [2, 10]) {
+  for (const number of [2, 8]) {
     const f = makeFixture();
     const first = await f.send('Synthetic bill');
-    assert.equal(first.replyInteractive.sections[0].rows.length, 10);
+    assert.equal(first.replyInteractive.sections[0].rows.length, 9);
+    assert.equal(first.replyInteractive.sections[0].rows.at(-1).id, 'zoho-customers:next');
     const selected = await f.send(String(number));
     assert.equal(selected.bill.customer_details.contact_id, `customer-${number}`);
     assert.equal((await f.billStore.getBill(first.billId)).customer_details.customer_id, `customer-${number}`);
@@ -117,7 +118,7 @@ test('customer numbers are limited to the options actually displayed, and valid 
   assert.equal(rejected.state, 'WAITING_FOR_CUSTOMER_SELECTION');
   assert.equal(rejected.replyText, 'Please select one of the customers shown in the Zoho Books list.');
   assert.equal((await f.billStore.getBill(first.billId)).customer_details, null);
-  assert.equal((await f.billStore.getBillSession(first.sessionId)).customer_options.length, 10);
+  assert.equal((await f.billStore.getBillSession(first.sessionId)).customer_options.length, 8);
 });
 
 test('free-form customer details still work after an invalid numeric selection', async () => {

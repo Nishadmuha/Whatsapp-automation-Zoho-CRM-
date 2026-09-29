@@ -5,7 +5,8 @@ const { test } = require('node:test');
 const { temporaryStore, incoming, silent } = require('./helpers');
 const { createBossLeadWorkflow } = require('../src/services/leads/bossLeadWorkflow');
 const { createIncomingTriggerGate } = require('../src/services/whatsapp/incomingTriggerGate');
-const { createAcknowledgementBatcher, isBossBatchBoundary } = require('../src/services/whatsapp/messageBatching');
+const { createAcknowledgementBatcher, isBossBatchBoundary, isBooksBatchBoundary } = require('../src/services/whatsapp/messageBatching');
+const { createBillStore } = require('../src/database/billStore');
 const { LEAD_FIELDS } = require('../src/services/ai/leadExtraction');
 const { createBooksWorker } = require('../src/services/books/booksWorker');
 const { fixture, WORKER } = require('./billFixtures');
@@ -36,6 +37,35 @@ test('acknowledgement grouping is stable within a batch and splits on boundaries
   assert.equal(batcher.groupFor(message('next')), 'next');
   time += 500;
   assert.equal(batcher.groupFor(message('later')), 'later');
+});
+
+test('Books navigation, customer selection and payment answers are isolated message boundaries', () => {
+  for (const text of ['NEXT', 'More', 'PREV', 'PREVIOUS', 'BACK', 'ALL', 'PAID', 'UNPAID', 'not  paid', '8', '10', '1 SAVE']) {
+    assert.equal(isBooksBatchBoundary({ message_type: 'text', message_text: ` ${text} ` }), true, text);
+  }
+  assert.equal(isBooksBatchBoundary({ message_type: 'interactive', interactive_id: 'zoho-customers:next' }), true);
+  assert.equal(isBooksBatchBoundary({ messageType: 'interactive', interactiveId: 'zoho-customer:123' }), true);
+  for (const text of ['Motor workshop', 'MANUAL: Paid Works LLC', 'Project: Next building', 'Customer: More Services']) {
+    assert.equal(isBooksBatchBoundary({ text }), false, text);
+  }
+});
+
+test('Books queue keeps rapid project text, payment confirmation and customer navigation separate', async t => {
+  const { store } = await temporaryStore(t);
+  const billStore = createBillStore({ store });
+  await billStore.init();
+  const messages = ['Project: Al Quoz workshop', 'PAID', 'NEXT'];
+  for (const [index, text] of messages.entries()) {
+    await billStore.enqueueBillExtraction({ messageId: `boundary-${index}`, workerPhone: WORKER,
+      payload: { message_type: 'text', message_text: text } });
+  }
+  for (const [index, text] of messages.entries()) {
+    const job = await billStore.claimBillExtraction({ batchQuietMs: 5000, batchBoundary: isBooksBatchBoundary });
+    assert.ok(job);
+    assert.equal(job.message_id, `boundary-${index}`);
+    assert.deepEqual(job.batch_items.map(item => item.payload.message_text), [text]);
+    await billStore.completeBillExtraction(job.job_id, job.lease_token, { result: { success: true } });
+  }
 });
 
 async function bossHarness(t) {

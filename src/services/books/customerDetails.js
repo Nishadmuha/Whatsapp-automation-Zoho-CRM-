@@ -30,17 +30,23 @@ function mergeCustomerData(...records) {
 
 function parseManualCustomerDetails(text) {
   const source = String(text || '').trim().slice(0, 4000)
-    .replace(/^(?:customer|client)(?:\s+(?:details|name))?\s*[:=-]\s*/i, '');
+    .replace(/^(?:customer|client)\s+details\s*(?::|=|-|\n)\s*/i, '')
+    .replace(/^(?:customer|client)(?:\s+name)?\s*[:=-]\s*/i, '');
   if (!source) return null;
   const details = {};
   let addressField = null;
-  for (const part of source.split(/[,;\n]+/).map(value => value.trim()).filter(Boolean)) {
-    const labelled = part.match(/^(?:(?:customer|client)\s+)?(name|company(?:\s+name)?|contact\s+person|phone|mobile|email|trn|tax(?:\s+(?:registration\s+)?(?:number|no\.?))?|billing\s+address|shipping\s+address|address|location|site|project(?:\s*\/\s*site)?)\s*[:=-]\s*(.*)$/i);
-    const label = labelled?.[1].toLowerCase() || '';
+  const labels = '(?:(?:customer|client)\\s+)?(?:name|company(?:\\s+name)?|contact\\s+(?:person|name)|(?:phone|mobile|telephone|tel|whatsapp)(?:\\s+(?:number|no\\.?))?|e-?mail|trn|(?:tax|vat|gst)(?:\\s+(?:registration\\s+)?(?:number|no\\.?))?|billing\\s+address|shipping\\s+address|address|location|site|project(?:\\s*\\/\\s*site)?(?:\\s+(?:name|details))?|website|notes?|payment(?:\\s+(?:method|type|status))?|paid\\s+by)';
+  // Workers often paste a single line with spaces between labelled fields.
+  // Introduce a boundary only before a known label and explicit separator.
+  const parts = source.replace(new RegExp(`(^|\\s+)(${labels})\\s*[:=]\\s*`, 'gi'), ';$2: ').split(/[,;\n]+/);
+  for (const part of parts.map(value => value.trim()).filter(Boolean)) {
+    const labelled = part.match(new RegExp(`^(${labels})\\s*[:=-]\\s*(.*)$`, 'i'));
+    const label = (labelled?.[1].toLowerCase() || '').replace(/^(?:customer|client)\s+/, '');
     const value = labelled ? labelled[2].trim() : part;
     if (label) addressField = null;
     if (!value) continue;
-    if (/^(?:trn|tax)/.test(label)) { details.customer_trn = value; continue; }
+    if (/^(?:payment|paid by)/.test(label)) continue;
+    if (/^(?:trn|tax|vat|gst)/.test(label)) { details.customer_trn = value; continue; }
     if (label.includes('address')) {
       addressField = label.startsWith('billing') ? 'customer_billing_address' : label.startsWith('shipping') ? 'customer_shipping_address' : 'customer_address';
       details[addressField] = value;
@@ -49,16 +55,20 @@ function parseManualCustomerDetails(text) {
     if (addressField && !label) { details[addressField] += `, ${value}`; continue; }
     if (label === 'name') { details.customer_name = value; continue; }
     if (label.startsWith('company')) { details.customer_company_name = value; details.customer_name ||= value; continue; }
-    if (label === 'contact person') { details.customer_contact_person = value; continue; }
+    if (/^contact (?:person|name)$/.test(label)) { details.customer_contact_person = value; continue; }
+    if (label === 'website') { details.customer_website = value; continue; }
+    if (/^notes?$/.test(label)) { details.customer_notes = value; continue; }
+    if (/^(?:location|site|project)/.test(label)) {
+      details.project_site = value;
+      continue;
+    }
     const email = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
-    const phone = value.match(/\+?\d[\d\s()-]{6,}\d/);
+    const phone = value.replace(email || '', '').match(/\+?\d[\d\s()-]{6,}\d/);
     if (email) details.customer_email = email;
-    if (phone) details[label === 'mobile' ? 'customer_mobile' : 'customer_phone'] = phone[0].replace(/[\s()-]/g, '');
+    if (phone) details[/^(?:mobile|whatsapp)/.test(label) ? 'customer_mobile' : 'customer_phone'] = phone[0].replace(/[\s()-]/g, '');
     const remaining = value.replace(email || '', '').replace(phone?.[0] || '', '').trim();
-    if (!remaining || ['email', 'phone', 'mobile'].includes(label)) continue;
-    if (/^(?:location|site|project)/.test(label) || (!details.customer_name && /\bsite\b/i.test(remaining))) {
-      details.project_site = remaining;
-    } else if (!details.customer_name) details.customer_name = remaining;
+    if (!remaining || /^(?:e-?mail|phone|mobile|telephone|tel|whatsapp)/.test(label)) continue;
+    if (!details.customer_name) details.customer_name = remaining;
     else details.project_site = [details.project_site, remaining].filter(Boolean).join(', ');
   }
   return Object.keys(details).length ? details : null;
@@ -67,7 +77,15 @@ function parseManualCustomerDetails(text) {
 function addressText(address) {
   if (typeof address === 'string') return address;
   if (!address || typeof address !== 'object') return null;
-  return ['attention', 'address', 'street2', 'city', 'state', 'zip', 'country'].map(key => address[key]).filter(populated).join(', ');
+  const text = ['attention', 'address', 'street2', 'city', 'state', 'zip', 'country'].map(key => address[key]).filter(populated).join(', ');
+  return [text, address.phone ? `Phone: ${address.phone}` : '', address.fax ? `Fax: ${address.fax}` : ''].filter(Boolean).join('; ');
+}
+
+function fieldText(value) {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map(fieldText).filter(Boolean).join(', ');
+  if (typeof value === 'object') return fieldText(value.name ?? value.label ?? value.value ?? '');
+  return String(value);
 }
 
 // Customer contact fields are not vendor VAT/currency/payment configuration.
@@ -78,13 +96,14 @@ function customerBillNotes(details = {}) {
   const people = (Array.isArray(zoho.contact_persons) ? zoho.contact_persons : []).map(person =>
     [person?.salutation, person?.first_name, person?.last_name].filter(populated).join(' ')).filter(Boolean);
   const fields = [
-    ['Customer', details.customer_name],
+    ['Customer', details.customer_name || zoho.display_name || zoho.contact_name],
     ['Customer company', details.customer_company_name || zoho.company_name],
     ['Customer display name', details.display_name || zoho.display_name],
     ['Customer contact person', details.customer_contact_person || zoho.contact_person || people.join('; ')],
     ['Customer email', details.customer_email || zoho.email],
     ['Customer phone', details.customer_phone || zoho.phone],
     ['Customer mobile', details.customer_mobile || zoho.mobile],
+    ['Customer website', details.customer_website || zoho.website],
     ['Customer TRN', zoho.tax_registration_number || zoho.tax_reg_no || zoho.vat_reg_no || zoho.gst_no || details.customer_trn],
     ['Customer tax treatment', zoho.tax_treatment || zoho.vat_treatment],
     ['Customer address', addressText(details.customer_address)],
@@ -94,10 +113,27 @@ function customerBillNotes(details = {}) {
     ['Customer currency', zoho.currency_code || zoho.currency_id],
     ['Customer payment terms', zoho.payment_terms_label || zoho.payment_terms],
     ['Customer status', details.customer_status || zoho.status],
+    ['Customer notes', details.customer_notes || zoho.notes],
     ['Customer organization ID', details.organization_id],
-    ['Project/site', details.project_site],
   ];
-  return fields.filter(([, value]) => populated(value)).map(([label, value]) => `${label}: ${value}`);
+  for (const [index, person] of (Array.isArray(zoho.contact_persons) ? zoho.contact_persons : []).entries()) {
+    const name = [person?.salutation, person?.first_name, person?.last_name].filter(populated).join(' ') || person?.name;
+    const contact = [name, person?.is_primary_contact ? '(primary)' : '', person?.designation, person?.department,
+      person?.email ? `Email: ${person.email}` : '', person?.phone ? `Phone: ${person.phone}` : '',
+      person?.mobile ? `Mobile: ${person.mobile}` : ''].filter(populated).join(' | ');
+    fields.push([`Customer contact ${index + 1}`, contact]);
+  }
+  const addresses = zoho.addresses || zoho.other_addresses;
+  for (const [index, address] of (Array.isArray(addresses) ? addresses : []).entries()) {
+    fields.push([`Customer additional address ${index + 1}`, addressText(address)]);
+  }
+  for (const field of Array.isArray(zoho.custom_fields) ? zoho.custom_fields : []) {
+    if (!field || typeof field !== 'object') continue;
+    const label = field.label || field.field_name || field.api_name || field.customfield_id || 'Custom field';
+    fields.push([`Customer ${label}`, fieldText(populated(field.value_formatted) ? field.value_formatted : field.value)]);
+  }
+  fields.push(['Project/site', details.project_site]);
+  return fields.filter(([, value]) => populated(value)).map(([label, value]) => `${label}: ${fieldText(value)}`);
 }
 
 module.exports = { mergeCustomerData, parseManualCustomerDetails, customerBillNotes };

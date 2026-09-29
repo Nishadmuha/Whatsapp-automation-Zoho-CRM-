@@ -19,6 +19,14 @@ const ZOHO_STATUSES = Object.freeze([
   'FAILED',
 ]);
 
+const PAYMENT_STATUSES = Object.freeze(['paid', 'unpaid']);
+
+const PAYMENT_RECORDING_STATUSES = Object.freeze([
+  'NOT_REQUIRED', 'PENDING', 'RECORDING', 'RECORDED', 'FAILED', 'UNKNOWN',
+]);
+
+const AMOUNT_VERIFICATION_STATUSES = Object.freeze(['PENDING', 'VERIFIED', 'MISMATCH']);
+
 const SESSION_STATES = Object.freeze([
   'EXTRACTING',
   'AWAITING_ADDITIONAL_INFO',
@@ -26,6 +34,9 @@ const SESSION_STATES = Object.freeze([
   'WAITING_FOR_CURRENCY',
   'WAITING_FOR_ORGANIZATION',
   'WAITING_FOR_CUSTOMER_SELECTION',
+  'WAITING_FOR_PROJECT_DETAILS',
+  'WAITING_FOR_PAYMENT_STATUS',
+  'WAITING_FOR_PAYMENT_ACCOUNT',
   'AWAITING_EDIT',
   'WAITING_FOR_EDIT_INSTRUCTION',
   'AWAITING_FINAL_CONFIRMATION',
@@ -42,6 +53,9 @@ const ACTIVE_SESSION_STATES = Object.freeze([
   'WAITING_FOR_CURRENCY',
   'WAITING_FOR_ORGANIZATION',
   'WAITING_FOR_CUSTOMER_SELECTION',
+  'WAITING_FOR_PROJECT_DETAILS',
+  'WAITING_FOR_PAYMENT_STATUS',
+  'WAITING_FOR_PAYMENT_ACCOUNT',
   'AWAITING_EDIT',
   'WAITING_FOR_EDIT_INSTRUCTION',
   'AWAITING_FINAL_CONFIRMATION',
@@ -108,6 +122,10 @@ const BillSchema = new mongoose.Schema({
   zoho_vendor_id: { type: String, default: null },
 
   payment_type: { type: String, default: null },
+  payment_status: { type: String, enum: [...PAYMENT_STATUSES, null], default: null },
+  payment_account_id: { type: String, default: null },
+  payment_account_name: { type: String, default: null },
+  payment_account_organization_id: { type: String, default: null },
   customer_details: { type: mongoose.Schema.Types.Mixed, default: null },
 
   bill_number: { type: String, default: null, index: true },
@@ -131,6 +149,12 @@ const BillSchema = new mongoose.Schema({
   zoho_bill_id: { type: String, default: null, index: true },
   zoho_bill_url: { type: String, default: null },
   zoho_error: { type: String, default: null },
+  zoho_payment_id: { type: String, default: null },
+  payment_recording_status: { type: String, enum: [...PAYMENT_RECORDING_STATUSES, null], default: null },
+  payment_recording_error: { type: String, default: null },
+  zoho_total: { type: Number, default: null },
+  zoho_currency: { type: String, default: null },
+  amount_verification_status: { type: String, enum: [...AMOUNT_VERIFICATION_STATUSES, null], default: null },
 
   edit_history: [BillEditHistorySchema],
 }, {
@@ -152,6 +176,11 @@ const BillSessionSchema = new mongoose.Schema({
   expires_at: { type: Date, default: null, index: true },
   bill_data: { type: mongoose.Schema.Types.Mixed, default: {} },
   customer_options: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  customer_all_options: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  customer_page: { type: Number, min: 0, validate: Number.isInteger, default: 0 },
+  customer_search: { type: String, default: '' },
+  payment_account_options: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  payment_account_page: { type: Number, min: 0, validate: Number.isInteger, default: 0 },
   attachments: [BillAttachmentSchema],
 }, {
   timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' },
@@ -197,6 +226,9 @@ function getBillExtractionModel() {
 module.exports = {
   BILL_STATUSES,
   ZOHO_STATUSES,
+  PAYMENT_STATUSES,
+  PAYMENT_RECORDING_STATUSES,
+  AMOUNT_VERIFICATION_STATUSES,
   SESSION_STATES,
   ACTIVE_SESSION_STATES,
   EXTRACTION_STATUSES,

@@ -4,6 +4,7 @@ const axios = require('axios');
 const { Agent } = require('node:https');
 const { createBillAccountResolver } = require('./billAccountResolver');
 const { customerBillNotes } = require('./customerDetails');
+const { scopeReport } = require('../zoho/oauthScopes');
 
 const httpsAgent = new Agent({ rejectUnauthorized: true, keepAlive: true });
 
@@ -93,6 +94,31 @@ function isTaxInclusiveSourceAmount(item) {
     && Math.abs(net * (1 + percentage / 100) - item.amount) <= 0.05;
 }
 
+function currencyPrecision(currency = 'AED') {
+  try { return new Intl.NumberFormat('en', { style: 'currency', currency }).resolvedOptions().maximumFractionDigits; }
+  catch { return 2; }
+}
+
+function moneyUnits(value, precision = 2) {
+  if (value === null || value === undefined || value === '' || !Number.isFinite(Number(value))) return null;
+  const factor = 10 ** precision;
+  const number = Number(value);
+  const rounded = Math.round((number + Math.sign(number) * Number.EPSILON * Math.max(1, Math.abs(number))) * factor);
+  return Number.isSafeInteger(rounded) ? rounded : null;
+}
+
+// item_total is a response field, not a reliable writable amount override.
+// Preserve a printed net line amount using its effective unit rate. A gross
+// source amount must not be taxed a second time; retain its original net rate.
+function sourceLineRate(item) {
+  const calculated = item.quantity * item.rate;
+  if (!Number.isFinite(item.amount) || isTaxInclusiveSourceAmount(item)) return item.rate;
+  if (Math.abs(calculated - item.amount) > 0.050000001) {
+    throw new ZohoBooksError('LINE_AMOUNT_MISMATCH', 'A line amount differs from its quantity and rate.');
+  }
+  return Number((item.amount / item.quantity).toFixed(8));
+}
+
 function normalizeCustomerContact(contact = {}) {
   const contactId = nullableText(contact.contact_id ?? contact.customer_id ?? contact.contactId ?? contact.id);
   if (!contactId) return null;
@@ -146,6 +172,7 @@ function createZohoBooksClient({
   domain = env.ZOHO_BOOKS_DOMAIN || 'books.zoho.com',
 } = {}) {
   let cachedAccessToken = null;
+  let cachedPaymentScopeReport = null;
   let tokenExpiresAt = 0;
   let pendingRefresh = null;
 
@@ -214,6 +241,9 @@ function createZohoBooksClient({
     }
 
     cachedAccessToken = data.access_token;
+    // Scope metadata belongs to this access token and is refreshed with it.
+    // Some Zoho responses omit it; absence is not evidence of a missing grant.
+    cachedPaymentScopeReport = scopeReport(data.scope, ['ZohoBooks.vendorpayments.CREATE']);
     secrets.push(cachedAccessToken);
 
     const expiresIn = Number(data.expires_in) || 3600;
@@ -238,6 +268,7 @@ function createZohoBooksClient({
 
   function invalidateToken() {
     cachedAccessToken = null;
+    cachedPaymentScopeReport = null;
     tokenExpiresAt = 0;
   }
 
@@ -270,6 +301,16 @@ function createZohoBooksClient({
   }
 
   function handleRequestError(err, operation, diagnosticPayload = null, organizationId = null) {
+    if (operation === 'recordBillPayment') {
+      if (err instanceof ZohoBooksError) throw err;
+      const status = err?.response?.status;
+      const providerCode = err?.response?.data?.code;
+      const rejected = Number.isInteger(status) && status >= 400 && status < 500 && ![408, 409, 429].includes(status)
+        || status === 200 && providerCode !== undefined && providerCode !== 0;
+      throw new ZohoBooksError(rejected ? 'PAYMENT_REJECTED' : 'PAYMENT_OUTCOME_UNCONFIRMED',
+        rejected ? 'Zoho rejected the payment record; no confirmed payment was returned.' : 'The payment outcome is unconfirmed; reconcile the existing bill before retrying.',
+        { httpStatus: status || null, providerCode: providerCode ?? null, operation, method: 'POST', endpoint: '/vendorpayments' });
+    }
     if (operation === 'createBill') {
       // A rejected HTTP-200 envelope is normalized here inside createBill.
       if (err instanceof ZohoBooksError && err.endpoint === '/bills' && err.method === 'POST') throw err;
@@ -468,6 +509,9 @@ function createZohoBooksClient({
     billDate,
     dueDate = null,
     lineItems = [],
+    expectedTotal = null,
+    subtotal = null,
+    taxAmount = null,
     currency = 'AED',
     currencyId = null,
     customerId = null,
@@ -501,11 +545,10 @@ function createZohoBooksClient({
         // for a manual customer or enable billable/rebilling implicitly.
         ...(customerId ? { customer_id: String(customerId).trim() } : {}),
         description: item.description || item.name || 'Purchased Item',
-        rate: typeof item.rate === 'number' ? item.rate : (typeof item.amount === 'number' ? item.amount : 0),
+        rate: sourceLineRate(item),
         quantity: typeof item.quantity === 'number' ? item.quantity : 1,
         tax_id: item.tax_id || item.taxId || undefined,
         tax_percentage: item.tax_percentage || item.tax || undefined,
-        item_total: typeof item.amount === 'number' && !isTaxInclusiveSourceAmount(item) ? item.amount : undefined,
       }))
       : [
         {
@@ -521,6 +564,8 @@ function createZohoBooksClient({
       date: formattedDate,
       due_date: formattedDueDate,
       line_items: items,
+      is_inclusive_tax: false,
+      is_item_level_tax_calc: true,
       ...(customerId ? { customer_id: String(customerId).trim() } : {}),
       ...(currencyId ? { currency_id: currencyId } : {}),
     };
@@ -528,6 +573,8 @@ function createZohoBooksClient({
     const paymentNote = paymentType ? `Payment method: ${String(paymentType).trim()}` : null;
     const customerNote = customerId ? `Zoho customer ID: ${String(customerId).trim()}` : null;
     const combinedNotes = [notes,
+      Number.isFinite(expectedTotal) ? `Source document total: ${currency} ${expectedTotal.toFixed(currencyPrecision(currency))}` : null,
+      Number.isFinite(subtotal) && Number.isFinite(taxAmount) ? `Source document subtotal: ${subtotal.toFixed(currencyPrecision(currency))}; tax: ${taxAmount.toFixed(currencyPrecision(currency))}` : null,
       ...customerBillNotes(customerDetails || {}).filter(note => !String(notes || '').includes(note)),
       paymentNote && !/payment method\s*:/i.test(String(notes || '')) ? paymentNote : null,
       customerNote && !/zoho customer id\s*:/i.test(String(notes || '')) ? customerNote : null,
@@ -638,7 +685,7 @@ function createZohoBooksClient({
     if (!currency?.currency_id) throw new ZohoBooksError('CURRENCY_NOT_FOUND', 'Currency is not configured in Zoho Books.');
     bill.currency_id = currency.currency_id;
     if (vendor.raw?.currency_id && String(vendor.raw.currency_id) !== String(currency.currency_id)) throw new ZohoBooksError('VENDOR_CURRENCY_MISMATCH', 'Vendor currency differs from the source bill.');
-    const calculatedSubtotal = bill.line_items.reduce((sum, item) => sum + item.quantity * item.rate, 0);
+    const calculatedSubtotal = bill.line_items.reduce((sum, item) => sum + item.quantity * sourceLineRate(item), 0);
     if (bill.line_items.some(item => item.amount != null && Math.abs(item.quantity * item.rate - item.amount) > 0.05 && !isTaxInclusiveSourceAmount(item))) throw new ZohoBooksError('LINE_AMOUNT_MISMATCH', 'A line amount differs from its quantity and rate.');
     if (bill.subtotal == null || bill.tax_amount == null || Math.abs(calculatedSubtotal - bill.subtotal) > 0.05) throw new ZohoBooksError('TOTAL_MISMATCH', 'Confirm subtotal, tax, quantity and rates before saving.');
     if (bill.tax_amount > 0) {
@@ -651,7 +698,7 @@ function createZohoBooksClient({
         const matches = (taxes.taxes || []).filter(tax => Number(tax.tax_percentage) === percentage && tax.tax_type === 'tax');
         if (matches.length !== 1) throw new ZohoBooksError('TAX_AMBIGUOUS', 'Tax mapping is missing or ambiguous.');
         item.tax_id = matches[0].tax_id;
-        calculatedTax += item.quantity * item.rate * percentage / 100;
+        calculatedTax += item.quantity * sourceLineRate(item) * percentage / 100;
       }
       if (Math.abs(calculatedTax - bill.tax_amount) > 0.05) throw new ZohoBooksError('TAX_MISMATCH', 'Line tax differs from the source bill.');
     }
@@ -672,6 +719,198 @@ function createZohoBooksClient({
     return { buffer, mimeType: 'application/pdf', source: 'generated_from_zoho_record', bill: data.bill };
   }
 
+  async function getBill(billId, { organizationId = null } = {}) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(billId || '')) throw new ZohoBooksError('INVALID_INPUT', 'A bill ID is required.');
+    const data = await getJson(`/bills/${billId}`, {}, organizationId);
+    const bill = data.bill;
+    if (!bill || String(bill.bill_id) !== String(billId)) throw new ZohoBooksError('BILL_ID_MISMATCH', 'Zoho returned a different bill.');
+    if (bill.organization_id != null && String(bill.organization_id) !== resolveOrganizationId(organizationId)) {
+      throw new ZohoBooksError('BILL_ORGANIZATION_MISMATCH', 'Zoho returned a bill from a different organization.');
+    }
+    return { id: String(bill.bill_id), billNumber: bill.bill_number, vendorId: String(bill.vendor_id || ''),
+      total: bill.total == null ? null : Number(bill.total), currencyCode: bill.currency_code || null,
+      status: bill.status, balance: bill.balance == null ? null : Number(bill.balance),
+      roundingAdjustment: Number(bill.adjustment || 0), raw: data };
+  }
+
+  // Called only AFTER the workflow has persisted the created ID. A failed
+  // verification must resume this same bill, never repeat POST /bills.
+  async function verifyBillTotal(billId, { organizationId = null, expectedTotal, expectedCurrency = null } = {}) {
+    const precision = currencyPrecision(expectedCurrency || 'AED');
+    const factor = 10 ** precision;
+    const expected = moneyUnits(expectedTotal, precision);
+    if (expected === null || expected < 0) throw new ZohoBooksError('INVALID_INPUT', 'A valid source total is required.');
+    function validate(bill) {
+      if (expectedCurrency && bill.currencyCode !== expectedCurrency) throw new ZohoBooksError('BILL_CURRENCY_MISMATCH', 'The saved bill currency differs from the source document.');
+      if (moneyUnits(bill.total, precision) === null) throw new ZohoBooksError('BILL_TOTAL_UNCONFIRMED', 'Zoho did not return a saved bill total.');
+    }
+    let bill = await getBill(billId, { organizationId });
+    validate(bill);
+    const difference = expected - moneyUnits(bill.total, precision);
+    if (difference !== 0) {
+      // Correct only a demonstrable rounding difference. Never hide a material
+      // extraction, currency, discount or tax-allocation error in adjustment.
+      if (Math.abs(difference) > 5 || !Number.isFinite(bill.roundingAdjustment)
+          || Math.abs(moneyUnits(bill.roundingAdjustment, precision) + difference) > 5) {
+        throw new ZohoBooksError('BILL_TOTAL_MISMATCH', 'The saved bill total differs from the source document; administrator review is required.');
+      }
+      if (bill.status === 'paid' || (Number.isFinite(bill.balance) && moneyUnits(bill.balance, precision) !== moneyUnits(bill.total, precision))) {
+        throw new ZohoBooksError('BILL_TOTAL_MISMATCH', 'The saved bill has payments or credits and cannot be automatically adjusted.');
+      }
+      const adjustment = (moneyUnits(bill.roundingAdjustment, precision) + difference) / factor;
+      if (!bill.vendorId || !bill.billNumber) throw new ZohoBooksError('BILL_TOTAL_UNCONFIRMED', 'The saved bill identifiers needed for rounding reconciliation are missing.');
+      // An absolute adjustment makes retries safe, even if the PUT response
+      // was lost. Re-read before every attempt; never increment blindly.
+      await requestWithRetry(async token => {
+        const response = await http.put(`${cleanBaseUrl}/bills/${billId}`, {
+          vendor_id: bill.vendorId, bill_number: bill.billNumber,
+          adjustment, adjustment_description: 'Source document rounding reconciliation',
+        }, { params: { organization_id: resolveOrganizationId(organizationId) },
+          headers: { Authorization: `Zoho-oauthtoken ${token}`, 'Content-Type': 'application/json' }, timeout, httpsAgent });
+        if (response?.data?.code !== 0) throw new ZohoBooksError('BILL_ADJUSTMENT_UNCONFIRMED', 'Zoho did not confirm the rounding adjustment.');
+      }, 'reconcileBillTotal', organizationId);
+      bill = await getBill(billId, { organizationId });
+      validate(bill);
+      if (moneyUnits(bill.total, precision) !== expected) throw new ZohoBooksError('BILL_TOTAL_MISMATCH', 'The saved bill still differs from the source document after rounding reconciliation.');
+    }
+    return bill;
+  }
+
+  async function paymentAccountContext(paymentType, organizationId) {
+    const { normalizePaymentMethod } = require('./paymentMethods');
+    const paymentMode = normalizePaymentMethod(paymentType);
+    if (!paymentMode) throw new ZohoBooksError('PAYMENT_METHOD_REQUIRED', 'A supported payment method is required.');
+    const selectedId = resolveOrganizationId(organizationId);
+    await getAccessToken();
+    if (cachedPaymentScopeReport?.metadataAvailable && cachedPaymentScopeReport.missing.length) {
+      throw new ZohoBooksError('PAYMENT_SCOPE_REQUIRED',
+        'Zoho authorization is missing permission to record vendor payments. An administrator must update the Books authorization.',
+        { operation: 'paymentPreflight' });
+    }
+    const accountType = paymentMode === 'Cash' ? 'cash' : paymentMode === 'Credit Card' ? 'credit_card' : 'bank';
+    return { paymentMode, selectedId, accountType };
+  }
+
+  function isValidPaymentAccount(account, accountId, selectedId, accountType) {
+    return Boolean(account && /^\d{1,128}$/.test(accountId) && String(account.account_id) === accountId
+      && account.is_active === true && account.account_type === accountType
+      && (account.organization_id == null || String(account.organization_id) === selectedId));
+  }
+
+  async function listPaymentAccounts({ paymentType, organizationId = null } = {}) {
+    const { selectedId, accountType } = await paymentAccountContext(paymentType, organizationId);
+    const accounts = [];
+    const seen = new Set();
+    for (let page = 1; page <= 100; page += 1) {
+      const data = await getJson('/chartofaccounts', { page, per_page: 200, filter_by: 'AccountType.Active' }, selectedId);
+      if (!Array.isArray(data.chartofaccounts)) {
+        throw new ZohoBooksError('PAYMENT_ACCOUNT_LOOKUP_FAILED', 'Zoho returned an invalid payment account list.');
+      }
+      for (const account of data.chartofaccounts) {
+        const id = String(account?.account_id || '').trim();
+        const name = nullableText(account?.account_name);
+        if (!name || seen.has(id) || !isValidPaymentAccount(account, id, selectedId, accountType)) continue;
+        seen.add(id);
+        accounts.push({ id, name, type: accountType, organizationId: selectedId });
+      }
+      if (!data.page_context?.has_more_page) return accounts;
+    }
+    throw new ZohoBooksError('PAYMENT_ACCOUNT_LOOKUP_INCOMPLETE', 'Zoho payment account lookup could not be completed safely.');
+  }
+
+  async function prepareBillPayment({ paymentType, organizationId = null, paymentAccountId = null } = {}) {
+    const { readOrganizationIds } = require('./organizations');
+    const { paymentMode, selectedId, accountType } = await paymentAccountContext(paymentType, organizationId);
+    let accountId;
+    if (paymentAccountId != null) {
+      // A worker's choice takes precedence, but is never trusted without a fresh
+      // detail read in this organization. Do not silently fall back on bad input.
+      accountId = String(paymentAccountId).trim();
+      if (!/^\d{1,128}$/.test(accountId)) throw new ZohoBooksError('PAYMENT_ACCOUNT_INVALID', 'Select a valid payment account for this organization.');
+    } else {
+      const matches = Object.entries(readOrganizationIds(env)).filter(([, id]) => id === selectedId);
+      if (matches.length !== 1) throw new ZohoBooksError('PAYMENT_ACCOUNT_CONFIG_REQUIRED', 'Select a payment account for the selected organization and payment method.');
+      const methodKey = paymentMode.toUpperCase().replace(/\s+/g, '_');
+      const key = `ZOHO_BOOKS_${matches[0][0].toUpperCase()}_PAYMENT_${methodKey}_ACCOUNT_ID`;
+      accountId = String(env[key] || '').trim();
+      if (!/^\d{1,128}$/.test(accountId)) throw new ZohoBooksError('PAYMENT_ACCOUNT_CONFIG_REQUIRED', 'Select a payment account for the selected organization and payment method.');
+    }
+    const data = await getJson(`/chartofaccounts/${accountId}`, {}, selectedId);
+    const account = data.chart_of_account;
+    if (!isValidPaymentAccount(account, accountId, selectedId, accountType)) {
+      throw new ZohoBooksError('PAYMENT_ACCOUNT_INVALID', 'The payment account is inactive, incompatible, or belongs to another organization.');
+    }
+    return { accountId, paymentMode, accountName: nullableText(account.account_name) || accountId };
+  }
+
+  // Records a payment ALREADY made by the worker; never initiates a transfer.
+  // The caller owns the durable payment intent. A timeout is uncertain and
+  // must not cause another POST; reconciliation uses GET /bills/{id} instead.
+  async function recordBillPayment({ billId, vendorId, amount, paymentDate, paymentType,
+    organizationId = null, referenceNumber = null, expectedCurrency = null, paymentAccountId = null } = {}) {
+    const precision = currencyPrecision(expectedCurrency || 'AED');
+    const units = moneyUnits(amount, precision);
+    if (!vendorId || units === null || units <= 0 || typeof amount !== 'number') {
+      throw new ZohoBooksError('INVALID_INPUT', 'A vendor and positive payment amount are required.');
+    }
+    const date = normalizeDate(paymentDate);
+    // The caller has already persisted its payment intent. Read/auth failures
+    // at this stage are safe to retry because no payment POST was attempted.
+    // Keep this boundary separate from the post-write verification below.
+    async function readBeforePayment(read) {
+      try { return await read(); }
+      catch (error) {
+        if (['PAYMENT_ACCOUNT_CONFIG_REQUIRED', 'PAYMENT_ACCOUNT_INVALID', 'PAYMENT_METHOD_REQUIRED', 'PAYMENT_SCOPE_REQUIRED',
+          'BILL_ID_MISMATCH', 'BILL_ORGANIZATION_MISMATCH'].includes(error?.code)) throw error;
+        throw new ZohoBooksError('PAYMENT_PREFLIGHT_FAILED',
+          'Payment validation could not be completed. No payment was submitted; retry the validation.',
+          { operation: 'paymentPreflight' });
+      }
+    }
+    const before = await readBeforePayment(() => getBill(billId, { organizationId }));
+    if (before.vendorId !== String(vendorId)) throw new ZohoBooksError('PAYMENT_VENDOR_MISMATCH', 'The saved bill has a different vendor.');
+    if (expectedCurrency && before.currencyCode !== expectedCurrency) throw new ZohoBooksError('BILL_CURRENCY_MISMATCH', 'The saved bill currency differs from the source document.');
+    if (moneyUnits(before.total, precision) !== units) throw new ZohoBooksError('BILL_TOTAL_MISMATCH', 'The payment amount differs from the saved bill total.');
+    if (before.status === 'paid' && moneyUnits(before.balance, precision) === 0) {
+      return { id: null, status: 'paid', balance: 0, alreadyPaid: true, bill: before };
+    }
+    if (moneyUnits(before.balance, precision) !== units) throw new ZohoBooksError('PAYMENT_BALANCE_MISMATCH', 'The bill balance changed. Reconcile existing payments before retrying.');
+    const { accountId, paymentMode } = await readBeforePayment(() => prepareBillPayment({ paymentType, organizationId, paymentAccountId }));
+    const payload = { vendor_id: String(vendorId), amount: units / 10 ** precision, date,
+      payment_mode: paymentMode, paid_through_account_id: accountId,
+      reference_number: String(referenceNumber || `WA-BILL-${billId}`).slice(0, 100),
+      bills: [{ bill_id: String(billId), amount_applied: units / 10 ** precision }] };
+    const payment = await requestWithRetry(async token => {
+      const response = await http.post(`${cleanBaseUrl}/vendorpayments`, payload, {
+        params: { organization_id: resolveOrganizationId(organizationId) },
+        headers: { Authorization: `Zoho-oauthtoken ${token}`, 'Content-Type': 'application/json' }, timeout, httpsAgent,
+      });
+      const result = response?.data?.vendorpayment || response?.data?.payment || response?.data;
+      if (response?.data?.code !== undefined && response.data.code !== 0) {
+        // Keep the provider envelope for authentication retry and distinguish
+        // a confirmed rejection from a lost/invalid success response.
+        throw Object.assign(new Error('Payment rejected'), { response });
+      }
+      if (response?.data?.code !== 0 || !result?.payment_id) throw new ZohoBooksError('PAYMENT_OUTCOME_UNCONFIRMED', 'Zoho did not confirm the recorded payment ID.');
+      return result;
+    }, 'recordBillPayment', organizationId);
+    let after;
+    try { after = await getBill(billId, { organizationId }); }
+    catch {
+      const error = new ZohoBooksError('PAYMENT_OUTCOME_UNCONFIRMED', 'Payment was recorded but its paid status could not be read.');
+      error.paymentId = String(payment.payment_id);
+      throw error;
+    }
+    if (after.status !== 'paid' || moneyUnits(after.balance, precision) !== 0
+        || after.vendorId !== String(vendorId) || moneyUnits(after.total, precision) !== units
+        || (expectedCurrency && after.currencyCode !== expectedCurrency)) {
+      const error = new ZohoBooksError('PAYMENT_OUTCOME_UNCONFIRMED', 'Payment was recorded but Zoho has not confirmed a fully paid bill.');
+      error.paymentId = String(payment.payment_id);
+      throw error;
+    }
+    return { id: String(payment.payment_id), status: 'paid', balance: 0, bill: after };
+  }
+
   return {
     getAccessToken,
     invalidateToken,
@@ -686,6 +925,11 @@ function createZohoBooksClient({
     validateCredentials,
     prepareBill,
     getBillPdf,
+    getBill,
+    verifyBillTotal,
+    listPaymentAccounts,
+    prepareBillPayment,
+    recordBillPayment,
   };
 }
 

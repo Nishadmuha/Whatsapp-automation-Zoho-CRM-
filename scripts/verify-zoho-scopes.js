@@ -5,6 +5,7 @@ const axios = require('axios');
 const { createZohoAuthService } = require('../src/services/zoho/zohoAuthService');
 const { createZohoLeadService } = require('../src/services/zoho/zohoLeadService');
 const { createZohoBooksClient } = require('../src/services/books/zohoBooksClient');
+const { readOrganizationIds } = require('../src/services/books/organizations');
 const { validateZohoUrl, safeProviderCode } = require('../src/services/zoho/zohoSupport');
 const { CRM_SCOPES, BOOKS_SCOPES, scopeReport } = require('../src/services/zoho/oauthScopes');
 
@@ -22,8 +23,14 @@ async function verifyService(service, env, http) {
   const crm = service === 'crm';
   const required = crm ? CRM_SCOPES : BOOKS_SCOPES;
   const prefix = crm ? 'ZOHO_' : 'ZOHO_BOOKS_';
-  const keys = ['CLIENT_ID', 'CLIENT_SECRET', 'REFRESH_TOKEN', ...(crm ? [] : ['ORGANIZATION_ID'])];
+  const keys = ['CLIENT_ID', 'CLIENT_SECRET', 'REFRESH_TOKEN'];
   const missingConfig = keys.map(key => prefix + key).filter(key => !String(env[key] || '').trim());
+  const organizations = crm ? [] : Object.entries(readOrganizationIds(env)).filter(([, id]) => id);
+  const legacyOrganizationId = String(env.ZOHO_BOOKS_ORGANIZATION_ID || '').trim();
+  if (!crm && legacyOrganizationId && !organizations.some(([, id]) => id === legacyOrganizationId)) {
+    organizations.push(['default', legacyOrganizationId]);
+  }
+  if (!crm && !organizations.length) missingConfig.push('ZOHO_BOOKS_ORGANIZATION_ID');
   const result = { scopes: scopeReport(undefined, required), checks: {}, missingConfig, writesTested: false };
   if (missingConfig.length) {
     result.checks.authentication = { status: 'FAIL', code: 'MISSING_CONFIGURATION' };
@@ -65,9 +72,9 @@ async function verifyService(service, env, http) {
     get: (url, options) => request({ ...options, method: 'GET', url }),
     post: (url, data, options) => request({ ...options, method: 'POST', url, data }),
   };
-  async function check(name, fn) {
-    try { result.checks[name] = { status: 'PASS', ...await fn() }; }
-    catch (error) { result.checks[name] = safeFailure(error); }
+  async function check(name, fn, checks = result.checks) {
+    try { checks[name] = { status: 'PASS', ...await fn() }; }
+    catch (error) { checks[name] = safeFailure(error); }
   }
   const runtimeEnv = { ...env, ZOHO_ACCESS_TOKEN: '', [prefix + 'ACCOUNTS_URL']: accounts,
     [crm ? 'ZOHO_API_BASE_URL' : 'ZOHO_BOOKS_BASE_URL']: base };
@@ -77,10 +84,10 @@ async function verifyService(service, env, http) {
   await check('authentication', async () => { token = await client.getAccessToken({ forceRefresh: true }); });
   if (!token) return result;
 
-  async function get(endpoint, params = {}) {
+  async function get(endpoint, params = {}, organizationId = legacyOrganizationId) {
     const response = await transport.get(`${base}${endpoint}`, {
       headers: { Authorization: `Zoho-oauthtoken ${token}` },
-      params: { ...(crm ? {} : { organization_id: env.ZOHO_BOOKS_ORGANIZATION_ID }), ...params },
+      params: { ...(crm ? {} : { organization_id: organizationId }), ...params },
     });
     if (response.status === 204) return {};
     if (response.status < 200 || response.status >= 300 || (crm ? response.data?.status === 'error' : response.data?.code !== 0)) {
@@ -107,17 +114,39 @@ async function verifyService(service, env, http) {
       });
     } else result.checks.attachmentRead = { status: 'SKIPPED', reason: 'No lead available for read-only attachment check.' };
   } else {
-    await check('customers', async () => {
-      const customers = await client.searchCustomer({ organizationId: env.ZOHO_BOOKS_ORGANIZATION_ID });
-      return {
-        recordsReturned: customers.length,
-        withIdAndName: customers.filter(c => c.id && c.name).length,
-        withPhone: customers.filter(c => c.phone).length,
-        withEmail: customers.filter(c => c.email).length,
-      };
-    });
-    for (const [name, endpoint] of [['billRead', '/bills'], ['currencyRead', '/settings/currencies'], ['taxRead', '/settings/taxes']]) {
-      await check(name, async () => { await get(endpoint, { per_page: 1 }); });
+    const perOrganization = {};
+    for (const [organization, organizationId] of organizations) {
+      const checks = {};
+      perOrganization[organization] = { checks };
+      await check('customers', async () => {
+        const customers = await client.searchCustomer({ organizationId });
+        return {
+          recordsReturned: customers.length,
+          withIdAndName: customers.filter(c => c.id && c.name).length,
+          withPhone: customers.filter(c => c.phone).length,
+          withEmail: customers.filter(c => c.email).length,
+        };
+      }, checks);
+      for (const [name, endpoint] of [['billRead', '/bills'], ['currencyRead', '/settings/currencies'], ['taxRead', '/settings/taxes']]) {
+        await check(name, async () => { await get(endpoint, { per_page: 1 }, organizationId); }, checks);
+      }
+    }
+    // Keep the historical single-organization report shape. Named organizations
+    // also receive individual checks, while the top-level checks cover all of them.
+    if (organizations.length === 1 && organizations[0][0] === 'default') {
+      Object.assign(result.checks, perOrganization.default.checks);
+    } else {
+      result.organizations = perOrganization;
+      for (const name of ['customers', 'billRead', 'currencyRead', 'taxRead']) {
+        const checks = Object.values(perOrganization).map(organization => organization.checks[name]);
+        result.checks[name] = checks.every(item => item.status === 'PASS')
+          ? { status: 'PASS' } : { status: 'FAIL', code: 'ORGANIZATION_READ_FAILED' };
+        if (name === 'customers' && result.checks[name].status === 'PASS') {
+          for (const field of ['recordsReturned', 'withIdAndName', 'withPhone', 'withEmail']) {
+            result.checks[name][field] = checks.reduce((total, item) => total + item[field], 0);
+          }
+        }
+      }
     }
   }
   return result;
@@ -136,7 +165,9 @@ async function printVerification(services = ['crm', 'books']) {
   const report = await verifyZohoScopes({ services });
   console.log(JSON.stringify(report, null, 2));
   console.log('No CRM/Books records written. Read checks do not prove CREATE/UPDATE permissions or live WhatsApp delivery.');
-  if (services.some(service => report[service].scopes.missing?.length || report[service].scopes.excess.length
+  // A covering ALL grant is usable authorization. Report extra scopes for
+  // inspection without treating a working integration as an auth failure.
+  if (services.some(service => report[service].scopes.missing?.length
       || !report[service].scopes.metadataAvailable
       || Object.values(report[service].checks).some(check => check.status === 'FAIL'))) process.exitCode = 1;
   return report;

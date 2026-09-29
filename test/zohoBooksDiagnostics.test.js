@@ -252,12 +252,13 @@ test('structured diagnostic fields survive the production logger without logging
   assert.doesNotMatch(lines[0], /private-|Authorization|stack|headers|payload/);
 });
 
-test('successful bill payload and response are unchanged and no diagnostics are emitted', async () => {
+test('successful bill payload preserves line amounts with explicit tax calculation and emits no diagnostics', async () => {
   const h = harness(() => ({ status: 201, data: { code: 0, bill: { bill_id: 'created-id' } } }));
   assert.equal((await h.client.createBill(input)).id, 'created-id');
   assert.deepEqual(h.events, []);
   assert.deepEqual(JSON.parse(JSON.stringify(h.posts[0].payload)), {
     vendor_id: input.vendorId, bill_number: input.billNumber, date: input.billDate,
+    is_inclusive_tax: false, is_item_level_tax_calc: true,
     line_items: [{ description: input.lineItems[0].description, rate: 50, quantity: 2 }],
   });
 });

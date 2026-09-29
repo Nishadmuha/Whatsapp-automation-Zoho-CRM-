@@ -5,6 +5,91 @@ const { test } = require('node:test');
 const { temporaryStore } = require('./helpers');
 const { createBillStore } = require('../src/database/billStore');
 
+test('billStore: worker payment choice and Zoho reconciliation survive reload and retry updates', async (t) => {
+  const { store } = await temporaryStore(t);
+  const billStore = createBillStore({ store });
+  await billStore.init();
+  const bill = await billStore.saveBill({ worker_phone: '+971501112233' });
+  assert.equal(bill.payment_status, null);
+  assert.equal(bill.payment_recording_status, null);
+  assert.equal(bill.amount_verification_status, null);
+  assert.equal(bill.payment_account_id, null);
+  assert.equal(bill.payment_account_name, null);
+  assert.equal(bill.payment_account_organization_id, null);
+
+  await billStore.updateBill(bill.bill_id, {
+    payment_status: 'paid', payment_recording_status: 'UNKNOWN',
+    payment_account_id: '1234567890123456789', payment_account_name: 'Main cash',
+    payment_account_organization_id: 'org-1',
+    payment_recording_error: 'Payment response was interrupted',
+    zoho_total: 700.02, zoho_currency: 'AED', amount_verification_status: 'VERIFIED',
+  });
+  const recovered = await billStore.getBill(bill.bill_id);
+  assert.equal(recovered.payment_status, 'paid');
+  assert.equal(recovered.payment_account_id, '1234567890123456789');
+  assert.equal(recovered.payment_account_name, 'Main cash');
+  assert.equal(recovered.payment_account_organization_id, 'org-1');
+  const resaved = await billStore.saveBill(recovered);
+  assert.equal(resaved.payment_account_id, '1234567890123456789');
+  assert.equal(resaved.payment_account_name, 'Main cash');
+  assert.equal(resaved.payment_account_organization_id, 'org-1');
+  assert.equal(recovered.payment_recording_status, 'UNKNOWN');
+  assert.equal(recovered.payment_recording_error, 'Payment response was interrupted');
+  assert.equal(recovered.zoho_total, 700.02);
+  assert.equal(recovered.zoho_currency, 'AED');
+  assert.equal(recovered.amount_verification_status, 'VERIFIED');
+
+  await billStore.updateBill(bill.bill_id, {
+    zoho_payment_id: 'payment-1', payment_recording_status: 'RECORDED', payment_recording_error: null,
+  });
+  const recorded = await billStore.getBill(bill.bill_id);
+  assert.equal(recorded.zoho_payment_id, 'payment-1');
+  assert.equal(recorded.payment_recording_status, 'RECORDED');
+  assert.equal(recorded.payment_recording_error, null);
+  assert.equal(recorded.payment_status, 'paid');
+  await assert.rejects(billStore.updateBill(bill.bill_id, { payment_status: 'probably' }), { code: 'INVALID_PAYMENT_STATUS' });
+  await assert.rejects(billStore.updateBill(bill.bill_id, { amount_verification_status: 'assumed' }), { code: 'INVALID_AMOUNT_VERIFICATION_STATUS' });
+  await assert.rejects(billStore.saveBill({ worker_phone: '+971501112233', payment_recording_status: 'sent' }), { code: 'INVALID_PAYMENT_RECORDING_STATUS' });
+});
+
+test('billStore: customer pages persist and project/payment prompts protect active sessions', async (t) => {
+  const { store } = await temporaryStore(t);
+  const billStore = createBillStore({ store });
+  await billStore.init();
+  const workerPhone = '+971501112233';
+  const customers = [{ contact_id: 'customer-1' }, { contact_id: 'customer-2' }];
+  const session = await billStore.createBillSession({
+    worker_phone: workerPhone, state: 'WAITING_FOR_CUSTOMER_SELECTION',
+    customer_options: [customers[0]], customer_all_options: customers,
+    customer_page: 0, customer_search: 'motor',
+    payment_account_options: [{ account_id: '1234567890123456789', organization_id: 'org-1' }],
+  });
+  assert.equal(session.customer_page, 0);
+  assert.equal(session.payment_account_page, 0);
+  await billStore.updateBillSession(session.session_id, { customer_page: 1, customer_options: [customers[1]] });
+  const resumed = await billStore.getBillSession(session.session_id);
+  assert.equal(resumed.customer_page, 1);
+  assert.equal(resumed.customer_search, 'motor');
+  assert.deepEqual(resumed.customer_all_options, customers);
+  assert.deepEqual(resumed.customer_options, [customers[1]]);
+  assert.deepEqual(resumed.payment_account_options, [{ account_id: '1234567890123456789', organization_id: 'org-1' }]);
+  await billStore.updateBillSession(session.session_id, { payment_account_page: 2 });
+  assert.equal((await billStore.getBillSession(session.session_id)).payment_account_page, 2);
+
+  for (const state of ['WAITING_FOR_PROJECT_DETAILS', 'WAITING_FOR_PAYMENT_STATUS', 'WAITING_FOR_PAYMENT_ACCOUNT']) {
+    await billStore.updateBillSession(session.session_id, { state });
+    assert.equal((await billStore.getActiveBillSession(workerPhone)).state, state);
+    await assert.rejects(billStore.createBillSession({ worker_phone: workerPhone }), { code: 'ACTIVE_SESSION_EXISTS' });
+    await assert.rejects(store.col('bill_sessions').insertOne({
+      session_id: `conflicting-${state}`, worker_phone: workerPhone, state: 'EXTRACTING',
+    }), { code: 11000 });
+  }
+  await assert.rejects(billStore.updateBillSession(session.session_id, { customer_page: -1 }), { code: 'INVALID_INPUT' });
+  await assert.rejects(billStore.updateBillSession(session.session_id, { customer_page: 0.5 }), { code: 'INVALID_INPUT' });
+  await assert.rejects(billStore.updateBillSession(session.session_id, { payment_account_page: -1 }), { code: 'INVALID_INPUT' });
+  await assert.rejects(billStore.updateBillSession(session.session_id, { payment_account_page: 0.5 }), { code: 'INVALID_INPUT' });
+});
+
 test('billStore: save, retrieve, and update bills', async (t) => {
   const { store } = await temporaryStore(t);
   const billStore = createBillStore({ store });

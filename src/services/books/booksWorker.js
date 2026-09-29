@@ -102,7 +102,9 @@ function createBooksWorker({
 
         let replyDelivery = 'NOT_REQUIRED';
         let providerMessageId = null;
-        const hasReply = Boolean(result?.replyInteractive || result?.replyText);
+        const replyMessages = Array.isArray(result?.replyMessages)
+          ? result.replyMessages.filter(message => typeof message === 'string' && message.trim()) : [];
+        const hasReply = Boolean(result?.replyInteractive || result?.replyText || replyMessages.length);
         if (hasReply && typeof billStore.reserveBillReply === 'function') {
           const reservations = await Promise.all(activeJobs.map(job =>
             billStore.reserveBillReply(job.job_id, job.lease_token)));
@@ -115,22 +117,31 @@ function createBooksWorker({
           }
         } else if (hasReply) replyReserved = true;
 
-        if (replyReserved && result?.replyInteractive && whatsapp && typeof whatsapp.sendInteractiveList === 'function') {
+        if (replyReserved) {
+          let sentCount = 0;
           try {
-            const sent = await whatsapp.sendInteractiveList(anchor.worker_phone, result.replyInteractive);
-            providerMessageId = sent?.messages?.[0]?.id || null;
-            replyDelivery = 'ACCEPTED';
+            // Reserve the entire sequence before sending any part. A partially
+            // delivered sequence is never automatically replayed on retry.
+            for (const message of replyMessages) {
+              if (typeof whatsapp?.sendTextMessage !== 'function') throw Object.assign(new Error('TEXT_TRANSPORT_UNAVAILABLE'), { deliveryState: 'NOT_ATTEMPTED' });
+              const sent = await whatsapp.sendTextMessage(anchor.worker_phone, message);
+              providerMessageId = sent?.messages?.[0]?.id || null;
+              sentCount += 1;
+            }
+            if (result?.replyInteractive && typeof whatsapp?.sendInteractiveList === 'function') {
+              const sent = await whatsapp.sendInteractiveList(anchor.worker_phone, result.replyInteractive);
+              providerMessageId = sent?.messages?.[0]?.id || null;
+              sentCount += 1;
+            } else if (result?.replyText && typeof whatsapp?.sendTextMessage === 'function') {
+              const sent = await whatsapp.sendTextMessage(anchor.worker_phone, result.replyText);
+              providerMessageId = sent?.messages?.[0]?.id || null;
+              sentCount += 1;
+            } else if (result?.replyInteractive || result?.replyText) {
+              throw Object.assign(new Error('REPLY_TRANSPORT_UNAVAILABLE'), { deliveryState: 'NOT_ATTEMPTED' });
+            }
+            replyDelivery = sentCount ? 'ACCEPTED' : 'NOT_ATTEMPTED';
           } catch (sendErr) {
-            replyDelivery = sendErr.deliveryState || 'UNKNOWN';
-            log('error', 'books_interactive_reply_send_failed', { jobId, deliveryState: replyDelivery });
-          }
-        } else if (replyReserved && result?.replyText && whatsapp && typeof whatsapp.sendTextMessage === 'function') {
-          try {
-            const sent = await whatsapp.sendTextMessage(anchor.worker_phone, result.replyText);
-            providerMessageId = sent?.messages?.[0]?.id || null;
-            replyDelivery = 'ACCEPTED';
-          } catch (sendErr) {
-            replyDelivery = sendErr.deliveryState || 'UNKNOWN';
+            replyDelivery = sentCount ? 'UNKNOWN' : sendErr.deliveryState || 'UNKNOWN';
             log('error', 'books_reply_send_failed', { jobId, deliveryState: replyDelivery });
           }
         }

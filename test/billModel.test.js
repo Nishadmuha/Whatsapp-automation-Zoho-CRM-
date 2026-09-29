@@ -130,3 +130,62 @@ test('billModel: BillExtraction schema defines all required extraction job field
   assert.ok(paths.lease_until, 'lease_until path must exist');
   assert.ok(paths.last_error, 'last_error path must exist');
 });
+
+test('billModel: worker payment choice and verified Zoho result survive schema serialization', async () => {
+  const Bill = getBillModel();
+  const unknown = new Bill({ bill_id: 'draft', worker_phone: '+971501112233' });
+  assert.equal(unknown.payment_status, null);
+  assert.equal(unknown.payment_recording_status, null);
+  assert.equal(unknown.amount_verification_status, null);
+  assert.equal(unknown.payment_account_id, null);
+  assert.equal(unknown.payment_account_name, null);
+  assert.equal(unknown.payment_account_organization_id, null);
+  const bill = new Bill({
+    bill_id: 'paid', worker_phone: '+971501112233',
+    payment_status: 'paid', zoho_payment_id: 'payment-1',
+    payment_account_id: '1234567890123456789', payment_account_name: 'Main cash',
+    payment_account_organization_id: 'org-1',
+    payment_recording_status: 'RECORDED', payment_recording_error: null,
+    zoho_total: 700.02, zoho_currency: 'AED', amount_verification_status: 'VERIFIED',
+  });
+  await bill.validate();
+  const saved = bill.toObject();
+  assert.equal(saved.payment_status, 'paid');
+  assert.equal(saved.payment_account_id, '1234567890123456789');
+  assert.equal(saved.payment_account_name, 'Main cash');
+  assert.equal(saved.payment_account_organization_id, 'org-1');
+  assert.equal(saved.zoho_payment_id, 'payment-1');
+  assert.equal(saved.payment_recording_status, 'RECORDED');
+  assert.equal(saved.zoho_total, 700.02);
+  assert.equal(saved.zoho_currency, 'AED');
+  assert.equal(saved.amount_verification_status, 'VERIFIED');
+  bill.payment_status = 'probably paid';
+  await assert.rejects(bill.validate(), error => Boolean(error.errors.payment_status));
+});
+
+test('billModel: project and payment prompts remain active with paginated customer details', async () => {
+  const BillSession = getBillSessionModel();
+  for (const state of ['WAITING_FOR_PROJECT_DETAILS', 'WAITING_FOR_PAYMENT_STATUS', 'WAITING_FOR_PAYMENT_ACCOUNT']) {
+    assert.ok(ACTIVE_SESSION_STATES.includes(state));
+    const session = new BillSession({
+      session_id: state, worker_phone: '+971501112233', state,
+      customer_page: 2, customer_search: 'motor',
+      customer_all_options: [{ contact_id: 'customer-1', billing_address: { city: 'Dubai' } }],
+      payment_account_options: [{ account_id: '1234567890123456789', organization_id: 'org-1' }],
+      payment_account_page: 3,
+    });
+    await session.validate();
+    const saved = session.toObject();
+    assert.equal(saved.customer_page, 2);
+    assert.equal(saved.customer_search, 'motor');
+    assert.equal(saved.customer_all_options[0].billing_address.city, 'Dubai');
+    assert.equal(saved.payment_account_options[0].account_id, '1234567890123456789');
+    assert.equal(saved.payment_account_options[0].organization_id, 'org-1');
+    assert.equal(saved.payment_account_page, 3);
+    session.payment_account_page = -1;
+    await assert.rejects(session.validate(), error => Boolean(error.errors.payment_account_page));
+    session.payment_account_page = 0;
+    session.customer_page = 0.5;
+    await assert.rejects(session.validate(), error => Boolean(error.errors.customer_page));
+  }
+});
