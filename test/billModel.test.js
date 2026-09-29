@@ -135,6 +135,7 @@ test('billModel: worker payment choice and verified Zoho result survive schema s
   const Bill = getBillModel();
   const unknown = new Bill({ bill_id: 'draft', worker_phone: '+971501112233' });
   assert.equal(unknown.payment_status, null);
+  assert.equal(unknown.payment_method_confirmed, false);
   assert.equal(unknown.payment_recording_status, null);
   assert.equal(unknown.amount_verification_status, null);
   assert.equal(unknown.payment_account_id, null);
@@ -142,7 +143,7 @@ test('billModel: worker payment choice and verified Zoho result survive schema s
   assert.equal(unknown.payment_account_organization_id, null);
   const bill = new Bill({
     bill_id: 'paid', worker_phone: '+971501112233',
-    payment_status: 'paid', zoho_payment_id: 'payment-1',
+    payment_type: 'Cash', payment_method_confirmed: true, payment_status: 'paid', zoho_payment_id: 'payment-1',
     payment_account_id: '1234567890123456789', payment_account_name: 'Main cash',
     payment_account_organization_id: 'org-1',
     payment_recording_status: 'RECORDED', payment_recording_error: null,
@@ -151,6 +152,7 @@ test('billModel: worker payment choice and verified Zoho result survive schema s
   await bill.validate();
   const saved = bill.toObject();
   assert.equal(saved.payment_status, 'paid');
+  assert.equal(saved.payment_method_confirmed, true);
   assert.equal(saved.payment_account_id, '1234567890123456789');
   assert.equal(saved.payment_account_name, 'Main cash');
   assert.equal(saved.payment_account_organization_id, 'org-1');

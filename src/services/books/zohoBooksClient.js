@@ -175,6 +175,7 @@ function createZohoBooksClient({
   let cachedPaymentScopeReport = null;
   let tokenExpiresAt = 0;
   let pendingRefresh = null;
+  const pendingPaymentAccountLists = new Map();
 
   const cleanClientId = typeof clientId === 'string' ? clientId.trim() : '';
   const cleanClientSecret = typeof clientSecret === 'string' ? clientSecret.trim() : '';
@@ -797,25 +798,44 @@ function createZohoBooksClient({
       && (account.organization_id == null || String(account.organization_id) === selectedId));
   }
 
-  async function listPaymentAccounts({ paymentType, organizationId = null } = {}) {
-    const { selectedId, accountType } = await paymentAccountContext(paymentType, organizationId);
+  async function readActivePaymentAccounts(selectedId) {
     const accounts = [];
-    const seen = new Set();
     for (let page = 1; page <= 100; page += 1) {
       const data = await getJson('/chartofaccounts', { page, per_page: 200, filter_by: 'AccountType.Active' }, selectedId);
       if (!Array.isArray(data.chartofaccounts)) {
         throw new ZohoBooksError('PAYMENT_ACCOUNT_LOOKUP_FAILED', 'Zoho returned an invalid payment account list.');
       }
-      for (const account of data.chartofaccounts) {
-        const id = String(account?.account_id || '').trim();
-        const name = nullableText(account?.account_name);
-        if (!name || seen.has(id) || !isValidPaymentAccount(account, id, selectedId, accountType)) continue;
-        seen.add(id);
-        accounts.push({ id, name, type: accountType, organizationId: selectedId });
-      }
+      accounts.push(...data.chartofaccounts);
       if (!data.page_context?.has_more_page) return accounts;
     }
     throw new ZohoBooksError('PAYMENT_ACCOUNT_LOOKUP_INCOMPLETE', 'Zoho payment account lookup could not be completed safely.');
+  }
+
+  async function listPaymentAccounts({ paymentType, organizationId = null } = {}) {
+    const { selectedId, accountType } = await paymentAccountContext(paymentType, organizationId);
+    // Cash, bank and card choices use the same active-account endpoint. Share
+    // only an in-flight traversal within this organization, never a completed
+    // result. Later choices and SAVE's account-detail validation remain fresh.
+    let pending = pendingPaymentAccountLists.get(selectedId);
+    if (!pending) {
+      pending = readActivePaymentAccounts(selectedId);
+      pendingPaymentAccountLists.set(selectedId, pending);
+    }
+    let activeAccounts;
+    try { activeAccounts = await pending; }
+    finally {
+      if (pendingPaymentAccountLists.get(selectedId) === pending) pendingPaymentAccountLists.delete(selectedId);
+    }
+    const accounts = [];
+    const seen = new Set();
+    for (const account of activeAccounts) {
+      const id = String(account?.account_id || '').trim();
+      const name = nullableText(account?.account_name);
+      if (!name || seen.has(id) || !isValidPaymentAccount(account, id, selectedId, accountType)) continue;
+      seen.add(id);
+      accounts.push({ id, name, type: accountType, organizationId: selectedId });
+    }
+    return accounts;
   }
 
   async function prepareBillPayment({ paymentType, organizationId = null, paymentAccountId = null } = {}) {

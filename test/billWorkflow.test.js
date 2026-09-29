@@ -844,7 +844,8 @@ test('successful upload with uncertain status persistence does not POST a second
   assert.equal(count(f, 'create'), 1);
 });
 test('duplicate message and concurrent SAVE cannot create twice', async () => {
-  const f = fixture({ workerAnswers: null }); await f.send('Bill', { messageId: 'same' }); assert.equal((await f.send('Bill', { messageId: 'same' })).idempotent, true);
+  const f = fixture({ workerAnswers: null, workerPaymentMethod: null }); await f.send('Bill', { messageId: 'same' }); assert.equal((await f.send('Bill', { messageId: 'same' })).idempotent, true);
+  await f.send('Cash');
   await f.send('UNPAID');
   await Promise.all([f.send('SAVE'), f.send('SAVE')]); assert.equal(count(f, 'create'), 1);
 });

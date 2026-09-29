@@ -122,6 +122,7 @@ const BillSchema = new mongoose.Schema({
   zoho_vendor_id: { type: String, default: null },
 
   payment_type: { type: String, default: null },
+  payment_method_confirmed: { type: Boolean, default: false },
   payment_status: { type: String, enum: [...PAYMENT_STATUSES, null], default: null },
   payment_account_id: { type: String, default: null },
   payment_account_name: { type: String, default: null },

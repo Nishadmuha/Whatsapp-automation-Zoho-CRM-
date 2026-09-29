@@ -17,7 +17,7 @@ function memoryStore() {
     async getBill(id) { return bills.get(id); },
   };
 }
-function fixture({ billStore = memoryStore(), sourceStore, bill = validBill(), zohoOverrides = {}, whatsappOverrides = {}, extractionOverrides = {}, aiOverrides = {}, logger, workerAnswers = { projectSite: 'Dubai site', paymentStatus: 'unpaid' } } = {}) {
+function fixture({ billStore = memoryStore(), sourceStore, bill = validBill(), zohoOverrides = {}, whatsappOverrides = {}, extractionOverrides = {}, aiOverrides = {}, logger, workerAnswers = { projectSite: 'Dubai site', paymentStatus: 'unpaid' }, workerPaymentMethod = bill.payment_type } = {}) {
   const calls = [], media = new Map();
   let next = 0;
   const extraction = {
@@ -52,10 +52,12 @@ function fixture({ billStore = memoryStore(), sourceStore, bill = validBill(), z
     let result = await workflow.processMessage({ messageId: `m-${++next}`, senderPhone: WORKER, messageType: 'text', text, ...extra });
     // Legacy tests focus on extraction/accounting. Simulate the new required
     // worker replies with real workflow turns; flow-specific tests opt out.
+    // Payment confirmation can be disabled separately with workerPaymentMethod:null.
     const messages = [...(result.replyMessages || [])];
-    for (let step = 0; step < 2; step++) {
+    for (let step = 0; step < 3; step++) {
       const answer = result.state === 'WAITING_FOR_PROJECT_DETAILS' ? workerAnswers?.projectSite
-        : result.state === 'WAITING_FOR_PAYMENT_STATUS' ? workerAnswers?.paymentStatus : null;
+        : result.state === 'WAITING_FOR_PAYMENT_STATUS' ? workerAnswers?.paymentStatus
+          : result.state === 'WAITING_FOR_ADDITIONAL_INFO' && result.bill?.payment_method_confirmed !== true && /confirm the payment method/i.test(result.replyText || '') ? workerPaymentMethod : null;
       if (!answer) break;
       result = await workflow.processMessage({ messageId: `m-${++next}`, senderPhone: extra.senderPhone || WORKER, messageType: 'text', text: answer });
     }

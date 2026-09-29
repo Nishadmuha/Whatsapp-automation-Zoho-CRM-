@@ -11,6 +11,7 @@ test('billStore: worker payment choice and Zoho reconciliation survive reload an
   await billStore.init();
   const bill = await billStore.saveBill({ worker_phone: '+971501112233' });
   assert.equal(bill.payment_status, null);
+  assert.equal(bill.payment_method_confirmed, false);
   assert.equal(bill.payment_recording_status, null);
   assert.equal(bill.amount_verification_status, null);
   assert.equal(bill.payment_account_id, null);
@@ -18,7 +19,7 @@ test('billStore: worker payment choice and Zoho reconciliation survive reload an
   assert.equal(bill.payment_account_organization_id, null);
 
   await billStore.updateBill(bill.bill_id, {
-    payment_status: 'paid', payment_recording_status: 'UNKNOWN',
+    payment_type: 'Cash', payment_method_confirmed: true, payment_status: 'paid', payment_recording_status: 'UNKNOWN',
     payment_account_id: '1234567890123456789', payment_account_name: 'Main cash',
     payment_account_organization_id: 'org-1',
     payment_recording_error: 'Payment response was interrupted',
@@ -26,10 +27,12 @@ test('billStore: worker payment choice and Zoho reconciliation survive reload an
   });
   const recovered = await billStore.getBill(bill.bill_id);
   assert.equal(recovered.payment_status, 'paid');
+  assert.equal(recovered.payment_method_confirmed, true);
   assert.equal(recovered.payment_account_id, '1234567890123456789');
   assert.equal(recovered.payment_account_name, 'Main cash');
   assert.equal(recovered.payment_account_organization_id, 'org-1');
   const resaved = await billStore.saveBill(recovered);
+  assert.equal(resaved.payment_method_confirmed, true);
   assert.equal(resaved.payment_account_id, '1234567890123456789');
   assert.equal(resaved.payment_account_name, 'Main cash');
   assert.equal(resaved.payment_account_organization_id, 'org-1');
@@ -48,6 +51,7 @@ test('billStore: worker payment choice and Zoho reconciliation survive reload an
   assert.equal(recorded.payment_recording_error, null);
   assert.equal(recorded.payment_status, 'paid');
   await assert.rejects(billStore.updateBill(bill.bill_id, { payment_status: 'probably' }), { code: 'INVALID_PAYMENT_STATUS' });
+  await assert.rejects(billStore.updateBill(bill.bill_id, { payment_method_confirmed: 'true' }), { code: 'INVALID_INPUT' });
   await assert.rejects(billStore.updateBill(bill.bill_id, { amount_verification_status: 'assumed' }), { code: 'INVALID_AMOUNT_VERIFICATION_STATUS' });
   await assert.rejects(billStore.saveBill({ worker_phone: '+971501112233', payment_recording_status: 'sent' }), { code: 'INVALID_PAYMENT_RECORDING_STATUS' });
 });

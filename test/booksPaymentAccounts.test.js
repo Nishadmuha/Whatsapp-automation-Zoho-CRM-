@@ -94,6 +94,7 @@ test('changing payment method clears the previous account and requests a new sel
 
 test('a missing account list blocks paid saves with a useful correction prompt', async () => {
   const f = setup({ accounts: [] }); await f.send('Bill');
+  await f.send('Cash');
   const result = await f.send('PAID');
   assert.equal(result.state, 'WAITING_FOR_PAYMENT_ACCOUNT');
   assert.match(result.replyText, /No active Cash payment account/);
@@ -164,13 +165,18 @@ test('failed payment availability lookup does not advertise unsupported methods'
   assert.equal(f.calls.filter(call => call[0] === 'create').length, 0);
 });
 
-test('UNPAID proceeds without any payment-account lookup or validation', async () => {
+test('UNPAID proceeds without payment-account selection or validation after method confirmation', async () => {
+  let unpaid = false;
   const f = fixture({ workerAnswers: null, zohoOverrides: {
-    async listPaymentAccounts() { assert.fail('Unpaid bills must not look up payment accounts'); },
+    async listPaymentAccounts({ paymentType, organizationId }) {
+      assert.equal(unpaid, false, 'Unpaid bills must not look up payment accounts');
+      return paymentType === 'Credit Card' ? [{ id: 'card1', name: 'Card', type: 'credit_card', organizationId }] : [];
+    },
     async prepareBillPayment() { assert.fail('Unpaid bills must not require a payment account'); },
     async recordBillPayment() { assert.fail('Unpaid bills must not record a payment'); },
   } });
   await f.send('Bill');
+  unpaid = true;
   assert.equal((await f.send('UNPAID')).state, 'AWAITING_FINAL_CONFIRMATION');
   assert.equal((await f.send('SAVE')).state, 'COMPLETED');
 });
