@@ -1,5 +1,42 @@
 'use strict';
 const { PAYMENT_METHODS } = require('./paymentMethods');
+const { customerBillNotes } = require('./customerDetails');
+
+function paymentStatusText(bill, { saved = false } = {}) {
+  if (bill.payment_status === 'unpaid') return 'Unpaid';
+  if (bill.payment_status === 'paid') {
+    if (bill.payment_recording_status === 'RECORDED') return 'Paid — payment recorded in Zoho Books';
+    if (bill.payment_recording_status === 'FAILED') return 'Payment recording failed — check the saved bill in Zoho Books';
+    return saved ? 'Paid reported by worker — payment not confirmed in Zoho Books' : 'Paid — record payment when saved';
+  }
+  return '[Required before SAVE: PAID or UNPAID]';
+}
+
+function formatCustomerDetails(details = {}, { heading = true } = {}) {
+  return [...(heading ? ['*CUSTOMER DETAILS*'] : []), ...customerBillNotes(details)].join('\n');
+}
+
+function formatCustomerDetailsMessages(details = {}, { maxLength = 3500 } = {}) {
+  const limit = Math.max(100, Math.min(4096, Math.floor(Number(maxLength)) || 3500));
+  const messages = [];
+  let current = '';
+  for (const line of formatCustomerDetails(details).split('\n')) {
+    let remaining = line;
+    if (current && current.length + remaining.length + 1 > limit) {
+      messages.push(current);
+      current = '';
+    }
+    while (remaining.length > limit) {
+      // Avoid splitting a UTF-16 surrogate pair in long names/notes.
+      const end = /[\uD800-\uDBFF]/.test(remaining[limit - 1]) ? limit - 1 : limit;
+      messages.push(remaining.slice(0, end));
+      remaining = remaining.slice(end);
+    }
+    current = current ? `${current}\n${remaining}` : remaining;
+  }
+  if (current) messages.push(current);
+  return messages;
+}
 
 function formatAmount(amount, currency = '') {
   if (amount === null || amount === undefined) return null;
@@ -26,11 +63,13 @@ function formatBillSummary(bill = {}) {
   lines.push(`• *Currency:* ${currency}`);
 
   lines.push(`• *Payment method:* ${bill.payment_type || '⚠️ [Required before SAVE]'}`);
+  lines.push(`• *Payment status:* ${paymentStatusText(bill)}`);
+  if (bill.payment_account_name) lines.push(`• *Payment account:* ${bill.payment_account_name}`);
   const customer = bill.customer_details || {};
   lines.push(`• *Customer:* ${customer.customer_name || '⚠️ [Required before SAVE]'}`);
   if (customer.customer_phone) lines.push(`  Phone: ${customer.customer_phone}`);
   if (customer.customer_source === 'manual' && customer.customer_email) lines.push(`  Email: ${customer.customer_email}`);
-  if (customer.project_site) lines.push(`  Project/site: ${customer.project_site}`);
+  lines.push(`• *Project/site:* ${customer.project_site || '[Required before SAVE]'}`);
 
   if (Array.isArray(bill.line_items) && bill.line_items.length > 0) {
     lines.push('');
@@ -83,7 +122,7 @@ function formatCustomerSelectionPrompt(customers = []) {
   customers.forEach((customer, index) => {
     lines.push(`${index + 1}. ${customer.name.slice(0, 80)}${customer.phone ? ` — ${customer.phone}` : ''}`);
   });
-  lines.push('Select a customer from the list.');
+  lines.push('Select a customer from the list, or type the customer name and available details.');
   return lines.join('\n');
 }
 
@@ -131,10 +170,12 @@ function formatSuccessReport({ bill = {}, zohoBillId, zohoBillUrl, attachmentSta
   }
 
   if (bill.payment_type) lines.push(`• *Payment method:* ${bill.payment_type}`);
+  lines.push(`• *Payment status:* ${paymentStatusText(bill, { saved: true })}`);
+  if (bill.payment_account_name) lines.push(`• *Payment account:* ${bill.payment_account_name}`);
   const customer = bill.customer_details || {};
   if (customer.customer_name) lines.push(`• *Customer:* ${customer.customer_name}`);
   if (customer.customer_phone) lines.push(`  Phone: ${customer.customer_phone}`);
-  if (customer.project_site) lines.push(`  Project/site: ${customer.project_site}`);
+  if (customer.project_site) lines.push(`• *Project/site:* ${customer.project_site}`);
 
   if (attachmentStatus === 'ATTACHED') {
     lines.push('• *Attachment:* ✅ Original document uploaded');
@@ -171,6 +212,8 @@ function formatCancellationMessage() {
 
 module.exports = {
   formatAmount,
+  formatCustomerDetails,
+  formatCustomerDetailsMessages,
   formatBillSummary,
   formatInitialReviewPrompt,
   formatCustomerSelectionPrompt,

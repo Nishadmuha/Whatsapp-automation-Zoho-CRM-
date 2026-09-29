@@ -15,6 +15,10 @@ const BOOKS_SCOPES = Object.freeze([
   'ZohoBooks.contacts.CREATE',
   'ZohoBooks.bills.READ',
   'ZohoBooks.bills.CREATE',
+  // Reconcile source-document rounding against the persisted Zoho total.
+  'ZohoBooks.bills.UPDATE',
+  // Record a worker-confirmed payment already made for this bill.
+  'ZohoBooks.vendorpayments.CREATE',
   // Existing prepareBill validates configured currency and tax IDs.
   'ZohoBooks.settings.READ',
   // Organization-specific bill account validation; no account write grant.

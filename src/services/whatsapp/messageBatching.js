@@ -3,7 +3,7 @@
 const { conversationIntent } = require('../../utils/conversationIntent');
 
 const BOSS_BOUNDARIES = new Set(['greeting', 'new_lead', 'discard', 'continue', 'confirmation', 'defer']);
-const BOOKS_COMMAND = /^(?:1|2|3|save|edit|delete)$/i;
+const BOOKS_COMMAND = /^(?:[1-9]\d?|(?:1\s+)?save|(?:2\s+)?edit|(?:3\s+)?delete|next|more|prev|previous|back|all|paid|unpaid|not\s+paid)$/i;
 const BOOKS_GREETING = /^(?:hi|hello|hey|salaam|start|\?)[.!?]*$/i;
 
 function isBossBatchBoundary(message = {}) {

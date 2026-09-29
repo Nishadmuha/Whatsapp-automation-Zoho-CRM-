@@ -135,9 +135,9 @@ for (const organization of [
   const first = await f.send('invoice');
   assert.equal(first.state, 'AWAITING_FINAL_CONFIRMATION');
   await f.send('SAVE');
-  assert.deepEqual(routed.slice(0, 5), [
-    ['vendor', organization.organizationId],
-    ['vendor', organization.organizationId],
+  assert.equal(routed.every(([, organizationId]) => organizationId === organization.organizationId), true);
+  assert.ok(routed.filter(([operation]) => operation === 'vendor').length >= 2);
+  assert.deepEqual(routed.filter(([operation]) => ['duplicate', 'prepare', 'create'].includes(operation)), [
     ['duplicate', organization.organizationId],
     ['prepare', organization.organizationId],
     ['create', organization.organizationId],
@@ -430,7 +430,9 @@ for (const organization of BOOKS_ORGANIZATIONS) {
           if (url.endsWith('/settings/taxes')) return { data: { code: 0, taxes: [{ tax_id: `tax-${orgId}`, tax_percentage: 5, tax_type: 'tax' }] } };
           assert.ok(url.endsWith(`/bills/saved-${orgId}`));
           pdfReads++;
-          if (pdfReads === 1) throw Error('Synthetic PDF read outage');
+          // The first read verifies the created amount before attachment or
+          // payment. Fail the later PDF read to exercise the delivery retry.
+          if (pdfReads === 2) throw Error('Synthetic PDF read outage');
           return { data: { code: 0, bill: createdRecord } };
         },
       },
@@ -459,6 +461,8 @@ for (const organization of BOOKS_ORGANIZATIONS) {
     assert.match(result.replyText, new RegExp(`/app/${orgId}#`));
     const saved = await billStore.getBill(first.billId);
     assert.equal(saved.zoho_bill_id, `saved-${orgId}`);
+    assert.equal(saved.amount_verification_status, 'VERIFIED');
+    assert.equal(saved.zoho_total, 105);
     assert.equal(saved.attachments[0].zoho_upload_status, 'uploaded');
     // Once created, the persisted bill's scope is authoritative even if draft
     // data is stale. A PDF retry must never re-create or change organizations.

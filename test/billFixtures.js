@@ -17,7 +17,7 @@ function memoryStore() {
     async getBill(id) { return bills.get(id); },
   };
 }
-function fixture({ billStore = memoryStore(), sourceStore, bill = validBill(), zohoOverrides = {}, whatsappOverrides = {}, extractionOverrides = {}, aiOverrides = {}, logger } = {}) {
+function fixture({ billStore = memoryStore(), sourceStore, bill = validBill(), zohoOverrides = {}, whatsappOverrides = {}, extractionOverrides = {}, aiOverrides = {}, logger, workerAnswers = { projectSite: 'Dubai site', paymentStatus: 'unpaid' } } = {}) {
   const calls = [], media = new Map();
   let next = 0;
   const extraction = {
@@ -48,7 +48,20 @@ function fixture({ billStore = memoryStore(), sourceStore, bill = validBill(), z
   };
   const ai = { async extractMediaText(input) { calls.push(['ocr', input]); return 'Supplier LLC INV-100 Cable 2 50 100 VAT 5 Total 105 AED 2026-09-19'; }, ...aiOverrides };
   const workflow = createBillWorkflow({ billStore, billExtractionService: extraction, zohoBooksClient: zoho, whatsappService: whatsapp, aiService: ai, store, logger });
-  const send = (text, extra = {}) => workflow.processMessage({ messageId: `m-${++next}`, senderPhone: WORKER, messageType: 'text', text, ...extra });
+  const send = async (text, extra = {}) => {
+    let result = await workflow.processMessage({ messageId: `m-${++next}`, senderPhone: WORKER, messageType: 'text', text, ...extra });
+    // Legacy tests focus on extraction/accounting. Simulate the new required
+    // worker replies with real workflow turns; flow-specific tests opt out.
+    const messages = [...(result.replyMessages || [])];
+    for (let step = 0; step < 2; step++) {
+      const answer = result.state === 'WAITING_FOR_PROJECT_DETAILS' ? workerAnswers?.projectSite
+        : result.state === 'WAITING_FOR_PAYMENT_STATUS' ? workerAnswers?.paymentStatus : null;
+      if (!answer) break;
+      result = await workflow.processMessage({ messageId: `m-${++next}`, senderPhone: extra.senderPhone || WORKER, messageType: 'text', text: answer });
+    }
+    if (messages.length) result.replyMessages = messages;
+    return result;
+  };
   return { workflow, billStore, calls, extraction, zoho, whatsapp, store, ai, send, media };
 }
 module.exports = { WORKER, validBill, memoryStore, fixture };

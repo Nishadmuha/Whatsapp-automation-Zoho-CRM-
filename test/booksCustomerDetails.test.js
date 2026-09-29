@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { fixture, validBill } = require('./billFixtures');
 const { createZohoBooksClient } = require('../src/services/books/zohoBooksClient');
 const { mergeCustomerData, parseManualCustomerDetails } = require('../src/services/books/customerDetails');
+const { formatCustomerDetailsMessages, formatBillSummary, formatSuccessReport } = require('../src/services/books/billFormatter');
 
 const ORG = '828765858';
 const CUSTOMER = '1234567890123456789'; // Synthetic; never coerce an ID to Number.
@@ -23,7 +24,7 @@ const fullContact = () => ({
   is_portal_enabled: false, website: 'https://customer.example.invalid',
 });
 
-function harness({ contacts = [fullContact()], detail, malformedList = false, rejectMessage = null } = {}) {
+function harness({ contacts = [fullContact()], detail, malformedList = false, rejectMessage = null, workerAnswers } = {}) {
   const reads = [], posts = [], creates = [], events = [];
   const vendor = { id: 'fixture-vendor', name: validBill().vendor_name, organizationId: ORG,
     raw: { tax_treatment: 'vat_registered', currency_id: 'fixture-aed' } };
@@ -63,7 +64,7 @@ function harness({ contacts = [fullContact()], detail, malformedList = false, re
   const bill = { ...validBill(), customer_details: null, subtotal: 370, tax_amount: 18.5, total_amount: 388.5,
     line_items: [90, 160, 120].map((rate, index) => ({ name: `Part ${index + 1}`, quantity: 1, rate,
       amount: [94.5, 168, 126][index], tax_percentage: 5 })) };
-  const f = fixture({ bill, zohoOverrides: {
+  const f = fixture({ bill, workerAnswers, zohoOverrides: {
     searchCustomer: client.searchCustomer, getCustomer: client.getCustomer, prepareBill: client.prepareBill,
     async searchVendor() { return [structuredClone(vendor)]; },
     async createBill(input) { creates.push(structuredClone(input)); return client.createBill(input); },
@@ -238,7 +239,7 @@ test('editing to a new manual customer clears old contact metadata and preserves
   const review = await h.send('Customer: New Manual Customer');
   assert.equal(review.state, 'AWAITING_FINAL_CONFIRMATION');
   assert.deepEqual(review.bill.customer_details, { customer_name: 'New Manual Customer', customer_id: null, contact_id: null,
-    organization_id: ORG, customer_source: 'manual', customer_lookup_status: 'not_found' });
+    organization_id: ORG, customer_source: 'manual', customer_lookup_status: 'not_found', project_site: 'Dubai site' });
   assert.equal((await h.send('SAVE')).state, 'COMPLETED');
   assert.equal(h.posts[0].customer_id, undefined);
   assert.doesNotMatch(h.posts[0].notes, /fixture@example|Fixture Road|100000000000001/);
@@ -251,7 +252,7 @@ test('a different manual name never inherits the previous manual address, TRN or
   await h.send('Customer: Old Manual; Phone: 0501234567; TRN: 100000000000009; Address: Old Address');
   const review = await h.send('Customer: New Manual');
   assert.deepEqual(review.bill.customer_details, { customer_name: 'New Manual', customer_id: null, contact_id: null,
-    organization_id: ORG, customer_source: 'manual', customer_lookup_status: 'not_found' });
+    organization_id: ORG, customer_source: 'manual', customer_lookup_status: 'not_found', project_site: 'Dubai site' });
 });
 
 test('invalid customer-list response is not treated as a confirmed no-match', async () => {
@@ -331,4 +332,67 @@ test('manual parser retains company, contact person, billing/shipping addresses 
     customer_company_name: 'Manual LLC', customer_name: 'Manual LLC', customer_contact_person: 'Person One',
     customer_trn: '100000000000009', customer_billing_address: 'Unit 1, Dubai', customer_shipping_address: 'Warehouse, Sharjah',
   });
+});
+
+test('manual parser accepts labelled details pasted on one line and keeps payment separate', () => {
+  assert.deepEqual(parseManualCustomerDetails('Customer details: Company name: Car Motor LLC Phone number: +971 50 123 4567 Email: accounts@example.invalid VAT number: 100000000000009 Website: https://example.invalid Project details: Workshop 0501234567 Payment status: Paid'), {
+    customer_company_name: 'Car Motor LLC', customer_name: 'Car Motor LLC', customer_phone: '+971501234567',
+    customer_email: 'accounts@example.invalid', customer_trn: '100000000000009', customer_website: 'https://example.invalid',
+    project_site: 'Workshop 0501234567',
+  });
+});
+
+test('a customer name containing site is not mistaken for a project', () => {
+  assert.deepEqual(parseManualCustomerDetails('Customer: Site Services LLC'), { customer_name: 'Site Services LLC' });
+  assert.deepEqual(parseManualCustomerDetails('Customer: Manual LLC; Email: 123456789@example.invalid'), {
+    customer_name: 'Manual LLC', customer_email: '123456789@example.invalid',
+  });
+});
+
+test('selected customer messages expose available contact details, addresses and custom fields', () => {
+  const contact = fullContact();
+  contact.contact_persons.push({ first_name: 'Second', last_name: 'Person', email: 'second@example.invalid', mobile: '+971550000099' });
+  contact.addresses = [{ address: 'Additional warehouse', city: 'Ajman', phone: '+971600000000' }];
+  contact.custom_fields = [{ label: 'Credit limit', value: 0 }, { label: 'Approved', value: false }, { label: 'Region', value: 'North' }];
+  const text = formatCustomerDetailsMessages({ customer_name: 'Fixture Display', zoho_contact: contact, organization_id: ORG }).join('\n');
+  for (const expected of ['Fixture Company', 'Fixture Person', 'person@example.invalid', '+971500000002', 'Second Person',
+    'second@example.invalid', '+971550000099', 'Fixture Road 1', 'Fixture Warehouse', 'Additional warehouse',
+    'Ajman', '+971600000000', 'Credit limit: 0', 'Approved: false', 'Region: North', contact.website, ORG]) {
+    assert.ok(text.includes(expected), expected);
+  }
+  assert.doesNotMatch(text, /\[object Object\]|undefined|null/);
+});
+
+test('selected customer sends complete contact messages before asking for its project', async () => {
+  const h = harness({ workerAnswers: null });
+  await h.start();
+  const selected = await h.send('1');
+  assert.equal(selected.state, 'WAITING_FOR_PROJECT_DETAILS');
+  assert.match(selected.replyText, /project|site/i);
+  const messages = selected.replyMessages.join('\n');
+  for (const expected of ['Fixture Person', 'person@example.invalid', 'Fixture Road 1', 'Fixture Warehouse', 'Preserve this metadata']) {
+    assert.ok(messages.includes(expected), expected);
+  }
+  assert.equal(h.posts.length, 0);
+});
+
+test('long customer details are split without losing data or exceeding WhatsApp limits', () => {
+  const notes = 'Notes ' + 'Detail 🏢 '.repeat(1500);
+  const messages = formatCustomerDetailsMessages({ customer_name: 'Long Customer', customer_notes: notes });
+  assert.ok(messages.length > 2);
+  assert.ok(messages.every(message => message.length <= 3500));
+  assert.ok(messages.every(message => !/[\uD800-\uDBFF]$/.test(message) && !/^[\uDC00-\uDFFF]/.test(message)));
+  assert.ok(messages.join('').includes(notes));
+});
+
+test('bill review and saved report show project and distinguish reported paid from recorded payment', () => {
+  const bill = { ...validBill(), payment_status: 'paid', payment_account_name: 'Main cash' };
+  assert.match(formatBillSummary(bill), /\*Payment account:\* Main cash/);
+  assert.match(formatSuccessReport({ bill }), /\*Payment account:\* Main cash/);
+  assert.match(formatBillSummary(bill), /\*Project\/site:\* Dubai site/);
+  assert.match(formatBillSummary(bill), /Paid — record payment when saved/);
+  assert.match(formatSuccessReport({ bill }), /payment not confirmed in Zoho Books/);
+  assert.match(formatSuccessReport({ bill: { ...bill, payment_recording_status: 'RECORDED' } }), /Paid — payment recorded in Zoho Books/);
+  assert.match(formatSuccessReport({ bill: { ...bill, payment_recording_status: 'FAILED' } }), /Payment recording failed/);
+  assert.match(formatBillSummary({ ...bill, payment_status: 'unpaid' }), /\*Payment status:\* Unpaid/);
 });

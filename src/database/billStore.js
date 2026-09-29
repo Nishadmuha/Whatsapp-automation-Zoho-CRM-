@@ -7,6 +7,9 @@ const {
   SESSION_STATES,
   BILL_STATUSES,
   ZOHO_STATUSES,
+  PAYMENT_STATUSES,
+  PAYMENT_RECORDING_STATUSES,
+  AMOUNT_VERIFICATION_STATUSES,
 } = require('../models/billModel');
 
 function cleanDoc(doc) {
@@ -22,6 +25,27 @@ class BillStoreError extends Error {
     super(message);
     this.name = 'BillStoreError';
     this.code = code;
+  }
+}
+
+function validateBillTrackingFields(data) {
+  for (const [field, values, code] of [
+    ['payment_status', PAYMENT_STATUSES, 'INVALID_PAYMENT_STATUS'],
+    ['payment_recording_status', PAYMENT_RECORDING_STATUSES, 'INVALID_PAYMENT_RECORDING_STATUS'],
+    ['amount_verification_status', AMOUNT_VERIFICATION_STATUSES, 'INVALID_AMOUNT_VERIFICATION_STATUS'],
+  ]) {
+    if (data[field] != null && !values.includes(data[field])) {
+      throw new BillStoreError(code, `Invalid ${field}.`);
+    }
+  }
+  if (data.zoho_total != null && (typeof data.zoho_total !== 'number' || !Number.isFinite(data.zoho_total))) {
+    throw new BillStoreError('INVALID_INPUT', 'zoho_total must be a finite number or null.');
+  }
+}
+
+function validatePage(page, field) {
+  if (!Number.isInteger(page) || page < 0) {
+    throw new BillStoreError('INVALID_INPUT', `${field} must be a non-negative integer.`);
   }
 }
 
@@ -478,6 +502,10 @@ class BillStore {
     if (!SESSION_STATES.includes(state)) {
       throw new BillStoreError('INVALID_STATE', `State '${state}' is not a valid session state.`);
     }
+    const customerPage = sessionData.customer_page ?? 0;
+    validatePage(customerPage, 'customer_page');
+    const paymentAccountPage = sessionData.payment_account_page ?? 0;
+    validatePage(paymentAccountPage, 'payment_account_page');
 
     const doc = {
       session_id: sessionId,
@@ -488,6 +516,11 @@ class BillStore {
       expires_at: sessionData.expires_at ? new Date(sessionData.expires_at) : new Date(Date.now() + 24 * 60 * 60 * 1000),
       bill_data: sessionData.bill_data || {},
       customer_options: Array.isArray(sessionData.customer_options) ? sessionData.customer_options : [],
+      customer_all_options: Array.isArray(sessionData.customer_all_options) ? sessionData.customer_all_options : [],
+      customer_page: customerPage,
+      customer_search: typeof sessionData.customer_search === 'string' ? sessionData.customer_search : '',
+      payment_account_options: Array.isArray(sessionData.payment_account_options) ? sessionData.payment_account_options : [],
+      payment_account_page: paymentAccountPage,
       attachments: Array.isArray(sessionData.attachments) ? sessionData.attachments : [],
       created_at: now,
       updated_at: now,
@@ -523,6 +556,8 @@ class BillStore {
     if (safeUpdates.state && !SESSION_STATES.includes(safeUpdates.state)) {
       throw new BillStoreError('INVALID_STATE', `State '${safeUpdates.state}' is not a valid session state.`);
     }
+    if (Object.hasOwn(safeUpdates, 'customer_page')) validatePage(safeUpdates.customer_page, 'customer_page');
+    if (Object.hasOwn(safeUpdates, 'payment_account_page')) validatePage(safeUpdates.payment_account_page, 'payment_account_page');
 
     safeUpdates.updated_at = new Date();
 
@@ -574,6 +609,7 @@ class BillStore {
     if (!ZOHO_STATUSES.includes(zohoStatus)) {
       throw new BillStoreError('INVALID_ZOHO_STATUS', `Zoho status '${zohoStatus}' is not a valid zoho status.`);
     }
+    validateBillTrackingFields(billData);
 
     const doc = {
       bill_id: billId,
@@ -591,6 +627,10 @@ class BillStore {
       zoho_vendor_id: billData.zoho_vendor_id || null,
 
       payment_type: billData.payment_type || null,
+      payment_status: billData.payment_status ?? null,
+      payment_account_id: billData.payment_account_id || null,
+      payment_account_name: billData.payment_account_name || null,
+      payment_account_organization_id: billData.payment_account_organization_id || null,
       customer_details: billData.customer_details || null,
 
       bill_number: billData.bill_number || null,
@@ -614,6 +654,12 @@ class BillStore {
       zoho_bill_id: billData.zoho_bill_id || null,
       zoho_bill_url: billData.zoho_bill_url || null,
       zoho_error: billData.zoho_error || null,
+      zoho_payment_id: billData.zoho_payment_id || null,
+      payment_recording_status: billData.payment_recording_status ?? null,
+      payment_recording_error: billData.payment_recording_error || null,
+      zoho_total: billData.zoho_total ?? null,
+      zoho_currency: billData.zoho_currency || null,
+      amount_verification_status: billData.amount_verification_status ?? null,
 
       edit_history: Array.isArray(billData.edit_history) ? billData.edit_history : [],
 
@@ -655,6 +701,7 @@ class BillStore {
     if (safeUpdates.zoho_status && !ZOHO_STATUSES.includes(safeUpdates.zoho_status)) {
       throw new BillStoreError('INVALID_ZOHO_STATUS', `Zoho status '${safeUpdates.zoho_status}' is not a valid zoho status.`);
     }
+    validateBillTrackingFields(safeUpdates);
 
     safeUpdates.updated_at = new Date();
 
@@ -886,6 +933,9 @@ class BillStore {
         break;
       case 'WAITING_FOR_CUSTOMER_SELECTION':
         pendingAction = 'Waiting for worker to select a Zoho Books customer';
+        break;
+      case 'WAITING_FOR_PAYMENT_ACCOUNT':
+        pendingAction = 'Waiting for worker to select the payment account';
         break;
       case 'AWAITING_EDIT':
         pendingAction = 'Waiting for SAVE, EDIT or DELETE';

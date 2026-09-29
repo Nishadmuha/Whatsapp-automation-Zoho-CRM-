@@ -2,6 +2,8 @@
 
 ## Result
 
+**Implementation update, 29 September 2026:** Section B now lists the current Books scopes, including saved-total rounding reconciliation and worker-confirmed paid bills. The live checks and test counts below describe the historical 19 September audit; this update did not test production grants or perform live financial writes.
+
 The live read-only CRM and Books checks passed. The current grants are broader than necessary; new OAuth authorization is required to achieve least privilege. No authorization code was exchanged, no `.env` value was changed, and no production customer, lead, bill, attachment or WhatsApp message was created by this audit.
 
 All 723 automated tests passed on the final code (0 failed, 0 skipped, 0 cancelled). The focused CRM/Books/webhook/security run passed 166 tests. JavaScript syntax and ESLint passed. Two additional mocked diagnostic probes exposed existing CRM concurrency/uncertain-write risks; passing the existing suite does not resolve those risks.
@@ -20,21 +22,23 @@ The refreshed live token reported `ZohoCRM.modules.ALL`. That broad grant covers
 
 ## B. Books scopes
 
-Minimum scope string for the current Books implementation (including vendor creation on SAVE):
+Minimum scope string for the current Books implementation (including vendor creation, rounding reconciliation, and recording worker-confirmed payments on SAVE):
 
 ```text
-ZohoBooks.contacts.READ,ZohoBooks.contacts.CREATE,ZohoBooks.bills.READ,ZohoBooks.bills.CREATE,ZohoBooks.settings.READ
+ZohoBooks.contacts.READ,ZohoBooks.contacts.CREATE,ZohoBooks.bills.READ,ZohoBooks.bills.CREATE,ZohoBooks.bills.UPDATE,ZohoBooks.vendorpayments.CREATE,ZohoBooks.settings.READ,ZohoBooks.accountants.READ
 ```
 
 `settings.READ` is genuinely used by `prepareBill()` for configured currency and tax IDs. Removing it without redesigning validation would break existing bills or require guessing accounting data. It is NOT Chart of Accounts permission. [Currency list](https://www.zoho.com/books/api/v3/currency/) and [tax list](https://www.zoho.com/books/api/v3/taxes/) document this permission. Source-bill attachment upload uses `bills.CREATE`, not an extra update scope, per [the Bills API](https://www.zoho.com/books/api/v3/bills/).
 
-At the time of this historical read-only audit, the refreshed live token reported contacts.READ, bills.READ, bills.CREATE and settings.READ plus `ZohoBooks.bills.UPDATE`. The current vendor-creation workflow additionally requires contacts.CREATE; this document does not verify whether the current production token grants it. The UPDATE grant and `ZohoBooks.bills.DELETE` are not required by the current workflow. No accountants, vendor-payment, settings write or full-access scope is required.
+`bills.UPDATE` is used to reconcile a small rounding difference on the created bill before payment or PDF delivery, as documented by [Update a bill](https://www.zoho.com/books/api/v3/bills/#update-a-bill). `vendorpayments.CREATE` records a payment the worker has already made, as documented by [Create a vendor payment](https://www.zoho.com/books/api/v3/vendor-payments/#create-a-vendor-payment). The workflow verifies the saved total and currency, then confirms the fully paid balance. An uncertain payment outcome is retained for reconciliation without automatically creating another payment.
+
+At the time of the historical read-only audit, the refreshed live token reported contacts.READ, bills.READ, bills.CREATE and settings.READ plus `ZohoBooks.bills.UPDATE`. This document does not verify whether the current production grant includes all scopes above. `bills.DELETE`, account write, settings write and full-access scopes are not required. Refreshing an existing token does not add missing permissions; use explicit reauthorization if necessary.
 
 ## C. Chart of Accounts
 
-Removed the unused `listChartOfAccounts()` implementation/export and its obsolete positive test. There are no Chart of Accounts API calls or fixed expense-account configuration requirements in runtime code. Regression tests reject unexpected API calls and confirm bill preparation works without an account ID. Existing optional line-item `account_id` pass-through is not a fixed configuration dependency.
+The historical audit removed an unused account-list helper. The current runtime validates any configured expense account and the organization-specific account used to record a payment through Chart of Accounts reads, requiring `ZohoBooks.accountants.READ`. It does not create or edit accounts.
 
-The historical production report and setup guide no longer direct operators to grant accountants permissions or configure an expense-account ID.
+Paid bills use a worker-selected account from the organization's WhatsApp account picker, or an optional `ZOHO_BOOKS_<ORGANIZATION>_PAYMENT_<METHOD>_ACCOUNT_ID` default. For example, cash in the contracting organization can default to `ZOHO_BOOKS_CONTRACTING_PAYMENT_CASH_ACCOUNT_ID`. Accounts must belong to that organization: cash for Cash, credit card for Credit Card, and bank for Bank Transfer, Bank Remittance or Cheque. The selected account is verified again before posting payment; no compatible account means the paid bill stays pending.
 
 This is an application dependency finding, not proof that Zoho accepts every bill without line-item accounting data. The [Bills API](https://www.zoho.com/books/api/v3/bills/) documents `account_id` for expense classification. Whether this organization's defaults accept the current payload without one was not tested with a live write. Do not guess an ID or add permissions to conceal a provider validation error.
 
@@ -65,7 +69,7 @@ Those CRM locking changes were not made as part of this scope/configuration task
 - Customer selection tests cover phone-only, email-only, both, no results, failed lookup, similar names and an unoffered ID. Selected ID/name/phone/email persist to both pending bill and session without another AI extraction.
 - Fixed a reproduced bug: absent Zoho phone/email previously retained an earlier OCR/customer value. Missing fields now explicitly become `null`; project/site is preserved.
 - Cash, Bank Remittance, Bank Transfer, Credit Card and Cheque all persist and reach the mocked bill POST. The exact customer ID remains a string throughout.
-- The existing integration records the selected method and customer ID in **bill notes**. It does not create a payment, mark the bill paid, or create a native customer relationship on a bill. No new payment API or account dependency was introduced.
+- At the historical audit, the integration recorded payment method and customer ID in bill notes only. The current implementation additionally carries the selected customer relationship and can record a payment after the worker explicitly chooses PAID and confirms SAVE. See sections B and C for current scopes and payment-account requirements.
 - Bill creation, original-file attachment, duplicate checks, atomic save reservation, uncertain-save lock and PDF delivery were verified with mocks/local test storage only. No live financial write was performed.
 
 ## G. WhatsApp verification
