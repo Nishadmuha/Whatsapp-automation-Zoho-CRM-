@@ -29,6 +29,9 @@ class BillStoreError extends Error {
 }
 
 function validateBillTrackingFields(data) {
+  if (data.payment_method_confirmed != null && typeof data.payment_method_confirmed !== 'boolean') {
+    throw new BillStoreError('INVALID_INPUT', 'payment_method_confirmed must be a boolean.');
+  }
   for (const [field, values, code] of [
     ['payment_status', PAYMENT_STATUSES, 'INVALID_PAYMENT_STATUS'],
     ['payment_recording_status', PAYMENT_RECORDING_STATUSES, 'INVALID_PAYMENT_RECORDING_STATUS'],
@@ -627,6 +630,7 @@ class BillStore {
       zoho_vendor_id: billData.zoho_vendor_id || null,
 
       payment_type: billData.payment_type || null,
+      payment_method_confirmed: billData.payment_method_confirmed === true,
       payment_status: billData.payment_status ?? null,
       payment_account_id: billData.payment_account_id || null,
       payment_account_name: billData.payment_account_name || null,

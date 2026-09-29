@@ -51,11 +51,19 @@ test('customer and boss retain distinct routes', async t => {
 test('media ACK precedes OCR, review is not silent, SAVE sends a created PDF', async t => {
   const f = await setup(t); await f.send('Fuel bill', { type: 'image' });
   assert.match(f.calls[0][2], /Processing the bill/); assert.equal(f.calls.some(c => c[0] === 'ocr'), false);
-  await f.worker.tick(); assert.ok(f.calls.some(c => c[0] === 'text' && /PAID or UNPAID/.test(c[2])));
+  await f.worker.tick(); assert.ok(f.calls.some(c => c[0] === 'text' && /confirm the payment method/.test(c[2])));
+  assert.equal(f.calls.some(c => c[0] === 'text' && /PAID or UNPAID/.test(c[2])), false);
+  assert.equal(f.calls.filter(c => c[0] === 'create').length, 0);
+  await f.send('Cash'); await f.worker.tick();
+  assert.ok(f.calls.some(c => c[0] === 'text' && /PAID or UNPAID/.test(c[2])));
+  const session = await f.billStore.getActiveBillSession(WORKER);
+  assert.equal(session.bill_data.payment_type, 'Cash');
+  assert.equal(session.bill_data.payment_method_confirmed, true);
   assert.equal(f.calls.filter(c => c[0] === 'create').length, 0);
   await f.send('UNPAID'); await f.worker.tick();
   assert.ok(f.calls.some(c => c[0] === 'text' && /1 SAVE/.test(c[2])));
   await f.send('SAVE'); await f.worker.tick(); assert.equal(f.calls.filter(c => c[0] === 'create').length, 1);
+  assert.equal(f.calls.find(c => c[0] === 'create')[1].paymentType, 'Cash');
   assert.equal(f.calls.find(c => c[0] === 'document')[2].buffer.toString(), '%PDF-created-record');
 });
 test('duplicate webhook inserts only one job and unsigned messages are rejected', async t => {

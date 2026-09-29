@@ -136,7 +136,8 @@ function parseWorkerDetails(text, { allowShorthand = true, allowVendor = true } 
   const status = source.match(/(?:payment|bill)\s+status\s*[:=-]\s*(unpaid|not paid|paid)\b/i);
   if (status) details.payment_status = parsePaymentStatus(status[1]);
   const payment = source.match(/(?:payment\s*(?:type|method)?|paid\s*by)\s*[:=-]\s*([^\n;,]+)/i);
-  const shorthand = allowShorthand ? source.match(/\b(cash|bank\s+remittance|bank\s+transfer|credit\s+card|cheque)\b/i) : null;
+  // A method mentioned in unrelated customer/vendor text is not a worker choice.
+  const shorthand = allowShorthand ? source.match(/^(?:paid\s+(?:by|in)\s+)?(cash|bank\s+remittance|bank\s+transfer|credit\s+card|cheque)[.!?]*$/i) : null;
   const paymentValue = payment?.[1]?.trim().slice(0, 80) || shorthand?.[1];
   if (paymentValue) {
     const normalizedPayment = normalizePaymentMethod(paymentValue);
@@ -177,7 +178,7 @@ function mergeWorkerDetails(currentBill, text, parsed = parseWorkerDetails(text)
     ...(!parsed.vendor_name && parsed.vendor_trn ? { vendor_trn: parsed.vendor_trn } : {}),
     ...(parsed.currency ? { currency: parsed.currency } : {}),
     ...(parsed.organization ? { organization: parsed.organization } : {}),
-    ...(parsed.payment_type ? { payment_type: parsed.payment_type } : {}),
+    ...(parsed.payment_type ? { payment_type: parsed.payment_type, payment_method_confirmed: true } : {}),
     ...(parsed.payment_status ? { payment_status: parsed.payment_status } : {}),
     ...((parsed.payment_type && parsed.payment_type !== currentBill.payment_type) || parsed.payment_status === 'unpaid'
       ? { payment_account_id: null, payment_account_name: null, payment_account_organization_id: null } : {}),
@@ -263,7 +264,7 @@ function billMissingFields(bill, { requireCustomerId = false, requireAccounting 
   if (!bill.currency) missing.push('currency');
   if (!bill.customer_details?.customer_name || (requireCustomerId && !(bill.customer_details.contact_id || bill.customer_details.customer_id)
       && !hasManualCustomerFallback(bill))) missing.push('customer');
-  if (!bill.payment_type) missing.push('payment method');
+  if (!bill.payment_type || bill.payment_method_confirmed !== true) missing.push('payment method');
   if (!bill.customer_details?.project_site) missing.push('project/site');
   if (!bill.line_items?.length || bill.line_items.some((item, index) => !item.name || (!sourceOnlyLines.includes(index)
       && (!Number.isFinite(item.quantity) || item.quantity <= 0 || !Number.isFinite(item.rate) || item.rate < 0)))) missing.push('line items with quantity and rate');
@@ -322,7 +323,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       await billStore.updateBillSession(session.session_id, { state: PROJECT_STATE, bill_data: bill, last_message_id: messageId });
       return reply(session, `Which project or work location is this bill for under ${customer.customer_name}? Send the project name and site/location (for example: Motor repair, Al Quoz workshop).`, { state: PROJECT_STATE, bill });
     }
-    if (!bill.payment_type) {
+    if (!bill.payment_type || bill.payment_method_confirmed !== true) {
       await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill_data: bill, last_message_id: messageId });
       return reply(session, await paymentMethodPrompt(bill), { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill });
     }
@@ -375,7 +376,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       }
       if (!methods.length) return `No active Cash, Bank or card payment account is available in ${bill.organization.name}. Ask your administrator to configure the account in Zoho Books, then reply SAVE to retry.`;
     }
-    return invalid ? `Payment method must be one of: ${methods.join(', ')}.` : `Before SAVE, send payment method: ${methods.join(' / ')}`;
+    return invalid ? `Payment method must be one of: ${methods.join(', ')}.` : `Please confirm the payment method. Before SAVE, send payment method: ${methods.join(' / ')}. Your reply will be used, even if the bill suggests another method.`;
   }
   async function showPaymentAccounts(session, bill, options, page = 0, messageId = null) {
     const pageCount = Math.max(1, Math.ceil(options.length / CUSTOMER_PAGE_SIZE));
@@ -715,7 +716,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
   }
   function groundedBill(extracted) {
     // Payment confirmation belongs to the worker, never invoice OCR/model output.
-    const grounded = { ...extracted.bill, payment_status: null, payment_account_id: null, payment_account_name: null, payment_account_organization_id: null };
+    const grounded = { ...extracted.bill, payment_method_confirmed: false, payment_status: null, payment_account_id: null, payment_account_name: null, payment_account_organization_id: null };
     for (const [field, evidence] of Object.entries(extracted.grounding || {})) {
       if (evidence === 'inferred' || evidence === 'ambiguous') grounded[field] = field === 'line_items' ? [] : null;
     }
@@ -773,6 +774,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       vendor_trn: null,
       zoho_vendor_id: null,
       payment_type: null,
+      payment_method_confirmed: false,
       payment_status: null,
       payment_account_id: null,
       payment_account_name: null,
@@ -890,8 +892,8 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
         const bill = { ...session.bill_data, payment_status: parsePaymentStatus(incoming.text) };
         const method = parseWorkerDetails(incoming.text).payment_type;
         if (bill.payment_status === 'unpaid' || (method && method !== bill.payment_type)) Object.assign(bill, { payment_account_id: null, payment_account_name: null, payment_account_organization_id: null });
-        if (method) bill.payment_type = method;
-        await billStore.updateBill(session.bill_id, { payment_status: bill.payment_status, payment_type: bill.payment_type, payment_account_id: bill.payment_account_id, payment_account_name: bill.payment_account_name, payment_account_organization_id: bill.payment_account_organization_id });
+        if (method) Object.assign(bill, { payment_type: method, payment_method_confirmed: true });
+        await billStore.updateBill(session.bill_id, { payment_status: bill.payment_status, payment_type: bill.payment_type, payment_method_confirmed: bill.payment_method_confirmed === true, payment_account_id: bill.payment_account_id, payment_account_name: bill.payment_account_name, payment_account_organization_id: bill.payment_account_organization_id });
         await billStore.updateBillSession(session.session_id, { bill_data: bill, payment_account_options: [], payment_account_page: 0, last_message_id: incoming.messageId });
         return continueAfterOrganization(session, bill, incoming.messageId);
       }
@@ -962,6 +964,10 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       }
       if (!media && session.state === PAYMENT_STATE) return reply(session, PAYMENT_STATUS_PROMPT, { state: PAYMENT_STATE, bill: session.bill_data });
       if (!media && session.state === ACCOUNT_STATE) return reply(session, 'Select a payment account from the list, send the correct payment method, or reply SAVE to reload accounts.', { state: ACCOUNT_STATE, bill: session.bill_data });
+      if (!media && session.state === WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO && session.bill_data?.payment_method_confirmed !== true
+          && /^(?:yes|no|confirm|confirmed|correct|ok|okay)[.!?]*$/i.test(String(incoming.text || '').trim())) {
+        return continueAfterOrganization(session, session.bill_data, incoming.messageId);
+      }
       if (session.state !== EDIT && session.state !== WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO) return reply(session, media ? 'A bill is already pending. Reply EDIT to add a page or correction to this same bill. Otherwise SAVE or DELETE it before sending another bill.' : 'Reply SAVE, EDIT, or DELETE for this bill.');
       const editDetails = parseWorkerDetails(incoming.text);
       if (!media && editDetails.payment_type_invalid) return reply(session, await paymentMethodPrompt(session.bill_data, true), { state: EDIT });
@@ -987,9 +993,13 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
         updates.organization = mentions.length === 1 ? resolveOrganization({ ...mentions[0], confidence: 1 })
           : mentions.length > 1 ? null : (directMediaExtraction && groundedBill(edited).organization) || session.bill_data.organization;
         updates.payment_status = session.bill_data.payment_status;
+        // OCR and subsequent model edits cannot overwrite a worker's choice or
+        // manufacture confirmation. Only a parsed worker text reply can do so.
+        updates.payment_type = session.bill_data.payment_type;
+        updates.payment_method_confirmed = session.bill_data.payment_method_confirmed === true;
         for (const field of ['payment_account_id', 'payment_account_name', 'payment_account_organization_id']) updates[field] = session.bill_data[field] || null;
         if (updates.vendor_name && vendorNameKey(updates.vendor_name) !== vendorNameKey(session.bill_data.vendor_name)) updates.zoho_vendor_id = null;
-        const bill = normalizeBillOrganization(validateBill(mergeWorkerDetails({ ...session.bill_data, ...updates }, incoming.text)).normalizedBill, session.bill_data);
+        const bill = normalizeBillOrganization(validateBill(mergeWorkerDetails({ ...session.bill_data, ...updates }, incoming.text, media ? {} : editDetails)).normalizedBill, session.bill_data);
         const attachments = [...(session.attachments || []), ...(input.attachments || (input.attachment ? [input.attachment] : []))];
         await billStore.updateBill(session.bill_id, { ...bill, attachments, status: 'PENDING_REVIEW' });
         await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill_data: bill, attachments, customer_options: [], last_message_id: incoming.messageId });
@@ -1005,6 +1015,9 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       const extracted = await extractBillFromInput(input, incoming.messageType || 'text');
       const grounded = groundedBill(extracted);
       const bill = normalizeBillOrganization(validateBill(mergeWorkerDetails(mergeWorkerDetails(grounded, input.text, parseWorkerDetails(input.text, { allowShorthand: false, allowVendor: false })), input.text, parseWorkerDetails(input.text, { allowVendor: false }))).normalizedBill);
+      // Even explicit invoice/caption text is a suggestion until the worker
+      // answers the separate payment-method question.
+      bill.payment_method_confirmed = false;
       bill.payment_status = parseWorkerDetails(incoming.text, { allowVendor: false }).payment_status || null;
       const attachments = input.attachments || (input.attachment ? [input.attachment] : []);
       const draft = { session_id: randomUUID(), bill_id: randomUUID(), worker_phone: incoming.senderPhone, state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, last_message_id: incoming.messageId, bill_data: bill, attachments };
@@ -1051,7 +1064,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     const accountingBill = sourceOnlyLines.length
       ? { ...bill, line_items: bill.line_items.filter((_, index) => !sourceOnlyLines.includes(index)) } : bill;
     if (!await billStore.claimBillSave(session.session_id, messageId)) return reply(session, 'This bill is already being saved. Please wait.');
-    await billStore.updateBill(session.bill_id, { payment_type: bill.payment_type, payment_status: bill.payment_status, payment_account_id: bill.payment_account_id, payment_account_name: bill.payment_account_name, payment_account_organization_id: bill.payment_account_organization_id, customer_details: bill.customer_details, organization: bill.organization });
+    await billStore.updateBill(session.bill_id, { payment_type: bill.payment_type, payment_method_confirmed: true, payment_status: bill.payment_status, payment_account_id: bill.payment_account_id, payment_account_name: bill.payment_account_name, payment_account_organization_id: bill.payment_account_organization_id, customer_details: bill.customer_details, organization: bill.organization });
     const reviewFailure = async text => {
       await billStore.updateBillSession(session.session_id, { state: REVIEW });
       return reply(session, `${text}\nReply SAVE to retry, EDIT to correct, or DELETE.`, { state: REVIEW });
@@ -1144,6 +1157,9 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       }
     }
     if (record.payment_status === 'paid' && record.payment_recording_status !== 'RECORDED') {
+      if (record.payment_method_confirmed !== true) {
+        return reply(session, `Zoho bill ${id} already exists, but its payment method was never confirmed by the worker. Ask an administrator to verify the payment method and reconcile this bill in Zoho Books. No payment or duplicate bill was created.`, { state: SAVING });
+      }
       await billStore.updateBill(session.bill_id, { payment_recording_status: 'RECORDING', payment_recording_error: null });
       try {
         const payment = await zohoBooksClient.recordBillPayment({ billId: id, vendorId: record.zoho_vendor_id, amount: record.zoho_total ?? record.total_amount, paymentDate: record.bill_date, paymentType: record.payment_type, paymentAccountId: record.payment_account_id || null, organizationId, expectedCurrency: record.currency, referenceNumber: `WA-${record.bill_id}` });
