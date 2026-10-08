@@ -3,12 +3,15 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createZohoBooksClient } = require('../src/services/books/zohoBooksClient');
+const { parseWorkerDetails } = require('../src/services/books/billWorkflow');
+const { validateBill } = require('../src/services/books/billValidator');
 const { fixture, validBill } = require('./billFixtures');
 
 const CONTRACTING = validBill().organization.organizationId;
 const SWITCHGEAR = '802911060';
 const ACCOUNT = '100000000000001'; // Synthetic, not a production account ID.
 const MESSAGE = 'VAT or Exemption cannot be applied for this VAT Treatment.';
+const VAT_REVIEW_MESSAGE = 'This bill includes VAT, but the selected vendor is marked as not VAT registered in Zoho Books. Check the vendor registration in Zoho Books or reply EDIT with the correct existing vendor name. No bill was created.\nReply SAVE to retry, EDIT to correct, or DELETE.';
 
 function sourceBill() {
   return { ...validBill(), bill_number: 'FIXTURE-VAT-71538', subtotal: 370, tax_amount: 18.5, total_amount: 388.5,
@@ -103,13 +106,13 @@ for (const organizationId of [CONTRACTING, SWITCHGEAR]) {
   });
 }
 
-test('SAVE preserves the rejected draft, attachments and existing review reply without a VAT-treatment/account prompt', async () => {
+test('SAVE preserves the rejected draft and explains the vendor VAT conflict without an accounting prompt', async () => {
   const h = harness(), f = h.workflow();
   const initial = await f.send('', { messageType: 'image', mediaId: 'fixture-image' });
   const before = structuredClone(await f.billStore.getBill(initial.billId));
   const result = await f.send('SAVE');
   assert.equal(result.state, 'AWAITING_FINAL_CONFIRMATION');
-  assert.equal(result.replyText, 'Zoho vendor, currency, tax or duplicate validation failed. Nothing was created.\nReply SAVE to retry, EDIT to correct, or DELETE.');
+  assert.equal(result.replyText, VAT_REVIEW_MESSAGE);
   assert.doesNotMatch(result.replyText, /enter.*(?:account|VAT treatment)|tax percentage missing/i);
   const after = await f.billStore.getBill(initial.billId);
   assert.equal(after.status, 'PENDING_REVIEW');
@@ -198,3 +201,62 @@ test('extracted registration/treatment claims cannot override actual Zoho vendor
   assert.equal(bill.total_amount, 388.5);
   assert.deepEqual(h.posts, []);
 });
+
+function screenshotAmountsBill() {
+  return {
+    ...validBill(), bill_number: 'FIXTURE-155440', bill_date: '2026-10-07',
+    subtotal: 209.54, tax_amount: 10.49, total_amount: 220.03,
+    line_items: [
+      [3, 35, 105], [20, 0.35, 7], [10, 0.75, 7.5], [30, 0.85, 25.5],
+      [10, 4.25, 42.5], [1, 5, 5], [4, 4.26, 17.04],
+    ].map(([quantity, rate, amount], index) => ({
+      name: `Screenshot item ${index + 1}`, quantity, rate, amount, tax_percentage: 5,
+    })),
+  };
+}
+
+test('seven-line screenshot amounts pass VAT preflight without changing the printed values', async () => {
+  const h = harness({ treatment: 'vat_registered' }), bill = screenshotAmountsBill();
+  const before = structuredClone(bill);
+  assert.deepEqual(validateBill(bill).issues, []);
+  await h.client.prepareBill(bill, h.vendor, { organizationId: CONTRACTING });
+  assert.equal(bill.subtotal, 209.54);
+  assert.equal(bill.tax_amount, 10.49);
+  assert.equal(bill.total_amount, 220.03);
+  assert.deepEqual(bill.line_items.map(({ tax_id, ...line }) => {
+    assert.equal(tax_id, 'fixture-vat5');
+    return line;
+  }), before.line_items);
+  assert.deepEqual(h.posts, [], 'Preparing the reviewed amounts must not create a bill');
+});
+
+test('the screenshot VAT failure comes from vendor registration, not its one-cent tax rounding', async () => {
+  const h = harness(), bill = screenshotAmountsBill();
+  bill.notes = 'Customer TRN: 100000000000001. Document is stamped PAID.';
+  bill.customer_details.tax_registration_number = '100000000000001';
+  const before = structuredClone(bill);
+  await assert.rejects(h.client.prepareBill(bill, h.vendor, { organizationId: CONTRACTING }), {
+    code: 'VENDOR_VAT_TREATMENT_CONFLICT', operation: 'prepareBill',
+  });
+  assert.deepEqual(bill, before, 'Buyer registration must not alter supplier treatment or source VAT');
+  assert.equal(h.vendor.raw.tax_treatment, 'vat_not_registered');
+  assert.deepEqual(h.reads, []);
+  assert.deepEqual(h.posts, []);
+});
+
+for (const label of ['Customer TRN', 'Buyer TRN', 'Recipient TRN', 'Organization TRN',
+  'Customer tax registration number', 'Buyer tax registration number']) {
+  test(`${label} is never parsed as the supplier registration`, () => {
+    assert.equal(parseWorkerDetails(`${label}: 100000000000001`).vendor_trn, undefined);
+    assert.equal(parseWorkerDetails(`Notes: ${label}: 100000000000001`).vendor_trn, undefined);
+  });
+}
+
+for (const label of ['Vendor TRN', 'Supplier TRN', 'Vendor tax registration number',
+  'Supplier tax registration number', 'TRN', 'tax registration number']) {
+  test(`an explicit ${label} correction still identifies the supplier registration`, () => {
+    assert.equal(parseWorkerDetails(`${label}: 100000000000002`).vendor_trn, '100000000000002');
+    assert.equal(parseWorkerDetails(`Customer TRN: 100000000000001\n${label}: 100000000000002`).vendor_trn,
+      '100000000000002', 'An earlier buyer label must not mask the supplied vendor correction');
+  });
+}

@@ -6,6 +6,7 @@ const { createBillAccountResolver } = require('./billAccountResolver');
 const { customerBillNotes } = require('./customerDetails');
 const { scopeReport } = require('../zoho/oauthScopes');
 const { visitContactPages } = require('./contactPagination');
+const { limitOrganizationRequests } = require('./organizationRequestLimit');
 
 const httpsAgent = new Agent({ rejectUnauthorized: true, keepAlive: true });
 
@@ -172,12 +173,16 @@ function createZohoBooksClient({
   timeout = Number(env.ZOHO_BOOKS_TIMEOUT_MS || 15000),
   domain = env.ZOHO_BOOKS_DOMAIN || 'books.zoho.com',
 } = {}) {
+  http = limitOrganizationRequests(http);
   let cachedAccessToken = null;
   let cachedPaymentScopeReport = null;
   let tokenExpiresAt = 0;
   let pendingRefresh = null;
   const pendingPaymentAccountLists = new Map();
   const pendingContactLookups = new Map();
+  const vendorReviewCache = new Map();
+  const vendorReviewCacheTtlMs = 60000;
+  const vendorReviewCacheLimit = 50;
 
   const cleanClientId = typeof clientId === 'string' ? clientId.trim() : '';
   const cleanClientSecret = typeof clientSecret === 'string' ? clientSecret.trim() : '';
@@ -350,24 +355,50 @@ function createZohoBooksClient({
   // API METHODS
   // =========================================================================
 
-  async function shareContactLookup({ organizationId, contactType, searchText = '' }, lookup) {
+  async function shareContactLookup({ organizationId, contactType, searchText = '', review = false }, lookup) {
     validateCredentials({ organizationId });
     const key = JSON.stringify([resolveOrganizationId(organizationId), contactType, searchText]);
+    const useReviewCache = review === true && contactType === 'vendor';
+    if (useReviewCache) {
+      const cached = vendorReviewCache.get(key);
+      if (cached?.expiresAt > Date.now()) return structuredClone(cached.contacts);
+      vendorReviewCache.delete(key);
+    }
     let pending = pendingContactLookups.get(key);
     if (!pending) {
-      pending = Promise.resolve().then(lookup);
+      pending = { review: useReviewCache, promise: null };
+      pending.promise = Promise.resolve().then(lookup).then(contacts => {
+        // Cache only a complete review lookup that still owns its slot. Vendor
+        // creation removes that ownership before and after the write, so an
+        // older scan cannot repopulate the cache after either invalidation.
+        if (pending.review && pendingContactLookups.get(key) === pending) {
+          const now = Date.now();
+          for (const [cachedKey, cached] of vendorReviewCache) {
+            if (cached.expiresAt <= now) vendorReviewCache.delete(cachedKey);
+          }
+          vendorReviewCache.delete(key);
+          vendorReviewCache.set(key, { contacts, expiresAt: now + vendorReviewCacheTtlMs });
+          while (vendorReviewCache.size > vendorReviewCacheLimit) {
+            vendorReviewCache.delete(vendorReviewCache.keys().next().value);
+          }
+        }
+        return contacts;
+      });
       pendingContactLookups.set(key, pending);
+    } else if (useReviewCache) {
+      pending.review = true;
     }
     try {
-      // Only simultaneous lookups share work. Give each workflow its own raw
-      // contacts as well as normalized fields, since bill drafts can edit them.
-      return structuredClone(await pending);
+      // Ordinary callers share only simultaneous work; bill review may reuse
+      // the completed vendor list briefly. Each caller always gets its own raw
+      // contacts and normalized fields, since bill drafts can edit them.
+      return structuredClone(await pending.promise);
     } finally {
       if (pendingContactLookups.get(key) === pending) pendingContactLookups.delete(key);
     }
   }
 
-  async function searchVendor({ name = '', searchText = '', organizationId = null, fresh = false } = {}) {
+  async function searchVendor({ name = '', searchText = '', organizationId = null, fresh = false, review = false } = {}) {
     const term = (searchText || name || '').trim();
     if (!term) return [];
     // Vendor matching deliberately scans every vendor, regardless of the name.
@@ -400,7 +431,7 @@ function createZohoBooksClient({
         companyName: c.company_name || null,
         email: c.email || null,
         phone: c.phone || c.mobile || null,
-        trn: c.tax_registration_number || c.gst_no || c.trn || null,
+        trn: c.tax_registration_number || c.vat_reg_no || c.tax_reg_no || c.gst_no || c.trn || null,
         status: c.status || null,
         organizationId: c.organization_id ? String(c.organization_id) : null,
         raw: c,
@@ -412,7 +443,7 @@ function createZohoBooksClient({
     }, 'searchVendor', organizationId);
     // SAVE rechecks inside its vendor lock must begin a new scan, including
     // when another process may have created a vendor before acquiring the lock.
-    return fresh === true ? lookup() : shareContactLookup({ organizationId, contactType: 'vendor' }, lookup);
+    return fresh === true ? lookup() : shareContactLookup({ organizationId, contactType: 'vendor', review }, lookup);
   }
 
   async function createVendor({ name, organizationId = null } = {}) {
@@ -424,6 +455,7 @@ function createZohoBooksClient({
     // Clear at both boundaries, including uncertain/failed creation outcomes.
     // Existing awaiters retain their own promise and cannot clear a newer one.
     pendingContactLookups.delete(lookupKey);
+    vendorReviewCache.delete(lookupKey);
     try {
       return await requestWithRetry(async token => {
         const response = await http.post(`${cleanBaseUrl}/contacts`, { contact_name: contactName, contact_type: 'vendor' }, {
@@ -444,6 +476,7 @@ function createZohoBooksClient({
       }, 'createVendor', organizationId);
     } finally {
       pendingContactLookups.delete(lookupKey);
+      vendorReviewCache.delete(lookupKey);
     }
   }
 
