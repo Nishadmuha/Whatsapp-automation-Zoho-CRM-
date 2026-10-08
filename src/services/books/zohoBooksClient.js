@@ -6,6 +6,7 @@ const { createBillAccountResolver } = require('./billAccountResolver');
 const { customerBillNotes } = require('./customerDetails');
 const { scopeReport } = require('../zoho/oauthScopes');
 const { visitContactPages } = require('./contactPagination');
+const { limitOrganizationRequests } = require('./organizationRequestLimit');
 
 const httpsAgent = new Agent({ rejectUnauthorized: true, keepAlive: true });
 
@@ -172,6 +173,7 @@ function createZohoBooksClient({
   timeout = Number(env.ZOHO_BOOKS_TIMEOUT_MS || 15000),
   domain = env.ZOHO_BOOKS_DOMAIN || 'books.zoho.com',
 } = {}) {
+  http = limitOrganizationRequests(http);
   let cachedAccessToken = null;
   let cachedPaymentScopeReport = null;
   let tokenExpiresAt = 0;

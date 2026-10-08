@@ -892,7 +892,12 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       if (session.state === WORKFLOW_STATES.WAITING_FOR_CURRENCY && !media) {
         return applyCurrency(session, incoming);
       }
-      if (!media && session.state === PROJECT_STATE && !/^(?:manual|customer|client|payment|vendor|supplier)\b\s*(?:(?:details|name|method|type|status|TRN)\s*)?[:=-]/i.test(String(incoming.text || '').trim())) {
+      // A labelled project plus payment fields uses the existing structured
+      // reply parser below; plain project replies keep their current path.
+      const combinedProjectReply = !media && session.state === PROJECT_STATE
+        && /^(?:project|site|location)\s*[:=-]/i.test(String(incoming.text || '').trim())
+        && /[;,\n][ \t]*(?:payment(?:[ \t]+(?:type|method|status))?|bill[ \t]+status|paid[ \t]+by)[ \t]*[:=-]/i.test(incoming.text || '');
+      if (!media && session.state === PROJECT_STATE && !combinedProjectReply && !/^(?:manual|customer|client|payment|vendor|supplier)\b\s*(?:(?:details|name|method|type|status|TRN)\s*)?[:=-]/i.test(String(incoming.text || '').trim())) {
         if (parseOrganizationInput(incoming.text)) return applyOrganization(session, incoming);
         const project = String(incoming.text || '').trim().replace(/^(?:project(?:\s*(?:details|name|\/\s*site))?|site)\s*[:=-]\s*/i, '').slice(0, 1000);
         if (!project || /^(?:paid|unpaid|yes|no)$/i.test(project)) return continueAfterOrganization(session, session.bill_data, incoming.messageId);
@@ -919,7 +924,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
         // TRN/address text must never be mistaken for vendor/accounting data.
         const workerParts = [];
         const manualEntry = /^manual\s*[:=-]/i.test(String(incoming.text || '').trim());
-        const customerText = String(incoming.text || '').replace(/^manual\s*[:=-]\s*/i, '').replace(/(^|[;,\n])\s*((?:payment\s*(?:type|method)?|paid\s*by|(?:vendor|supplier)(?:\s+(?:name|TRN))?)\s*[:=-]\s*[^;,\n]+)/gi,
+        const customerText = String(incoming.text || '').replace(/^manual\s*[:=-]\s*/i, '').replace(/(^|[;,\n])\s*((?:payment\s*(?:type|method|status)?|paid\s*by|(?:vendor|supplier)(?:\s+(?:name|TRN))?)\s*[:=-]\s*[^;,\n]+)/gi,
           (_, separator, part) => { workerParts.push(part); return separator; });
         const workerDetails = parseWorkerDetails(workerParts.join('; '));
         if (workerDetails.payment_type_invalid) return reply(session, await paymentMethodPrompt(session.bill_data, true), { state: REVIEW, bill: session.bill_data });
@@ -1074,8 +1079,12 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     if (session.state !== REVIEW || !validation.valid || missing.length || !['paid', 'unpaid'].includes(bill.payment_status)) return continueAfterOrganization(session, bill, messageId);
     const accountPrompt = await ensurePaymentAccount(session, bill, messageId);
     if (accountPrompt) return accountPrompt;
-    const accountingBill = sourceOnlyLines.length
-      ? { ...bill, line_items: bill.line_items.filter((_, index) => !sourceOnlyLines.includes(index)) } : bill;
+    // Parallel accounting checks may finish even when duplicate validation
+    // fails. Keep their currency/tax mutations out of the reviewed draft, and
+    // preserve this exact array for the one-use account verification at CREATE.
+    const accountingBill = { ...bill, line_items: structuredClone(
+      bill.line_items.filter((_, index) => !sourceOnlyLines.includes(index)),
+    ) };
     if (!await billStore.claimBillSave(session.session_id, messageId)) return reply(session, 'This bill is already being saved. Please wait.');
     await billStore.updateBill(session.bill_id, { payment_type: bill.payment_type, payment_method_confirmed: true, payment_status: bill.payment_status, payment_account_id: bill.payment_account_id, payment_account_name: bill.payment_account_name, payment_account_organization_id: bill.payment_account_organization_id, customer_details: bill.customer_details, organization: bill.organization });
     const reviewFailure = async text => {
@@ -1083,23 +1092,45 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       return reply(session, `${text}\nReply SAVE to retry, EDIT to correct, or DELETE.`, { state: REVIEW });
     };
     let vendor;
+    let accountingPrepared = false;
     try {
       if (bill.payment_status === 'paid') {
         if (typeof zohoBooksClient.prepareBillPayment !== 'function') return reviewFailure('Recording paid bills is not configured. Ask an administrator to configure the payment account. Nothing was created.');
-        await zohoBooksClient.prepareBillPayment({ paymentType: bill.payment_type, organizationId: bill.organization.organizationId, paymentAccountId: bill.payment_account_id || null });
       }
       const resolveAndCreateVendor = async () => {
         // Recheck inside the organization/vendor lock: a different bill may
-        // have created this contact after the draft's initial review.
-        const resolution = await resolveVendor(bill, { fresh: true });
+        // have created this contact after the draft's initial review. Payment
+        // and vendor reads are independent, but payment failures retain their
+        // original priority. Settle both before any contact or bill write.
+        const [paymentResult, vendorResult] = await Promise.allSettled([
+          bill.payment_status === 'paid'
+            ? Promise.resolve().then(() => zohoBooksClient.prepareBillPayment({ paymentType: bill.payment_type, organizationId: bill.organization.organizationId, paymentAccountId: bill.payment_account_id || null }))
+            : Promise.resolve(null),
+          Promise.resolve().then(() => resolveVendor(bill, { fresh: true })),
+        ]);
+        if (paymentResult.status === 'rejected') throw paymentResult.reason;
+        if (vendorResult.status === 'rejected') throw vendorResult.reason;
+        const resolution = vendorResult.value;
         if (resolution.status === 'alias_target_missing') return reviewFailure('The confirmed existing vendor could not be found in this Zoho Books organization. Please check the vendor name in Zoho Books or reply EDIT with a correction. No bill was created.');
         if (resolution.status === 'ambiguous') return reviewFailure('Multiple vendors match this name in Zoho Books. Please send Vendor TRN: followed by the vendor tax registration number, or reply EDIT with a correction.');
         if (resolution.status === 'inactive') return reviewFailure('The matching vendor is inactive in Zoho Books. Please check the vendor there or reply EDIT with a correction.');
         if (resolution.status === 'wrong_organization') return reviewFailure('Vendor does not belong to the selected organization. Please select the organization again.');
         if (bill.zoho_vendor_id && resolution.vendor?.id !== bill.zoho_vendor_id) return reviewFailure('The reviewed vendor has changed in Zoho Books. Please check the vendor before saving.');
         vendor = resolution.vendor;
-        const duplicate = await zohoBooksClient.checkDuplicateBill({ billNumber: bill.bill_number, vendorId: vendor?.id || null, organizationId: bill.organization.organizationId });
+        // For an existing, freshly resolved vendor, duplicate and accounting
+        // reads can overlap. A new contact still follows the original order:
+        // duplicate check, confirmed contact creation, then accounting checks.
+        const [duplicateResult, accountingResult] = await Promise.allSettled([
+          Promise.resolve().then(() => zohoBooksClient.checkDuplicateBill({ billNumber: bill.bill_number, vendorId: vendor?.id || null, organizationId: bill.organization.organizationId })),
+          vendor && zohoBooksClient.prepareBill
+            ? Promise.resolve().then(() => zohoBooksClient.prepareBill(accountingBill, vendor, { organizationId: bill.organization.organizationId }))
+            : Promise.resolve(null),
+        ]);
+        if (duplicateResult.status === 'rejected') throw duplicateResult.reason;
+        const duplicate = duplicateResult.value;
         if (duplicate?.found) return reviewFailure(formatDuplicateWarning({ billNumber: bill.bill_number, vendorName: bill.vendor_name, existingBillId: duplicate.bills?.[0]?.id }));
+        if (accountingResult.status === 'rejected') throw accountingResult.reason;
+        accountingPrepared = Boolean(vendor && zohoBooksClient.prepareBill);
         if (!vendor) {
           if (typeof zohoBooksClient.createVendor !== 'function') return reviewFailure('Vendor not found or ambiguous. Please check the vendor in Zoho Books.');
           try {
@@ -1119,7 +1150,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
         ? await store.withContactLock(`books-vendor:${vendorKey}`, resolveAndCreateVendor)
         : await resolveAndCreateVendor();
       if (vendorResult) return vendorResult;
-      if (zohoBooksClient.prepareBill) await zohoBooksClient.prepareBill(accountingBill, vendor, { organizationId: bill.organization.organizationId });
+      if (!accountingPrepared && zohoBooksClient.prepareBill) await zohoBooksClient.prepareBill(accountingBill, vendor, { organizationId: bill.organization.organizationId });
     } catch (error) {
       log('error', { event: 'books.bill_preflight_failed', code: error?.code || 'UNKNOWN', operation: error?.operation || null });
       if (error?.code === 'VENDOR_VAT_TREATMENT_CONFLICT') {

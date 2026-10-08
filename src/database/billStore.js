@@ -2,6 +2,7 @@
 
 const { randomUUID } = require('node:crypto');
 const mongoose = require('mongoose');
+const { BOOKS_PROMPT_REPLY_STATES } = require('../services/whatsapp/messageBatching');
 const {
   ACTIVE_SESSION_STATES,
   SESSION_STATES,
@@ -200,12 +201,15 @@ class BillStore {
   }
 
   async claimBillExtraction({ leaseMs = 120000, maxAttempts = null, workerPhone = null,
-    batchQuietMs = 0, batchBoundary = null, excludeWorkerPhones = [] } = {}) {
+    batchQuietMs = 0, batchBoundary = null, batchSessionAware = false, excludeWorkerPhones = [] } = {}) {
     if (!Number.isInteger(batchQuietMs) || batchQuietMs < 0 || batchQuietMs > 60000) {
       throw new BillStoreError('INVALID_INPUT', 'batchQuietMs is invalid.');
     }
     if (batchBoundary !== null && typeof batchBoundary !== 'function') {
       throw new BillStoreError('INVALID_INPUT', 'batchBoundary is invalid.');
+    }
+    if (typeof batchSessionAware !== 'boolean') {
+      throw new BillStoreError('INVALID_INPUT', 'batchSessionAware is invalid.');
     }
     if (!Array.isArray(excludeWorkerPhones) || excludeWorkerPhones.some(phone => typeof phone !== 'string')) {
       throw new BillStoreError('INVALID_INPUT', 'excludeWorkerPhones is invalid.');
@@ -244,10 +248,25 @@ class BillStore {
       if (deferredWorkers.has(candidate.worker_phone)) continue;
       let batchCandidates = [candidate];
       if (batchQuietMs > 0) {
+        const payload = candidate.payload || {};
+        let session = null;
+        if (batchSessionAware && batchBoundary && !batchBoundary(payload)
+            && (payload.message_type || payload.messageType || 'text') === 'text'
+            && String(payload.message_text ?? payload.text ?? '').trim()
+            && !payload.media_id && !payload.mediaId && !payload.media_buffer && !payload.mediaBuffer) {
+          // Look up only the waiting state of an actual text candidate. Empty
+          // polls, commands and invoice media need no extra session query.
+          session = await this.col('bill_sessions').findOne({
+            worker_phone: candidate.worker_phone,
+            state: { $in: BOOKS_PROMPT_REPLY_STATES },
+            $or: [{ expires_at: null }, { expires_at: { $gt: now } }],
+          }, { projection: { state: 1, _id: 0 } });
+        }
+        const isBoundary = item => batchBoundary?.(item.payload || {}, session);
         const sameWorker = candidates.filter(item => item.worker_phone === candidate.worker_phone);
         const start = sameWorker.findIndex(item => item.job_id === candidate.job_id);
         let closedByBoundary = false;
-        if (!batchBoundary?.(candidate.payload || {})) {
+        if (!isBoundary(candidate)) {
           batchCandidates = [];
           for (const item of sameWorker.slice(start)) {
             const previous = batchCandidates.at(-1);
@@ -255,7 +274,7 @@ class BillStore {
               closedByBoundary = true;
               break;
             }
-            if (batchCandidates.length && batchBoundary?.(item.payload || {})) {
+            if (batchCandidates.length && isBoundary(item)) {
               closedByBoundary = true;
               break;
             }

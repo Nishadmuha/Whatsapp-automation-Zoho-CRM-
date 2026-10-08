@@ -204,6 +204,7 @@ function createBooksWorker({
             maxAttempts: config.maxAttempts || 3,
             batchQuietMs: config.messageBatchQuietMs || 0,
             batchBoundary: isBooksBatchBoundary,
+            batchSessionAware: true,
             excludeWorkerPhones: [...new Set([...activeWorkers.keys(), ...retryWorkers])],
           });
           if (!job) break;
