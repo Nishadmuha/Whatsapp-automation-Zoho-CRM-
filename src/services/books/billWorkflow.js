@@ -437,9 +437,9 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       return reply(session, 'This payment account could not be verified. Select another account or reply SAVE to reload accounts. Nothing was created.', { state: ACCOUNT_STATE, bill: session.bill_data });
     }
   }
-  async function resolveVendor(bill) {
+  async function resolveVendor(bill, { fresh = false } = {}) {
     const organizationId = bill.organization.organizationId;
-    const vendors = await zohoBooksClient.searchVendor({ searchText: bill.vendor_name, name: bill.vendor_name, organizationId });
+    const vendors = await zohoBooksClient.searchVendor({ searchText: bill.vendor_name, name: bill.vendor_name, organizationId, ...(fresh ? { fresh: true } : {}) });
     const name = vendorNameKey(bill.vendor_name);
     const nameMatches = (vendors || []).filter(vendor => name && [vendor.name, vendor.companyName].some(value => vendorNameKey(value) === name));
     const matchingTrn = bill.vendor_trn ? nameMatches.filter(vendor => vendorNameKey(vendor.trn) === vendorNameKey(bill.vendor_trn)) : [];
@@ -1078,7 +1078,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       const resolveAndCreateVendor = async () => {
         // Recheck inside the organization/vendor lock: a different bill may
         // have created this contact after the draft's initial review.
-        const resolution = await resolveVendor(bill);
+        const resolution = await resolveVendor(bill, { fresh: true });
         if (resolution.status === 'ambiguous') return reviewFailure('Multiple vendors match this name in Zoho Books. Please send Vendor TRN: followed by the vendor tax registration number, or reply EDIT with a correction.');
         if (resolution.status === 'inactive') return reviewFailure('The matching vendor is inactive in Zoho Books. Please check the vendor there or reply EDIT with a correction.');
         if (resolution.status === 'wrong_organization') return reviewFailure('Vendor does not belong to the selected organization. Please select the organization again.');

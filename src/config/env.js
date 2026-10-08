@@ -120,6 +120,7 @@ function readConfig(env = process.env) {
     bossReplyQuietMs: integer(env.BOSS_REPLY_QUIET_MS, 5000, 1, 60000, 'BOSS_REPLY_QUIET_MS'),
     messageBatchQuietMs: integer(env.MESSAGE_BATCH_QUIET_MS, env.BOSS_REPLY_QUIET_MS || 5000, 100, 60000, 'MESSAGE_BATCH_QUIET_MS'),
     booksSenders: new Set(booksSenders),
+    booksConcurrency: integer(env.BOOKS_WORKER_CONCURRENCY, 3, 1, 3, 'BOOKS_WORKER_CONCURRENCY'),
     port: integer(env.PORT, 5000, 1, 65535, 'PORT'),
     host: env.HOST || (production ? '0.0.0.0' : '127.0.0.1'),
     pollMs: integer(env.WORKER_POLL_MS, 1000, 50, 60000, 'WORKER_POLL_MS'),

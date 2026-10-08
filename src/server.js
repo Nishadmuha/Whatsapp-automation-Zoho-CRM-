@@ -80,6 +80,7 @@ async function startServer() {
               },
           });
           await Promise.all([acknowledgement, extraction]);
+          booksWorker?.wake();
         } else if (isBoss && !boundary) {
           try { await outgoingMessages.acknowledge(message, { groupKey }); }
           catch { logger.warn({ event: 'boss_ack_unavailable', message_id: message.messageId }); }
