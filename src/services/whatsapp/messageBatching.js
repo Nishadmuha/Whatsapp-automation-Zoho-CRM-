@@ -7,12 +7,39 @@ const BOOKS_COMMAND = /^(?:[1-9]\d?|(?:1\s+)?save|(?:2\s+)?edit|(?:3\s+)?delete|
 const BOOKS_PAYMENT_METHOD = /^(?:(?:payment\s*(?:type|method)?|paid\s*by)\s*[:=-]\s*|paid\s+(?:by|in)\s+)?(?:cash|bank\s+remittance|bank\s+transfer|credit\s+card|cheque)[.!?]*$/i;
 const BOOKS_GREETING = /^(?:hi|hello|hey|salaam|start|\?)[.!?]*$/i;
 const BOOKS_PROMPT_REPLY_STATES = Object.freeze([
-  'WAITING_FOR_PROJECT_DETAILS', 'WAITING_FOR_ORGANIZATION', 'WAITING_FOR_CURRENCY',
+  'WAITING_FOR_PROJECT_DETAILS', 'WAITING_FOR_ORGANIZATION', 'WAITING_FOR_CURRENCY', 'WAITING_FOR_CUSTOMER_SELECTION',
+  'WAITING_FOR_ADDITIONAL_INFO',
 ]);
 
 function isBossBatchBoundary(message = {}) {
   if ((message.message_type || message.messageType) !== 'text') return false;
   return BOSS_BOUNDARIES.has(conversationIntent(message.message_text ?? message.text ?? ''));
+}
+
+function isStandaloneCustomerName(text) {
+  return text.length <= 160 && /\p{L}/u.test(text) && !/[\r\n;:=]/.test(text)
+    && !/\b(?:invoice|bill|subtotal|total|vat|quantity|qty|rate)\b/i.test(text)
+    && !/^(?:manual|customer|client|vendor|supplier|project|site|location|currency|payment|tax|change|update|edit|delete|save)\b/i.test(text);
+}
+
+function isCompleteCustomerReply(text) {
+  const parts = text.split(/[;\r\n]+/).map(part => part.trim()).filter(Boolean);
+  if (parts.length !== 4 || !isStandaloneCustomerName(parts[0])) return false;
+  const fields = new Set();
+  for (const part of parts.slice(1)) {
+    const match = part.match(/^(project|site|location|payment method|payment type|paid by|payment status)\s*[:=-]\s*(.+)$/i);
+    if (!match || /[:=]/.test(match[2])) return false;
+    const label = match[1].toLowerCase();
+    const field = /^(?:project|site|location)$/.test(label) ? 'project' : label === 'payment status' ? 'status' : 'method';
+    if (fields.has(field)) return false;
+    if (field === 'status' && !/^(?:paid|unpaid)$/i.test(match[2])) return false;
+    if (field === 'method') {
+      const { normalizePaymentMethod } = require('../books/paymentMethods');
+      if (!normalizePaymentMethod(match[2])) return false;
+    }
+    fields.add(field);
+  }
+  return fields.size === 3;
 }
 
 function isBooksBatchBoundary(message = {}, session = null) {
@@ -23,6 +50,15 @@ function isBooksBatchBoundary(message = {}, session = null) {
   if (!text || message.media_id || message.mediaId || message.media_buffer || message.mediaBuffer) return false;
   // Only a reply to the currently awaited field may bypass the invoice/page
   // quiet window. This changes scheduling, never workflow validation or SAVE.
+  if (session?.state === 'WAITING_FOR_ADDITIONAL_INFO') {
+    const { parseBillDateReply } = require('../books/billDateReply');
+    return Boolean(parseBillDateReply(text, { allowBare: !session.bill_data?.bill_date }));
+  }
+  if (session?.state === 'WAITING_FOR_CUSTOMER_SELECTION') {
+    // The current customer prompt already parses a standalone name directly.
+    // Keep invoice fragments, labelled edits and multi-message details batched.
+    return isStandaloneCustomerName(text) || isCompleteCustomerReply(text);
+  }
   if (session?.state === 'WAITING_FOR_CURRENCY') {
     const { normalizeCurrency } = require('../books/billValidator');
     const match = text.replace(/[.!?,;:]+$/, '').match(/^(?:currency(?:\s+code)?\s*[:=-]?\s*)?([^\s,;]+)$/i);

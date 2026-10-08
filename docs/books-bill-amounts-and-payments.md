@@ -10,6 +10,21 @@ Workers can type customer details directly or use `MANUAL: Car Motor LLC; Phone:
 
 After selecting the customer, the worker can answer the project and payment fields together, for example `Project: Al Quoz workshop; Payment method: Cash; Payment status: unpaid`. Use the actual payment method and status; a paid bill still requires the actual payment account. The same fields can accompany typed customer details. Labelled customer input still follows the existing explicit selection policy. These combined replies use the deterministic parser, retain the final review and SAVE, and do not change the existing question text or AI model.
 
+For faster entry, send the image, then answer the customer prompt with one message such as:
+
+```text
+Ogsi
+Project: Electrical
+Payment method: Cash
+Payment status: paid
+```
+
+Replace every value with the actual bill details. An unlabelled customer name retains the existing exact-match or manual-entry behavior. A complete reply in this format bypasses the message batching quiet window while waiting for the customer. Incomplete replies, media and extra invoice fields retain their normal batching behavior. For a paid bill, select the actual payment account next, then review and send SAVE. Separate replies remain supported with the same prompts.
+
+Typed customer names can reuse the complete customer list offered in the current session for up to 60 seconds, scoped to the same organization. A unique exact match still requires a fresh contact read before selection. A name absent from that complete list follows the existing manual-entry fallback without another full customer search. Stale, incomplete, ambiguous or filtered lists fall back to the live lookup; labelled selections and explicit searches retain their existing policies.
+
+If the bill date needs correction, an unambiguous named-month date such as `7-Oct-26` is normalized to `2026-10-07`. Two-digit years in named-month dates mean 2000 through 2099. A bare date only fills a missing date at the additional-information prompt; an explicit `Bill date: 7-Oct-26` can correct it during review. These replies use deterministic validation without a new AI extraction. Impossible dates, ambiguous numeric dates and mixed correction instructions retain the existing validation path. Extraction grounding also recognizes complete named-month dates in the source, avoiding rejection solely because the invoice prints a two-digit year.
+
 For paid bills, workers select the account actually used from an organization-specific WhatsApp list. Accounts are fetched from Zoho and verified again before payment. Optional default account IDs can be configured using the keys in `.env.example`; for example, `ZOHO_BOOKS_CONTRACTING_PAYMENT_CASH_ACCOUNT_ID`. Cash requires an active `cash` account; Credit Card requires `credit_card`; Bank Transfer, Bank Remittance and Cheque require `bank`. Missing defaults open the account picker. If no compatible account exists, the worker must correct the payment method or have the account configured in Zoho. The selected account is displayed in the review and saved-bill report. Changing organization or payment method clears the previous account selection.
 
 Standalone payment-method replies are processed without waiting for the message batching quiet window. Concurrent account-list reads for the same organization share one request sequence; subsequent lookups and final account validation still fetch current Zoho data. These changes leave invoice-page batching and Boss lead processing unchanged.
@@ -19,6 +34,10 @@ Books also skips the quiet window for a project/site answer, a valid organizatio
 Bill processing can handle three different workers concurrently by default. `BOOKS_WORKER_CONCURRENCY` accepts 1–3; it does not change the Boss worker. Each bill worker's full reply sequence finishes before their next message is processed. New bill jobs wake the queue after acknowledgement, and ready jobs start as capacity becomes available. The existing invoice-page grouping window, AI models, prompts, and confirmation steps are retained. `books_reply_ready` and `books_job_completed` log `queueWaitMs` separately from processing time so deployment latency can be measured.
 
 Independent currency, tax, and expense-account reads run together during SAVE, as do the fresh bill and payment-account checks before recording payment. Validation failures keep their existing priority, and no financial write proceeds before all required checks succeed. One minute per bill is a performance target, not a timeout that bypasses validation; external service latency and the worker's responses still affect completion time.
+
+Initial image/PDF storage overlaps direct AI extraction after download. Both operations must finish successfully before a draft or review is offered, and every page remains attached in its original order. After the saved amount and any payment are confirmed, PDF preparation overlaps attachment uploads; delivery still waits for the existing attachment checkpoints and PDF validation. Retries preserve bill, payment, upload and document-delivery safeguards.
+
+The INFO event `ai.bill_request.metrics` records request duration, stage, outcome, model and available token counts, plus byte/file counts for media extraction. It excludes invoice contents and provider error bodies. Use it with `books_job_completed` and queue timing to distinguish AI time from download, storage, Zoho and worker response time. A read-only replay of the reported seven-line image on 2026-10-08 extracted all seven items, the date and AED 220.03 total in 11.3 seconds with the existing model. That extraction measurement is not an end-to-end one-minute guarantee.
 
 For an existing vendor, SAVE overlaps the fresh vendor lookup with payment-account validation, then overlaps duplicate detection with accounting preparation. All started checks settle and keep their original error priority before any bill creation. Newly created vendors retain their original validation order. Parallel reads and writes share a five-request budget per Books client and organization, keeping several workers from multiplying simultaneous API calls; other deployments and external integrations have separate traffic. See [Zoho API limits](https://www.zoho.com/books/api/v3/introduction/#api-call-limit). End-to-end timing must include initial image queueing, extraction, worker replies and verified saving; individual job timings alone do not prove the one-minute target.
 

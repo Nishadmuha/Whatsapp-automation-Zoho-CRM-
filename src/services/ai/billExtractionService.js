@@ -3,7 +3,7 @@
 const https = require('node:https');
 const axios = require('axios');
 const { billExtractionJsonSchema, extractedBillEnvelopeSchema, TRACKED_FIELDS } = require('../books/billSchema');
-const { validateBill } = require('../books/billValidator');
+const { validateBill, normalizeDate } = require('../books/billValidator');
 const { findOrganizationsInText, resolveOrganization } = require('../books/organizations');
 const { DOCUMENT_EXTENSIONS, mediaKind, mediaSizeLimit, normalizeMediaMimeType } = require('../../utils/media');
 const { resolveModel, openAiReasoning, formatRouterLog } = require('./modelRouter');
@@ -180,6 +180,15 @@ function numberAppearsInText(sourceText, num) {
   return candidates.some((cand) => s.includes(cand));
 }
 
+function dateAppearsInText(sourceText, value) {
+  const expected = normalizeDate(value).date;
+  if (!expected) return false;
+  // Compare complete, unambiguous dates. A year and day elsewhere in the
+  // invoice (or in its due date) cannot substantiate a different bill date.
+  const dates = String(sourceText || '').matchAll(/(?<![\p{L}\p{N}])(?:\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{4}|\d{1,2}[ \t/-]+[A-Za-z]+[ \t,/-]+(?:\d{4}|\d{2})|[A-Za-z]+[ \t/-]+\d{1,2}[ \t,/-]+(?:\d{4}|\d{2}))(?![\p{L}\p{N}])/gu);
+  return [...dates].some(([date]) => normalizeDate(date).date === expected);
+}
+
 /**
  * Determines grounding state ('explicit', 'inferred', 'missing') for each tracked field.
  */
@@ -207,22 +216,16 @@ function computeGrounding(bill, originalText) {
   // bill_date
   if (!bill.bill_date) {
     grounding.bill_date = 'missing';
-  } else if (textContains(originalText, bill.bill_date)) {
+  } else if (dateAppearsInText(originalText, bill.bill_date)) {
     grounding.bill_date = 'explicit';
   } else {
-    // Check if parts of the date appear
-    const parts = bill.bill_date.split('-');
-    if (parts.length === 3 && originalText.includes(parts[0]) && originalText.includes(parts[2])) {
-      grounding.bill_date = 'explicit';
-    } else {
-      grounding.bill_date = 'inferred';
-    }
+    grounding.bill_date = 'inferred';
   }
 
   // due_date
   if (!bill.due_date) {
     grounding.due_date = 'missing';
-  } else if (textContains(originalText, bill.due_date)) {
+  } else if (dateAppearsInText(originalText, bill.due_date)) {
     grounding.due_date = 'explicit';
   } else {
     grounding.due_date = 'inferred';
@@ -407,7 +410,38 @@ function createBillExtractionService({ env = process.env, http = axios, logger }
     try { logger?.[level]?.(metadata); } catch { /* Ignore logger errors */ }
   }
   function logTiming(stage, startedAt, details = {}) {
-    log('debug', { event: 'ai_timing', stage, duration_ms: Math.max(0, Date.now() - startedAt), ...details });
+    log('info', { event: 'ai_timing', stage, duration_ms: Math.max(0, Date.now() - startedAt), ...details });
+  }
+  async function requestProvider(stage, body, options, details = {}) {
+    const startedAt = Date.now();
+    let response;
+    let outcome = 'response';
+    try {
+      response = await http.post('https://api.openai.com/v1/responses', body, options);
+      return response;
+    } catch (error) {
+      outcome = 'error';
+      response = error?.response;
+      throw error;
+    } finally {
+      const data = response?.data;
+      const usage = data?.usage;
+      const counters = {
+        input_tokens: usage?.input_tokens,
+        output_tokens: usage?.output_tokens,
+        total_tokens: usage?.total_tokens,
+        cached_input_tokens: usage?.input_tokens_details?.cached_tokens,
+        reasoning_tokens: usage?.output_tokens_details?.reasoning_tokens,
+      };
+      const model = typeof data?.model === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/.test(data.model) ? data.model : null;
+      log('info', {
+        event: 'ai.bill_request.metrics', stage, outcome,
+        duration_ms: Math.max(0, Date.now() - startedAt),
+        ...(model ? { model } : {}),
+        ...Object.fromEntries(Object.entries(counters).filter(([, value]) => Number.isSafeInteger(value) && value >= 0)),
+        ...details,
+      });
+    }
   }
 
   async function extractBillFromText({ text, sourceType = 'document_text', options = {} } = {}) {
@@ -451,7 +485,7 @@ function createBillExtractionService({ env = process.env, http = axios, logger }
 
     let response;
     try {
-      response = await http.post('https://api.openai.com/v1/responses', {
+      response = await requestProvider('bill_text_extraction', {
         model,
         store: false,
         ...openAiReasoning(model, env),
@@ -549,7 +583,7 @@ function createBillExtractionService({ env = process.env, http = axios, logger }
 
     let response;
     try {
-      response = await http.post('https://api.openai.com/v1/responses', {
+      response = await requestProvider('bill_media_extraction', {
         model: routing.model,
         store: false,
         ...openAiReasoning(routing.model, env),
@@ -560,7 +594,7 @@ function createBillExtractionService({ env = process.env, http = axios, logger }
         text: { format: { type: 'json_schema', name: 'purchase_bill', strict: true, schema: billExtractionJsonSchema } },
         max_output_tokens: maxOutputTokens,
         truncation: 'disabled',
-      }, reqOpts);
+      }, reqOpts, { media_count: normalizedFiles.length, media_bytes: normalizedFiles.reduce((sum, file) => sum + file.buffer.length, 0) });
     } catch (err) {
       const classified = classifyError(err);
       log('error', { event: 'ai.bill_media_extraction.failed', code: classified.code });
@@ -629,7 +663,7 @@ function createBillExtractionService({ env = process.env, http = axios, logger }
     ].join(' ');
 
     try {
-      const response = await http.post('https://api.openai.com/v1/responses', {
+      const response = await requestProvider('bill_merge', {
         model,
         store: false,
         ...openAiReasoning(model, env),
@@ -731,7 +765,7 @@ function createBillExtractionService({ env = process.env, http = axios, logger }
     ].join(' ');
 
     try {
-      const response = await http.post('https://api.openai.com/v1/responses', {
+      const response = await requestProvider('bill_edit', {
         model,
         store: false,
         ...openAiReasoning(model, env),

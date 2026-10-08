@@ -68,7 +68,7 @@ test('only the currently awaited Books project, organization or currency answer 
     [PROJECT, 'Vendor: Supplier LLC'], [PROJECT, 'Customer: Example LLC'], [PROJECT, 'change total to 220'],
     [PROJECT, 'Invoice 123 AED 220'], [PROJECT, 'Project: First floor\nextra information'],
     [CURRENCY, 'AED; vendor: Supplier'], [CURRENCY, 'US dollars'], [ORGANIZATION, 'Another Company LLC'],
-    ['WAITING_FOR_ADDITIONAL_INFO', 'Electrical'], ['WAITING_FOR_CUSTOMER_SELECTION', 'Example LLC'],
+    ['WAITING_FOR_ADDITIONAL_INFO', 'Electrical'], ['WAITING_FOR_CUSTOMER_SELECTION', 'Customer: Example LLC'],
   ]) assert.equal(isBooksBatchBoundary(message(text), { state }), false, `${state}: ${text}`);
   for (const type of ['image', 'document', 'audio']) {
     assert.equal(isBooksBatchBoundary({ message_type: type, message_text: 'Electrical' }, { state: PROJECT }), false);
@@ -147,7 +147,7 @@ test('empty polls, existing choice boundaries and media need no extra session qu
   assert.equal(await h.billStore.claimBillExtraction(options), null);
   assert.equal(queries.length, 1);
   assert.equal(queries[0][0].worker_phone, '+971500000002');
-  assert.deepEqual(queries[0][1], { projection: { state: 1, _id: 0 } });
+  assert.deepEqual(queries[0][1], { projection: { state: 1, _id: 0, 'bill_data.bill_date': 1 } });
 });
 
 test('Books worker immediately processes the project answer and retains the payment question and SAVE gate', async t => {
