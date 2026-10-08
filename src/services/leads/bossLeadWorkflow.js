@@ -168,7 +168,9 @@ async function handleZohoSyncUnlocked({ leadId, store, zoho, config, logger, mes
       if (existing?.id) {
         writeResult = await zohoClient.updateLead(existing.id, leadData, lead.original_message || lead.originalMessage);
       } else {
-        writeResult = await zohoClient.createLead(leadData, lead.original_message || lead.originalMessage);
+        writeResult = await zohoClient.createLead(leadData, lead.original_message || lead.originalMessage, {
+          useBlueprintInitialState: lead.source === 'boss',
+        });
       }
     }
 

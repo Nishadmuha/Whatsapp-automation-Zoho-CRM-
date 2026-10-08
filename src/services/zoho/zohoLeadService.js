@@ -260,9 +260,12 @@ function createZohoLeadService({ env = process.env, http = axios, auth, logger }
     return { id };
   }
 
-  async function createLead(lead, originalText) {
+  async function createLead(lead, originalText, { useBlueprintInitialState = false } = {}) {
     const { mapping } = settings();
     const record = mapLeadToZoho(lead, originalText, mapping);
+    // Zoho's Blueprint start state is the empty picklist value (-None-).
+    // The literal string 'None' is a different value and cannot enter that state.
+    if (useBlueprintInitialState && mapping.leadStatus) record[mapping.leadStatus] = null;
     if (!optionalText(lead.name)) {
       record.Last_Name = fallbackLastName(record[mapping.phone], record[mapping.email]);
     }
