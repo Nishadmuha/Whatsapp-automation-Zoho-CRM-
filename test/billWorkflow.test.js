@@ -656,7 +656,10 @@ test('two concurrent bill saves reuse one newly created vendor within the same o
   } };
   let vendor = null, creates = 0;
   const zohoOverrides = {
-    async searchVendor() { return vendor ? [vendor] : []; },
+    async searchVendor({ fresh }) {
+      if (creates) assert.equal(fresh, true, 'The next SAVE must bypass a vendor scan started before creation.');
+      return vendor ? [vendor] : [];
+    },
     async createVendor({ name, organizationId }) {
       creates++;
       await new Promise(resolve => setTimeout(resolve, 10));

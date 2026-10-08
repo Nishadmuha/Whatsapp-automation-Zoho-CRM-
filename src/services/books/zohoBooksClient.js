@@ -5,6 +5,7 @@ const { Agent } = require('node:https');
 const { createBillAccountResolver } = require('./billAccountResolver');
 const { customerBillNotes } = require('./customerDetails');
 const { scopeReport } = require('../zoho/oauthScopes');
+const { visitContactPages } = require('./contactPagination');
 
 const httpsAgent = new Agent({ rejectUnauthorized: true, keepAlive: true });
 
@@ -176,6 +177,7 @@ function createZohoBooksClient({
   let tokenExpiresAt = 0;
   let pendingRefresh = null;
   const pendingPaymentAccountLists = new Map();
+  const pendingContactLookups = new Map();
 
   const cleanClientId = typeof clientId === 'string' ? clientId.trim() : '';
   const cleanClientSecret = typeof clientSecret === 'string' ? clientSecret.trim() : '';
@@ -348,13 +350,31 @@ function createZohoBooksClient({
   // API METHODS
   // =========================================================================
 
-  async function searchVendor({ name = '', searchText = '', organizationId = null } = {}) {
+  async function shareContactLookup({ organizationId, contactType, searchText = '' }, lookup) {
+    validateCredentials({ organizationId });
+    const key = JSON.stringify([resolveOrganizationId(organizationId), contactType, searchText]);
+    let pending = pendingContactLookups.get(key);
+    if (!pending) {
+      pending = Promise.resolve().then(lookup);
+      pendingContactLookups.set(key, pending);
+    }
+    try {
+      // Only simultaneous lookups share work. Give each workflow its own raw
+      // contacts as well as normalized fields, since bill drafts can edit them.
+      return structuredClone(await pending);
+    } finally {
+      if (pendingContactLookups.get(key) === pending) pendingContactLookups.delete(key);
+    }
+  }
+
+  async function searchVendor({ name = '', searchText = '', organizationId = null, fresh = false } = {}) {
     const term = (searchText || name || '').trim();
     if (!term) return [];
-    return requestWithRetry(async (token) => {
+    // Vendor matching deliberately scans every vendor, regardless of the name.
+    const lookup = () => requestWithRetry(async (token) => {
       const contacts = [];
-      for (let page = 1; page <= 100; page += 1) {
-        const response = await http.get(`${cleanBaseUrl}/contacts`, {
+      await visitContactPages({
+        fetchPage: async page => (await http.get(`${cleanBaseUrl}/contacts`, {
           params: {
             organization_id: resolveOrganizationId(organizationId),
             contact_type: 'vendor',
@@ -365,13 +385,14 @@ function createZohoBooksClient({
           headers: { Authorization: `Zoho-oauthtoken ${token}` },
           timeout,
           httpsAgent,
-        });
-        if (response?.data?.code !== undefined && response.data.code !== 0) throw new ZohoBooksError('VENDOR_LOOKUP_FAILED', 'Zoho rejected the vendor lookup.');
-        if (!Array.isArray(response?.data?.contacts)) throw new ZohoBooksError('VENDOR_LOOKUP_FAILED', 'Zoho returned an invalid vendor list.');
-        contacts.push(...response.data.contacts);
-        if (!response?.data?.page_context?.has_more_page) break;
-        if (page === 100) throw new ZohoBooksError('VENDOR_LOOKUP_INCOMPLETE', 'Zoho vendor lookup could not be completed safely.');
-      }
+        }))?.data,
+        visitPage: data => {
+          if (data?.code !== undefined && data.code !== 0) throw new ZohoBooksError('VENDOR_LOOKUP_FAILED', 'Zoho rejected the vendor lookup.');
+          if (!Array.isArray(data?.contacts)) throw new ZohoBooksError('VENDOR_LOOKUP_FAILED', 'Zoho returned an invalid vendor list.');
+          contacts.push(...data.contacts);
+        },
+        incompleteError: () => new ZohoBooksError('VENDOR_LOOKUP_INCOMPLETE', 'Zoho vendor lookup could not be completed safely.'),
+      });
       const seen = new Set();
       return contacts.filter(c => !c.contact_type || c.contact_type === 'vendor').map((c) => ({
         id: String(c.contact_id || c.id),
@@ -389,36 +410,49 @@ function createZohoBooksClient({
         return true;
       });
     }, 'searchVendor', organizationId);
+    // SAVE rechecks inside its vendor lock must begin a new scan, including
+    // when another process may have created a vendor before acquiring the lock.
+    return fresh === true ? lookup() : shareContactLookup({ organizationId, contactType: 'vendor' }, lookup);
   }
 
   async function createVendor({ name, organizationId = null } = {}) {
     const contactName = nullableText(name);
     if (!contactName) throw new ZohoBooksError('INVALID_INPUT', 'Vendor name is required.');
-    return requestWithRetry(async token => {
-      const response = await http.post(`${cleanBaseUrl}/contacts`, { contact_name: contactName, contact_type: 'vendor' }, {
-        params: { organization_id: resolveOrganizationId(organizationId) },
-        headers: { Authorization: `Zoho-oauthtoken ${token}`, 'Content-Type': 'application/json' },
-        timeout,
-        httpsAgent,
-      });
-      const contact = response?.data?.contact;
-      const id = nullableText(contact?.contact_id);
-      if (response?.data?.code !== 0 || !id || (contact.contact_type && contact.contact_type !== 'vendor')) {
-        throw new ZohoBooksError('ZOHO_BOOKS_INVALID_RESPONSE', 'Zoho did not confirm a created vendor ID.');
-      }
-      return {
-        id, name: contact.contact_name || contactName, companyName: contact.company_name || null,
-        status: contact.status || null, organizationId, raw: contact,
-      };
-    }, 'createVendor', organizationId);
+    validateCredentials({ organizationId });
+    const lookupKey = JSON.stringify([resolveOrganizationId(organizationId), 'vendor', '']);
+    // A SAVE recheck must not join a scan begun before this contact mutation.
+    // Clear at both boundaries, including uncertain/failed creation outcomes.
+    // Existing awaiters retain their own promise and cannot clear a newer one.
+    pendingContactLookups.delete(lookupKey);
+    try {
+      return await requestWithRetry(async token => {
+        const response = await http.post(`${cleanBaseUrl}/contacts`, { contact_name: contactName, contact_type: 'vendor' }, {
+          params: { organization_id: resolveOrganizationId(organizationId) },
+          headers: { Authorization: `Zoho-oauthtoken ${token}`, 'Content-Type': 'application/json' },
+          timeout,
+          httpsAgent,
+        });
+        const contact = response?.data?.contact;
+        const id = nullableText(contact?.contact_id);
+        if (response?.data?.code !== 0 || !id || (contact.contact_type && contact.contact_type !== 'vendor')) {
+          throw new ZohoBooksError('ZOHO_BOOKS_INVALID_RESPONSE', 'Zoho did not confirm a created vendor ID.');
+        }
+        return {
+          id, name: contact.contact_name || contactName, companyName: contact.company_name || null,
+          status: contact.status || null, organizationId, raw: contact,
+        };
+      }, 'createVendor', organizationId);
+    } finally {
+      pendingContactLookups.delete(lookupKey);
+    }
   }
 
   async function searchCustomer({ searchText = '', organizationId = null } = {}) {
     const term = String(searchText || '').trim();
-    return requestWithRetry(async (token) => {
+    return shareContactLookup({ organizationId, contactType: 'customer', searchText: term }, () => requestWithRetry(async (token) => {
       const contacts = [];
-      for (let page = 1; page <= 100; page += 1) {
-        const response = await http.get(`${cleanBaseUrl}/contacts`, {
+      await visitContactPages({
+        fetchPage: async page => (await http.get(`${cleanBaseUrl}/contacts`, {
           params: {
             organization_id: resolveOrganizationId(organizationId),
             contact_type: 'customer',
@@ -429,20 +463,21 @@ function createZohoBooksClient({
           headers: { Authorization: `Zoho-oauthtoken ${token}` },
           timeout,
           httpsAgent,
-        });
-        if (response?.data?.code !== undefined && response.data.code !== 0) throw new ZohoBooksError('CUSTOMER_LOOKUP_FAILED', 'Zoho rejected the customer lookup.');
-        if (!Array.isArray(response?.data?.contacts)) throw new ZohoBooksError('CUSTOMER_LOOKUP_FAILED', 'Zoho returned an invalid customer list.');
-        const pageContacts = response.data.contacts;
-        contacts.push(...pageContacts);
-        _logger?.debug?.({
-          event: 'zoho.books.customer_lookup.page',
-          page,
-          count: pageContacts.length,
-          fields: [...new Set(pageContacts.flatMap(contact => Object.keys(contact || {})))].sort(),
-        });
-        if (!response?.data?.page_context?.has_more_page) break;
-        if (page === 100) throw new ZohoBooksError('CUSTOMER_LOOKUP_INCOMPLETE', 'Zoho customer lookup could not be completed safely.');
-      }
+        }))?.data,
+        visitPage: (data, page) => {
+          if (data?.code !== undefined && data.code !== 0) throw new ZohoBooksError('CUSTOMER_LOOKUP_FAILED', 'Zoho rejected the customer lookup.');
+          if (!Array.isArray(data?.contacts)) throw new ZohoBooksError('CUSTOMER_LOOKUP_FAILED', 'Zoho returned an invalid customer list.');
+          const pageContacts = data.contacts;
+          contacts.push(...pageContacts);
+          _logger?.debug?.({
+            event: 'zoho.books.customer_lookup.page',
+            page,
+            count: pageContacts.length,
+            fields: [...new Set(pageContacts.flatMap(contact => Object.keys(contact || {})))].sort(),
+          });
+        },
+        incompleteError: () => new ZohoBooksError('CUSTOMER_LOOKUP_INCOMPLETE', 'Zoho customer lookup could not be completed safely.'),
+      });
 
       const seen = new Set();
       const mapped = contacts.map(normalizeCustomerContact).filter(contact => {
@@ -454,7 +489,7 @@ function createZohoBooksClient({
       const needle = term.toLowerCase();
       return mapped.filter(contact => [contact.contactName, contact.companyName, contact.displayName, contact.phone, contact.mobile, contact.email, contact.raw.customer_code, contact.raw.contact_number]
         .filter(Boolean).some(value => String(value).toLowerCase().includes(needle)));
-    }, 'searchCustomer', organizationId);
+    }, 'searchCustomer', organizationId));
   }
 
   async function getCustomer(contactId, { organizationId = null } = {}) {
@@ -681,32 +716,48 @@ function createZohoBooksClient({
         'Source VAT conflicts with the vendor VAT treatment in Zoho Books. An administrator must verify the vendor tax setup; source VAT was not changed.',
         { operation: 'prepareBill' });
     }
-    const currencies = await getJson('/settings/currencies', {}, organizationId);
-    const currency = (currencies.currencies || []).find(item => item.currency_code === bill.currency);
-    if (!currency?.currency_id) throw new ZohoBooksError('CURRENCY_NOT_FOUND', 'Currency is not configured in Zoho Books.');
-    bill.currency_id = currency.currency_id;
-    if (vendor.raw?.currency_id && String(vendor.raw.currency_id) !== String(currency.currency_id)) throw new ZohoBooksError('VENDOR_CURRENCY_MISMATCH', 'Vendor currency differs from the source bill.');
-    const calculatedSubtotal = bill.line_items.reduce((sum, item) => sum + item.quantity * sourceLineRate(item), 0);
-    if (bill.line_items.some(item => item.amount != null && Math.abs(item.quantity * item.rate - item.amount) > 0.05 && !isTaxInclusiveSourceAmount(item))) throw new ZohoBooksError('LINE_AMOUNT_MISMATCH', 'A line amount differs from its quantity and rate.');
-    if (bill.subtotal == null || bill.tax_amount == null || Math.abs(calculatedSubtotal - bill.subtotal) > 0.05) throw new ZohoBooksError('TOTAL_MISMATCH', 'Confirm subtotal, tax, quantity and rates before saving.');
-    if (bill.tax_amount > 0) {
-      const taxes = await getJson('/settings/taxes', {}, organizationId);
-      // Do not infer item-level tax allocation from the total tax.
-      let calculatedTax = 0;
-      for (const item of bill.line_items) {
-        const percentage = item.tax_percentage ?? item.tax;
-        if (!Number.isFinite(percentage)) throw new ZohoBooksError('TAX_ALLOCATION_REQUIRED', 'Supply the tax percentage for each item.');
-        const matches = (taxes.taxes || []).filter(tax => Number(tax.tax_percentage) === percentage && tax.tax_type === 'tax');
-        if (matches.length !== 1) throw new ZohoBooksError('TAX_AMBIGUOUS', 'Tax mapping is missing or ambiguous.');
-        item.tax_id = matches[0].tax_id;
-        calculatedTax += item.quantity * sourceLineRate(item) * percentage / 100;
+    // These organization-scoped reads are independent. Settle all of them,
+    // then retain the original currency -> amounts -> tax -> account error
+    // order, regardless of which request finishes first. Nothing is written.
+    const [currencyResult, taxResult, accountResult] = await Promise.allSettled([
+      getJson('/settings/currencies', {}, organizationId),
+      bill.tax_amount > 0 ? getJson('/settings/taxes', {}, organizationId) : Promise.resolve(null),
+      Promise.resolve().then(() => billAccounts.prepare(bill.line_items, resolveOrganizationId(organizationId))),
+    ]);
+    try {
+      if (currencyResult.status === 'rejected') throw currencyResult.reason;
+      const currency = (currencyResult.value.currencies || []).find(item => item.currency_code === bill.currency);
+      if (!currency?.currency_id) throw new ZohoBooksError('CURRENCY_NOT_FOUND', 'Currency is not configured in Zoho Books.');
+      bill.currency_id = currency.currency_id;
+      if (vendor.raw?.currency_id && String(vendor.raw.currency_id) !== String(currency.currency_id)) throw new ZohoBooksError('VENDOR_CURRENCY_MISMATCH', 'Vendor currency differs from the source bill.');
+      const calculatedSubtotal = bill.line_items.reduce((sum, item) => sum + item.quantity * sourceLineRate(item), 0);
+      if (bill.line_items.some(item => item.amount != null && Math.abs(item.quantity * item.rate - item.amount) > 0.05 && !isTaxInclusiveSourceAmount(item))) throw new ZohoBooksError('LINE_AMOUNT_MISMATCH', 'A line amount differs from its quantity and rate.');
+      if (bill.subtotal == null || bill.tax_amount == null || Math.abs(calculatedSubtotal - bill.subtotal) > 0.05) throw new ZohoBooksError('TOTAL_MISMATCH', 'Confirm subtotal, tax, quantity and rates before saving.');
+      if (bill.tax_amount > 0) {
+        if (taxResult.status === 'rejected') throw taxResult.reason;
+        const taxes = taxResult.value;
+        // Do not infer item-level tax allocation from the total tax.
+        let calculatedTax = 0;
+        for (const item of bill.line_items) {
+          const percentage = item.tax_percentage ?? item.tax;
+          if (!Number.isFinite(percentage)) throw new ZohoBooksError('TAX_ALLOCATION_REQUIRED', 'Supply the tax percentage for each item.');
+          const matches = (taxes.taxes || []).filter(tax => Number(tax.tax_percentage) === percentage && tax.tax_type === 'tax');
+          if (matches.length !== 1) throw new ZohoBooksError('TAX_AMBIGUOUS', 'Tax mapping is missing or ambiguous.');
+          item.tax_id = matches[0].tax_id;
+          calculatedTax += item.quantity * sourceLineRate(item) * percentage / 100;
+        }
+        if (Math.abs(calculatedTax - bill.tax_amount) > 0.05) throw new ZohoBooksError('TAX_MISMATCH', 'Line tax differs from the source bill.');
       }
-      if (Math.abs(calculatedTax - bill.tax_amount) > 0.05) throw new ZohoBooksError('TAX_MISMATCH', 'Line tax differs from the source bill.');
+      // Resolve before the workflow records create intent, so an invalid mapping
+      // follows the existing safe preflight failure/review path (no bill POST).
+      if (accountResult.status === 'rejected') throw accountResult.reason;
+      return bill;
+    } catch (error) {
+      // A successful parallel account read must not authorize createBill when
+      // another required validation failed. All reads have settled by now.
+      billAccounts.clear(bill.line_items);
+      throw error;
     }
-    // Resolve before the workflow records create intent, so an invalid mapping
-    // follows the existing safe preflight failure/review path (no bill POST).
-    await billAccounts.prepare(bill.line_items, resolveOrganizationId(organizationId));
-    return bill;
   }
 
   async function getBillPdf(billId, { organizationId = null } = {}) {
@@ -887,7 +938,14 @@ function createZohoBooksClient({
           { operation: 'paymentPreflight' });
       }
     }
-    const before = await readBeforePayment(() => getBill(billId, { organizationId }));
+    // Read fresh bill and account details together, but keep bill validation
+    // first. An already-paid bill needs no account and must never be paid again.
+    const [billResult, accountResult] = await Promise.allSettled([
+      readBeforePayment(() => getBill(billId, { organizationId })),
+      readBeforePayment(() => prepareBillPayment({ paymentType, organizationId, paymentAccountId })),
+    ]);
+    if (billResult.status === 'rejected') throw billResult.reason;
+    const before = billResult.value;
     if (before.vendorId !== String(vendorId)) throw new ZohoBooksError('PAYMENT_VENDOR_MISMATCH', 'The saved bill has a different vendor.');
     if (expectedCurrency && before.currencyCode !== expectedCurrency) throw new ZohoBooksError('BILL_CURRENCY_MISMATCH', 'The saved bill currency differs from the source document.');
     if (moneyUnits(before.total, precision) !== units) throw new ZohoBooksError('BILL_TOTAL_MISMATCH', 'The payment amount differs from the saved bill total.');
@@ -895,7 +953,8 @@ function createZohoBooksClient({
       return { id: null, status: 'paid', balance: 0, alreadyPaid: true, bill: before };
     }
     if (moneyUnits(before.balance, precision) !== units) throw new ZohoBooksError('PAYMENT_BALANCE_MISMATCH', 'The bill balance changed. Reconcile existing payments before retrying.');
-    const { accountId, paymentMode } = await readBeforePayment(() => prepareBillPayment({ paymentType, organizationId, paymentAccountId }));
+    if (accountResult.status === 'rejected') throw accountResult.reason;
+    const { accountId, paymentMode } = accountResult.value;
     const payload = { vendor_id: String(vendorId), amount: units / 10 ** precision, date,
       payment_mode: paymentMode, paid_through_account_id: accountId,
       reference_number: String(referenceNumber || `WA-BILL-${billId}`).slice(0, 100),

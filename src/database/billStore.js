@@ -200,12 +200,15 @@ class BillStore {
   }
 
   async claimBillExtraction({ leaseMs = 120000, maxAttempts = null, workerPhone = null,
-    batchQuietMs = 0, batchBoundary = null } = {}) {
+    batchQuietMs = 0, batchBoundary = null, excludeWorkerPhones = [] } = {}) {
     if (!Number.isInteger(batchQuietMs) || batchQuietMs < 0 || batchQuietMs > 60000) {
       throw new BillStoreError('INVALID_INPUT', 'batchQuietMs is invalid.');
     }
     if (batchBoundary !== null && typeof batchBoundary !== 'function') {
       throw new BillStoreError('INVALID_INPUT', 'batchBoundary is invalid.');
+    }
+    if (!Array.isArray(excludeWorkerPhones) || excludeWorkerPhones.some(phone => typeof phone !== 'string')) {
+      throw new BillStoreError('INVALID_INPUT', 'excludeWorkerPhones is invalid.');
     }
     const now = new Date();
 
@@ -224,7 +227,10 @@ class BillStore {
     }
 
     if (workerPhone) {
+      if (excludeWorkerPhones.includes(workerPhone)) return null;
       candidateFilter.worker_phone = workerPhone;
+    } else if (excludeWorkerPhones.length) {
+      candidateFilter.worker_phone = { $nin: excludeWorkerPhones };
     }
 
     const candidates = await this.col('bill_extractions')
@@ -262,15 +268,15 @@ class BillStore {
           }
         }
 
-        const active = await this.col('bill_extractions').countDocuments({
-          worker_phone: candidate.worker_phone,
-          status: 'PROCESSING',
-          lease_until: { $gt: now },
-        });
-        if (active) {
-          deferredWorkers.add(candidate.worker_phone);
-          continue;
-        }
+      }
+      const active = await this.col('bill_extractions').countDocuments({
+        worker_phone: candidate.worker_phone,
+        status: 'PROCESSING',
+        lease_until: { $gt: now },
+      });
+      if (active) {
+        deferredWorkers.add(candidate.worker_phone);
+        continue;
       }
       const leaseToken = randomUUID();
       const leaseUntil = new Date(Date.now() + leaseMs);
