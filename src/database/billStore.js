@@ -260,7 +260,7 @@ class BillStore {
             worker_phone: candidate.worker_phone,
             state: { $in: BOOKS_PROMPT_REPLY_STATES },
             $or: [{ expires_at: null }, { expires_at: { $gt: now } }],
-          }, { projection: { state: 1, _id: 0 } });
+          }, { projection: { state: 1, _id: 0, 'bill_data.bill_date': 1 } });
         }
         const isBoundary = item => batchBoundary?.(item.payload || {}, session);
         const sameWorker = candidates.filter(item => item.worker_phone === candidate.worker_phone);

@@ -4,6 +4,7 @@ const { validateBill, normalizeCurrency } = require('./billValidator');
 const { formatInitialReviewPrompt, formatCustomerSelectionPrompt, formatCustomerDetailsMessages, formatOrganizationSelectionPrompt, formatSuccessReport, formatDuplicateWarning } = require('./billFormatter');
 const { BOOKS_ORGANIZATIONS, resolveOrganization, findOrganizationsInText, organizationById } = require('./organizations');
 const { resolveVendorAlias } = require('./vendorAliases');
+const { parseBillDateReply } = require('./billDateReply');
 const { PAYMENT_METHODS, normalizePaymentMethod } = require('./paymentMethods');
 const { mediaKind, normalizeMediaMimeType } = require('../../utils/media');
 const { mergeCustomerData, parseManualCustomerDetails } = require('./customerDetails');
@@ -511,14 +512,18 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     const result = await continueAfterOrganization(session, bill, messageId);
     return { ...result, replyMessages: formatCustomerDetailsMessages(bill.customer_details) };
   }
-  async function askForCustomer(session, bill, searchText = '', { manualInput = false, autoSelect = true, messageId = null, lookupResult = null } = {}) {
+  async function askForCustomer(session, bill, searchText = '', { manualInput = false, autoSelect = true, messageId = null, lookupResult = null, reviewSession = null } = {}) {
     if (!bill.organization?.organizationId) return requestOrganization(session, bill);
     if (typeof zohoBooksClient?.searchCustomer !== 'function') return null;
     const detailsPrompt = bill.customer_details?.customer_name ? '' : `${CUSTOMER_DETAILS_PROMPT}\n`;
+    const { reviewCustomerLookup } = require('./customerReviewSelection');
+    const cachedLookup = !lookupResult && manualInput && autoSelect && typeof zohoBooksClient?.getCustomer === 'function'
+      ? reviewCustomerLookup(reviewSession, searchText, bill.organization.organizationId) : null;
+    const cachedCustomer = cachedLookup?.customer;
     let customers;
     try {
       if (lookupResult?.status === 'rejected') throw lookupResult.reason;
-      customers = lookupResult?.status === 'fulfilled' ? lookupResult.value
+      customers = cachedLookup ? (cachedCustomer ? [cachedCustomer] : []) : lookupResult?.status === 'fulfilled' ? lookupResult.value
         : await zohoBooksClient.searchCustomer({ searchText, organizationId: bill.organization?.organizationId });
     } catch {
       await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, bill_data: bill, customer_options: [], customer_all_options: [], customer_page: 0, customer_search: '' });
@@ -567,6 +572,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
         await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, customer_options: exact, customer_all_options: [], customer_page: 0, customer_search: '', bill_data: bill });
         return selectCustomer({ ...session, customer_options: exact, bill_data: bill }, {
           interactiveId: `zoho-customer:${exact[0].contactId}`, messageId, manualInput: true,
+          ...(cachedCustomer ? { expectedCustomerName: searchText } : {}),
         });
       }
       const hasSearchMatch = options.some(option => [...names(option), option.phone, option.mobile, option.email,
@@ -597,6 +603,10 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     const fetched = normalizeCustomerRecord(selectedRecord);
     const selectedScope = selectedRecord.organizationId || selectedRecord.organization_id || selectedRecord.raw?.organization_id;
     if (fetched.contactId !== selectedId || (selectedScope && selectedScope !== organizationId)) {
+      return reply(session, 'The selected Zoho Books customer could not be verified. Please select it again.', { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION });
+    }
+    if (incoming.expectedCustomerName && ![fetched.contactName, fetched.companyName, fetched.displayName]
+      .some(value => value && customerNameKey(value) === customerNameKey(incoming.expectedCustomerName))) {
       return reply(session, 'The selected Zoho Books customer could not be verified. Please select it again.', { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION });
     }
     const previous = session.bill_data?.customer_details || {};
@@ -636,7 +646,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO, bill_data: bill, customer_options: [], customer_all_options: [], customer_page: 0, customer_search: '', last_message_id: incoming.messageId });
     return customerSelected(session, bill, incoming.messageId);
   }
-  async function readSingleInput(incoming, { skipOcr = false } = {}) {
+  async function readSingleInput(incoming, { skipOcr = false, deferAttachmentPersistence = false } = {}) {
     const media = Boolean(incoming.mediaId || incoming.mediaBuffer || ['image', 'document', 'pdf', 'audio'].includes(incoming.messageType));
     if (!media) return { text: incoming.text || '', attachment: null, media: null, ocrError: null };
     let buffer = incoming.mediaBuffer;
@@ -659,6 +669,22 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     const savePromise = Promise.resolve()
       .then(() => store.saveMediaFile({ messageId: incoming.messageId, mediaId: incoming.mediaId, buffer, mimeType, filename }))
       .catch(error => { throw pipelineError(PIPELINE_FAILURES.STORAGE, error?.code || 'MEDIA_PERSIST_FAILED'); });
+    const attachmentFromSaved = saved => {
+      const storageReference = typeof saved === 'string' ? saved : saved?.storageReference;
+      if (!storageReference) throw pipelineError(PIPELINE_FAILURES.STORAGE, 'MEDIA_NOT_PERSISTED');
+      return { storage_reference: storageReference, original_filename: filename, mime_type: mimeType, media_id: incoming.mediaId, message_id: incoming.messageId };
+    };
+    if (skipOcr && deferAttachmentPersistence && ['image', 'document'].includes(kind)) {
+      // Initial direct vision only needs the downloaded bytes. Start durable
+      // storage now, and retain a settled outcome so a fast storage rejection
+      // is always observed while the other batch downloads are still running.
+      const pendingAttachment = savePromise.then(attachmentFromSaved).then(
+        value => ({ status: 'fulfilled', value }),
+        reason => ({ status: 'rejected', reason }),
+      );
+      return { text: incoming.text || '', attachment: null, pendingAttachment,
+        media: { buffer, mimeType, kind, filename, messageId: incoming.messageId }, ocrError: null };
+    }
     let ocrError = null;
     const ocrPromise = skipOcr ? Promise.resolve('') : Promise.resolve().then(async () => {
       if (typeof aiService?.extractMediaText !== 'function') throw Object.assign(new Error(), { code: 'OCR_SERVICE_UNAVAILABLE' });
@@ -673,9 +699,7 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     // Storage and OCR consume the same downloaded bytes but are independent.
     // Await both so the attachment remains durable while their latency overlaps.
     const [saved, ocrText] = await Promise.all([savePromise, ocrPromise]);
-    const storageReference = typeof saved === 'string' ? saved : saved?.storageReference;
-    if (!storageReference) throw pipelineError(PIPELINE_FAILURES.STORAGE, 'MEDIA_NOT_PERSISTED');
-    const attachment = { storage_reference: storageReference, original_filename: filename, mime_type: mimeType, media_id: incoming.mediaId, message_id: incoming.messageId };
+    const attachment = attachmentFromSaved(saved);
     return {
       text: [ocrText, incoming.text].filter((value) => typeof value === 'string' && value.trim()).join('\n'),
       attachment,
@@ -697,6 +721,8 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     const media = [];
     const ocrErrors = [];
     const failedMessageIds = [];
+    const attachmentTasks = [];
+    let hasDeferredAttachments = false;
     for (let index = 0; index < settled.length; index += 1) {
       const outcome = settled[index];
       if (outcome.status === 'fulfilled') {
@@ -704,6 +730,9 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
         if (outcome.value.attachment) attachments.push(outcome.value.attachment);
         if (outcome.value.media) media.push(outcome.value.media);
         if (outcome.value.ocrError) ocrErrors.push(outcome.value.ocrError);
+        if (outcome.value.pendingAttachment) hasDeferredAttachments = true;
+        attachmentTasks.push({ messageId: items[index].messageId,
+          promise: outcome.value.pendingAttachment || Promise.resolve({ status: 'fulfilled', value: outcome.value.attachment }) });
       } else {
         failedMessageIds.push(items[index].messageId);
         const error = outcome.reason;
@@ -715,8 +744,24 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
         });
       }
     }
-    if (failedMessageIds.length) throw settled.find((outcome) => outcome.status === 'rejected').reason;
+    const attachmentPersistence = Promise.all(attachmentTasks.map(task => task.promise)).then(results => {
+      for (let index = 0; index < results.length; index += 1) {
+        if (results[index].status !== 'rejected') continue;
+        const error = results[index].reason;
+        log('error', { event: 'books.bill_media_pipeline.failed', category: error?.category || PIPELINE_FAILURES.STORAGE,
+          reason: error?.reason || error?.code || 'MEDIA_PERSIST_FAILED', messageId: attachmentTasks[index].messageId });
+      }
+      const failure = results.find(result => result.status === 'rejected');
+      return failure || { status: 'fulfilled', value: results.map(result => result.value).filter(Boolean) };
+    });
+    if (failedMessageIds.length) {
+      // A failed page download must not leave another page's started storage
+      // operation running after this bill attempt has returned to the worker.
+      await attachmentPersistence;
+      throw settled.find((outcome) => outcome.status === 'rejected').reason;
+    }
     if (!text.length && !media.some((item) => ['image', 'document'].includes(item.kind))) {
+      await attachmentPersistence;
       throw pipelineError(PIPELINE_FAILURES.EXTRACTION, ocrErrors[0] || 'NO_EXTRACTABLE_BILL_INPUT');
     }
     log('info', {
@@ -725,7 +770,8 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       media_count: media.length,
       duration_ms: Date.now() - startedAt,
     });
-    return { text: text.join('\n'), attachment: attachments[0] || null, attachments, media, ocrErrors, failedMessageIds };
+    return { text: text.join('\n'), attachment: attachments[0] || null, attachments, media, ocrErrors, failedMessageIds,
+      ...(hasDeferredAttachments ? { attachmentPersistence } : {}) };
   }
   function groundedBill(extracted) {
     // Payment confirmation belongs to the worker, never invoice OCR/model output.
@@ -892,6 +938,17 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       if (session.state === WORKFLOW_STATES.WAITING_FOR_CURRENCY && !media) {
         return applyCurrency(session, incoming);
       }
+      if (!media && [REVIEW, EDIT, PROJECT_STATE, PAYMENT_STATE, ACCOUNT_STATE, WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO].includes(session.state)) {
+        const billDate = parseBillDateReply(incoming.text, {
+          allowBare: session.state === WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO && !session.bill_data?.bill_date,
+        });
+        if (billDate) {
+          const bill = { ...session.bill_data, bill_date: billDate };
+          await billStore.updateBill(session.bill_id, { bill_date: billDate });
+          await billStore.updateBillSession(session.session_id, { bill_data: bill, last_message_id: incoming.messageId });
+          return continueAfterOrganization(session, bill, incoming.messageId);
+        }
+      }
       // A labelled project plus payment fields uses the existing structured
       // reply parser below; plain project replies keep their current path.
       const combinedProjectReply = !media && session.state === PROJECT_STATE
@@ -941,11 +998,14 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
         delete customerDetails.zoho_contact;
         delete customerDetails.display_name;
         const bill = { ...mergeWorkerDetails(session.bill_data, '', workerDetails), customer_details: customerDetails };
+        // Keep the list offered before this reply; persistence below clears
+        // its navigation fields while the normal customer parser is running.
+        const reviewSession = { ...session };
         await billStore.updateBill(session.bill_id, { ...bill });
         await billStore.updateBillSession(session.session_id, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, bill_data: bill, customer_options: [], customer_all_options: [], customer_page: 0, customer_search: '', last_message_id: incoming.messageId });
         if (!customerDetails.customer_name) return reply(session, CUSTOMER_DETAILS_PROMPT, { state: WORKFLOW_STATES.WAITING_FOR_CUSTOMER_SELECTION, bill });
         if (manualEntry || typeof zohoBooksClient?.searchCustomer !== 'function') return customerSelected(session, bill, incoming.messageId);
-        return askForCustomer(session, bill, customerDetails.customer_name, { manualInput: true, autoSelect: !labelledCustomer, messageId: incoming.messageId });
+        return askForCustomer(session, bill, customerDetails.customer_name, { manualInput: true, autoSelect: !labelledCustomer, messageId: incoming.messageId, reviewSession });
       }
       if (session.state === WORKFLOW_STATES.WAITING_FOR_ADDITIONAL_INFO && !media && !session.bill_data?.customer_details?.customer_name
           && typeof zohoBooksClient?.searchCustomer !== 'function' && !Object.keys(parseWorkerDetails(incoming.text)).length) {
@@ -1029,8 +1089,26 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     }
     if (!media && (cmd || /^(hi|hello|hey|salaam|start|\?)[.!?]*$/i.test((incoming.text || '').trim()) || !(incoming.text || '').trim())) return reply(null, 'Please send the bill image, PDF, or bill details.');
     try {
-      const input = await readInput(incoming, { skipOcrForBillMedia: billMedia && !session });
-      const extracted = await extractBillFromInput(input, incoming.messageType || 'text');
+      const input = await readInput(incoming, { skipOcrForBillMedia: billMedia && !session,
+        deferAttachmentPersistence: billMedia && !session });
+      let extracted;
+      if (input.attachmentPersistence) {
+        // Storage and direct vision consume the same immutable downloaded
+        // bytes. Finish both before creating any draft or offering a review;
+        // storage failure keeps precedence and no started rejection is lost.
+        const [persisted, extraction] = await Promise.all([
+          input.attachmentPersistence,
+          Promise.resolve().then(() => extractBillFromInput(input, incoming.messageType || 'text')).then(
+            value => ({ status: 'fulfilled', value }),
+            reason => ({ status: 'rejected', reason }),
+          ),
+        ]);
+        if (persisted.status === 'rejected') throw persisted.reason;
+        if (extraction.status === 'rejected') throw extraction.reason;
+        input.attachments = persisted.value;
+        input.attachment = persisted.value[0] || null;
+        extracted = extraction.value;
+      } else extracted = await extractBillFromInput(input, incoming.messageType || 'text');
       const grounded = groundedBill(extracted);
       const bill = normalizeBillOrganization(validateBill(mergeWorkerDetails(mergeWorkerDetails(grounded, input.text, parseWorkerDetails(input.text, { allowShorthand: false, allowVendor: false })), input.text, parseWorkerDetails(input.text, { allowVendor: false }))).normalizedBill);
       // Even explicit invoice/caption text is a suggestion until the worker
@@ -1231,42 +1309,58 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
       try { await billStore.updateBillSession(session.session_id, { attachments: structuredClone(attachments) }); }
       catch { /* The bill record is authoritative for the next SAVE. */ }
     };
-    for (const attachment of attachments) {
-      if (['uploaded', 'uploading', 'uncertain'].includes(attachment.zoho_upload_status)) continue;
-      let buffer;
-      try {
-        const saved = await store?.getMediaFile(attachment.storage_reference);
-        buffer = Buffer.isBuffer(saved) ? saved : saved?.buffer;
-        if (!buffer) throw new Error('MEDIA_UNAVAILABLE');
-      } catch {
-        attachment.zoho_upload_status = 'failed';
-        await persistAttachments();
-        continue;
-      }
-      // Record intent before POST; a crash after this point needs reconciliation.
-      attachment.zoho_upload_status = 'uploading';
-      try { await persistAttachments(); }
-      catch { return reply(session, `Bill already created (ID: ${id}), but attachment state could not be persisted. No upload was attempted. Ask an administrator to reconcile it.`); }
-      let uploaded;
-      try {
-        uploaded = await zohoBooksClient.attachBillFile({ billId: id, buffer, filename: attachment.original_filename, mimeType: attachment.mime_type, organizationId });
-      } catch (error) {
-        // Only an explicit provider rejection proves that no upload occurred.
-        attachment.zoho_upload_status = [400, 401, 403, 404, 422].includes(error?.httpStatus) ? 'failed' : 'uncertain';
-        try { await persistAttachments(); } catch { /* 'uploading' on disk remains fail-closed. */ }
-        continue;
-      }
-      attachment.zoho_upload_status = 'uploaded';
-      if (uploaded?.attachmentId || uploaded?.id) attachment.zoho_attachment_id = uploaded.attachmentId || uploaded.id;
-      try { await persistAttachments(); }
-      catch {
-        const persisted = await billStore.getBill(session.bill_id).catch(() => null);
-        const saved = persisted?.attachments?.find(item => item.storage_reference === attachment.storage_reference);
-        if (saved?.zoho_upload_status !== 'uploaded') {
-          attachment.zoho_upload_status = 'uncertain';
+    // The amount and any recorded payment are already confirmed. PDF reading
+    // and rendering can overlap attachment uploads, but document delivery must
+    // wait for their existing intent/checkpoint sequence to finish. Capture a
+    // settled result immediately so a fast fetch failure cannot go unobserved.
+    const documentPreparation = ['ACCEPTED', 'SENDING', 'UNKNOWN'].includes(record.pdf_delivery_status) ? null
+      : Promise.resolve().then(() => zohoBooksClient.getBillPdf(id, { organizationId })).then(
+        value => ({ status: 'fulfilled', value }),
+        reason => ({ status: 'rejected', reason }),
+      );
+    let preparedDocument;
+    try {
+      for (const attachment of attachments) {
+        if (['uploaded', 'uploading', 'uncertain'].includes(attachment.zoho_upload_status)) continue;
+        let buffer;
+        try {
+          const saved = await store?.getMediaFile(attachment.storage_reference);
+          buffer = Buffer.isBuffer(saved) ? saved : saved?.buffer;
+          if (!buffer) throw new Error('MEDIA_UNAVAILABLE');
+        } catch {
+          attachment.zoho_upload_status = 'failed';
+          await persistAttachments();
+          continue;
+        }
+        // Record intent before POST; a crash after this point needs reconciliation.
+        attachment.zoho_upload_status = 'uploading';
+        try { await persistAttachments(); }
+        catch { return reply(session, `Bill already created (ID: ${id}), but attachment state could not be persisted. No upload was attempted. Ask an administrator to reconcile it.`); }
+        let uploaded;
+        try {
+          uploaded = await zohoBooksClient.attachBillFile({ billId: id, buffer, filename: attachment.original_filename, mimeType: attachment.mime_type, organizationId });
+        } catch (error) {
+          // Only an explicit provider rejection proves that no upload occurred.
+          attachment.zoho_upload_status = [400, 401, 403, 404, 422].includes(error?.httpStatus) ? 'failed' : 'uncertain';
           try { await persistAttachments(); } catch { /* 'uploading' on disk remains fail-closed. */ }
+          continue;
+        }
+        attachment.zoho_upload_status = 'uploaded';
+        if (uploaded?.attachmentId || uploaded?.id) attachment.zoho_attachment_id = uploaded.attachmentId || uploaded.id;
+        try { await persistAttachments(); }
+        catch {
+          const persisted = await billStore.getBill(session.bill_id).catch(() => null);
+          const saved = persisted?.attachments?.find(item => item.storage_reference === attachment.storage_reference);
+          if (saved?.zoho_upload_status !== 'uploaded') {
+            attachment.zoho_upload_status = 'uncertain';
+            try { await persistAttachments(); } catch { /* 'uploading' on disk remains fail-closed. */ }
+          }
         }
       }
+    } finally {
+      // Drain the read even when attachment intent persistence returns early
+      // or throws. This changes neither attachment nor PDF retry eligibility.
+      preparedDocument = await documentPreparation;
     }
     const attachmentsComplete = attachments.every(a => a.zoho_upload_status === 'uploaded');
     const attachmentNotice = attachmentsComplete ? '' : attachments.some(a => ['uncertain', 'uploading'].includes(a.zoho_upload_status))
@@ -1280,7 +1374,8 @@ function createBillWorkflow({ billStore, billExtractionService, zohoBooksClient,
     }
     let document;
     try {
-      document = await zohoBooksClient.getBillPdf(id, { organizationId });
+      if (preparedDocument?.status !== 'fulfilled') throw preparedDocument?.reason || new Error('PDF_NOT_PREPARED');
+      document = preparedDocument.value;
       if (document.bill && (!Number.isFinite(Number(document.bill.total)) || Math.abs(Number(document.bill.total) - record.total_amount) > 0.000001 || document.bill.currency_code !== record.currency)) {
         await billStore.updateBill(session.bill_id, { pdf_delivery_status: 'RECORD_MISMATCH' });
         return reply(session, `${summary}\nThe saved record amount or currency differs from the reviewed bill. Please ask an administrator to reconcile it. No second bill will be created.`);

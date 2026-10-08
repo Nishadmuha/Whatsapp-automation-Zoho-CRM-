@@ -68,7 +68,8 @@ function formatYyyyMmDd(year, month, day) {
  * Supports:
  * - ISO: YYYY-MM-DD
  * - DD/MM/YYYY or DD-MM-YYYY (unambiguous)
- * - Textual dates (e.g. 17 Sep 2026, September 17, 2026)
+ * - Textual dates (e.g. 17 Sep 2026, September 17, 2026, 7-Oct-26)
+ *   Named-month two-digit years use 2000-2099 for current business bills.
  *
  * Rejects ambiguous dates (e.g. 03/04/2026) without guessing.
  * Rejects invalid calendar dates (e.g. 2026-02-31).
@@ -102,13 +103,15 @@ function normalizeDate(input, fieldName = 'date') {
     return { date: formatYyyyMmDd(year, month, day), issue: null };
   }
 
-  // 2. Textual dates: "17 Sep 2026", "17 September 2026", "September 17, 2026", "Sep 17, 2026"
+  // 2. Named months avoid numeric day/month ambiguity. For current business
+  // bills, printed two-digit years mean 2000-2099, never a clock-dependent
+  // pivot or Date.parse guess. Historical centuries require four digits.
   // Day Month Year
-  const dmyText = raw.match(/^(\d{1,2})[\s-]+([a-zA-Z]+)[\s,]+(\d{4})$/);
+  const dmyText = raw.match(/^(\d{1,2})[\s/-]+([a-zA-Z]+)[\s,/-]+(\d{4}|\d{2})$/);
   if (dmyText) {
     const day = parseInt(dmyText[1], 10);
     const monthName = dmyText[2].toLowerCase();
-    const year = parseInt(dmyText[3], 10);
+    const year = parseInt(dmyText[3], 10) + (dmyText[3].length === 2 ? 2000 : 0);
     const month = MONTH_NAMES[monthName];
     if (!month) {
       return {
@@ -134,11 +137,11 @@ function normalizeDate(input, fieldName = 'date') {
   }
 
   // Month Day Year: "September 17, 2026" or "Sep 17 2026"
-  const mdyText = raw.match(/^([a-zA-Z]+)[\s-]+(\d{1,2})[\s,]+(\d{4})$/);
+  const mdyText = raw.match(/^([a-zA-Z]+)[\s/-]+(\d{1,2})[\s,/-]+(\d{4}|\d{2})$/);
   if (mdyText) {
     const monthName = mdyText[1].toLowerCase();
     const day = parseInt(mdyText[2], 10);
-    const year = parseInt(mdyText[3], 10);
+    const year = parseInt(mdyText[3], 10) + (mdyText[3].length === 2 ? 2000 : 0);
     const month = MONTH_NAMES[monthName];
     if (!month) {
       return {
