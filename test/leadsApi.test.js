@@ -42,10 +42,31 @@ async function backend(t, { env: overrides = {}, store: methods = {}, actualStor
     assert.equal(login.status, 200);
     cookie = login.headers.get('set-cookie').split(';')[0];
   }
-  return { row, env, calls, logs, stats, base, cookie, request(path = '/api/leads', sessionCookie = cookie) {
+  return { app, row, env, calls, logs, stats, base, cookie, request(path = '/api/leads', sessionCookie = cookie) {
     return fetch(base + path, { headers: sessionCookie ? { Cookie: sessionCookie } : {} });
   } };
 }
+
+test('admin attachment retry uses the WhatsApp client installed after app creation', async t => {
+  const h = await backend(t);
+  const whatsapp = { async downloadMedia() { assert.fail('This test only checks client wiring.'); } };
+  h.app.locals.whatsapp = whatsapp;
+  const workflow = require('../src/services/leads/bossLeadWorkflow');
+  let syncCalls = 0;
+  t.mock.method(workflow, 'handleZohoSync', async options => {
+    syncCalls++;
+    assert.equal(options.leadId, h.row.id);
+    assert.equal(options.whatsapp, whatsapp);
+    assert.equal(options.force, true);
+    return { success: true, zohoLeadId: '123', zohoUrl: 'https://crm.zoho.com/crm/tab/Leads/123' };
+  });
+  const response = await fetch(`${h.base}/api/leads/${h.row.id}/push-to-zoho`, {
+    method: 'POST', headers: { Cookie: h.cookie },
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).success, true);
+  assert.equal(syncCalls, 1);
+});
 
 test('all lead API endpoints fail closed when the admin credential is absent', async t => {
   const h = await backend(t, { env: { ADMIN_USERNAME: '', ADMIN_PASSWORD: '' } });

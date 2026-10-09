@@ -1,6 +1,6 @@
 'use strict';
 
-const { mediaKind, normalizeMediaMimeType, isUnreadableMediaText } = require('../../utils/media');
+const { mediaKind, normalizeMediaMimeType, isUnreadableMediaText, isAttachmentOnlyMimeType } = require('../../utils/media');
 const { validateLeadInput } = require('../ai/leadExtraction');
 
 const MEDIA_RESEND_REPLY = "I couldn't read that attachment. Please resend it or send the details as text.";
@@ -14,6 +14,33 @@ async function resolveLeadMessageContent({ message, whatsapp, ai, assertActive, 
   if (message.message_type === 'text') return { text: message.message_text, transcription: null, extractedText: null };
   if (!['image', 'audio', 'document'].includes(message.message_type)) throw mediaError('LEAD_MEDIA_UNSUPPORTED');
   const declaredMimeType = normalizeMediaMimeType(message.media_mime_type);
+  // CAD drawings are original attachments, not images that the AI can read.
+  // Retain their bytes independently of whether a caption supplies lead facts.
+  if (message.message_type === 'document' && isAttachmentOnlyMimeType(declaredMimeType)) {
+    try {
+      await assertActive?.();
+      if (!message.media_id || typeof store?.saveMediaFile !== 'function') throw new Error();
+      const attachment = await whatsapp.downloadMedia(message.media_id, { purpose: 'attachment' });
+      const mimeType = normalizeMediaMimeType(attachment.mimeType);
+      if (!isAttachmentOnlyMimeType(mimeType) || !attachment.buffer?.length) throw new Error();
+      await assertActive?.();
+      const saved = await store.saveMediaFile({
+        messageId: message.whatsapp_message_id || message.message_id,
+        mediaId: message.media_id,
+        buffer: attachment.buffer,
+        mimeType,
+        filename: message.media_filename,
+      });
+      if (!saved?.storageReference) throw new Error();
+      const caption = message.message_text?.trim() || '';
+      if (caption) validateLeadInput(caption);
+      return { text: caption, transcription: null, extractedText: null, attachmentOnly: true,
+        storageReference: saved.storageReference, storageUrl: saved.storageUrl };
+    } catch (error) {
+      if (error?.code === 'LEASE_LOST') throw error;
+      throw mediaError('LEAD_MEDIA_UNAVAILABLE');
+    }
+  }
   if (message.message_type === 'document' && declaredMimeType && !['image', 'document'].includes(mediaKind(declaredMimeType))) {
     throw mediaError('LEAD_MEDIA_UNSUPPORTED');
   }

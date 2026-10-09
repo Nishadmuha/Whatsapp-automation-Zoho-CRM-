@@ -181,7 +181,7 @@ function createLeadsRouter({ config, store, ready, logger, env = {}, requireAuth
         config,
         logger,
         force: true,
-        whatsapp,
+        whatsapp: whatsapp || req.app.locals.whatsapp,
       });
       const updated = await store.getLead(req.params.id);
       if (syncResult && syncResult.success) {

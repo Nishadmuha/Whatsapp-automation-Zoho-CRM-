@@ -152,6 +152,32 @@ test('CRM finalization restores the rich Boss success reply instead of racing wi
   assert.equal(h.sends.length, 1, 'One logical confirmation must produce one final Boss response.');
 });
 
+test('detailed attachment receipt longer than the customer AI limit is delivered once', async t => {
+  let uploads = 0;
+  const zoho = {
+    async searchLeadByPhone() { return null; },
+    async createLead() { return { id: '5653678000000000001' }; },
+    async uploadLeadAttachment() { return { id: String(1000000 + ++uploads) }; },
+  };
+  const h = await setup(t, { zoho });
+  for (let i = 0; i < 5; i++) {
+    await h.receive('', { message_type: 'image', media_id: '123', media_mime_type: 'image/jpeg',
+      media_filename: `customer-project-electrical-drawing-revision-${i + 1}-site-details-and-contact-screenshot-approved-final.jpg` });
+    await h.process();
+  }
+  const confirmation = await h.receive('YES');
+  await h.process();
+  const reply = await h.store.getReply(confirmation);
+  assert.ok(reply.text.length > 1000 && reply.text.length <= 4096);
+  assert.equal(await h.sendNext(), true);
+  assert.equal(h.sends.length, 1);
+  assert.equal(h.sends[0].text, reply.text);
+  assert.match(reply.text, /Attachments \(5\):/);
+  assert.match(reply.text, /All attachments uploaded to Zoho/);
+  assert.equal((await h.store.getReply(confirmation)).status, 'SENT');
+  assert.equal(await h.workflow.processNextReply(), false);
+});
+
 test('separate arrivals reset the pause and slow OCR cannot send an intermediate prompt', async t => {
   const h = await setup(t);
   const first = await h.receive('Al Noor Contracting');
