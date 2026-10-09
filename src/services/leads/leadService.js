@@ -58,14 +58,14 @@ function createLeadService({ store, ai, config, resolveMessageContent, resolveMe
 
       let text = job.message_text;
       await assertLease();
-      if (job.message_type !== 'text') {
+      if (job.message_type !== 'text' || job.batch_attachment_content) {
         let content;
         try {
-          content = resolveMessageContent ? await resolveMessageContent(job, { assertLease }) : { text: await resolveMessageText(job) };
+          content = job.batch_attachment_content || (resolveMessageContent ? await resolveMessageContent(job, { assertLease }) : { text: await resolveMessageText(job) });
           text = content.text;
-          if (typeof text !== 'string' || !text.trim()) throw new Error('Unreadable media.');
+          if (typeof text !== 'string' || (!text.trim() && !content.attachmentOnly)) throw new Error('Unreadable media.');
           media = { transcription: content.transcription ?? (job.message_type === 'audio' ? text : null),
-            extractedText: content.extractedText ?? (job.message_type === 'audio' ? null : text),
+            extractedText: content.attachmentOnly ? null : content.extractedText ?? (job.message_type === 'audio' ? null : text),
             storageReference: content.storageReference ?? job.storage_reference ?? null,
             storageUrl: content.storageUrl ?? job.storage_url ?? null };
         } catch (error) {
@@ -74,14 +74,24 @@ function createLeadService({ store, ai, config, resolveMessageContent, resolveMe
               : 'I could not read that attachment clearly. Please resend a readable image, document or voice message, or send the details as text.' });
         }
         await assertLease();
-        let checkpointed;
-        try { checkpointed = await store.checkpointLeadMedia(messageId, job.lease_token, media); }
-        catch { throw serviceFailure('LEAD_WORKFLOW_PERSISTENCE_FAILED', 'persistence', true); }
-        if (!checkpointed) throw serviceFailure('LEASE_LOST', 'persistence');
+        if (!job.batch_attachment_content) {
+          let checkpointed;
+          try { checkpointed = await store.checkpointLeadMedia(messageId, job.lease_token, media); }
+          catch { throw serviceFailure('LEAD_WORKFLOW_PERSISTENCE_FAILED', 'persistence', true); }
+          if (!checkpointed) throw serviceFailure('LEASE_LOST', 'persistence');
+        }
+        if (content.attachmentOnly && !text.trim()) {
+          if (session?.pending_action === 'new_lead') return commit({ kind: 'conversation', replyText: CHOOSE_NEXT_REPLY });
+          if (!session) return commit({ kind: 'new_lead', state: 'collecting', originalMessage: '',
+            replyText: 'Attachment retained for this lead. Please send the customer details.' });
+          return commit({ kind: 'details', state: baseValidation.valid ? 'awaiting_confirmation' : 'collecting',
+            replyText: baseValidation.valid ? confirmationReply(baseResult.lead)
+              : 'Attachment retained for this lead. Please send the customer details.' });
+        }
       }
       const kind = conversationIntent(text);
       if (kind === 'greeting') return commit({ kind, replyText: GREETING_REPLY });
-      if (['new_lead', 'discard', 'continue', 'confirmation'].includes(kind) && job.message_type !== 'text') {
+      if (['new_lead', 'discard', 'continue', 'confirmation'].includes(kind) && (job.message_type !== 'text' || job.batch_media_only)) {
         return commit({ kind: 'conversation', replyText: kind === 'confirmation'
           ? 'Please confirm by sending “save it” as a text message if the lead is complete.'
           : 'Please send lead-management instructions as a text message so I can confirm which lead you mean.' });

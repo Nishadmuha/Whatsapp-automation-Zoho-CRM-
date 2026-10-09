@@ -4,6 +4,7 @@ const { randomUUID } = require('node:crypto');
 const { setTimeout: delay } = require('node:timers/promises');
 const mongoose = require('mongoose');
 const { connectMongoDB } = require('../config/db');
+const { normalizeMediaMimeType, isAttachmentOnlyMimeType, AUDIO_EXTENSIONS, DOCUMENT_EXTENSIONS } = require('../utils/media');
 
 const STATUSES = new Set(['PROCESSING', 'SUCCESS', 'FAILED', 'NEEDS_INFORMATION']);
 const PATCH_FIELDS = new Set([
@@ -24,6 +25,13 @@ const LEAD_STATUSES = Object.freeze({
   zohoStatus: ['not_started', 'pending', 'existing_found', 'creating', 'updating', 'saved', 'failed'],
 });
 const REPLY_WINDOW_MS = 23 * 60 * 60 * 1000;
+
+function mediaExtension(mimeType) {
+  const normalized = normalizeMediaMimeType(mimeType);
+  if (isAttachmentOnlyMimeType(normalized)) return 'dwg';
+  return AUDIO_EXTENSIONS[normalized] || DOCUMENT_EXTENSIONS[normalized]
+    || normalized.split('/')[1]?.replace(/^jpeg$/, 'jpg') || 'bin';
+}
 
 function iso(value) {
   if (!value) return new Date().toISOString();
@@ -970,7 +978,7 @@ class MongoMessageStore {
       this.mediaBucket = new GridFSBucket(this.db, { bucketName: 'lead_media' });
     }
     const fileId = new mongoose.Types.ObjectId();
-    const ext = mimeType?.split('/')[1]?.replace(/^jpeg$/, 'jpg') || 'bin';
+    const ext = mediaExtension(mimeType);
     const safeFilename = filename || `${mediaId || fileId.toString()}.${ext}`;
 
     if (this.mediaBucket) {
@@ -1396,7 +1404,7 @@ class MongoMessageStore {
       for (const m of allMsgs) {
         if (m.media_id) {
           const attId = randomUUID();
-          const ext = m.media_mime_type?.split('/')[1]?.replace(/^jpeg$/, 'jpg') || 'bin';
+          const ext = mediaExtension(m.media_mime_type);
           const filename = m.media_filename || `${m.media_id}.${ext}`;
           const storageReference = m.storage_reference || m.media_id;
           const storageUrl = m.storage_url || `/api/media/${storageReference}`;
@@ -1772,6 +1780,17 @@ class MongoMessageStore {
   async updateLeadAttachments(leadId, attachments = []) {
     if (typeof leadId !== 'string') return false;
     const now = await this._now();
+    // Attachment rows loaded from the backing collection use snake_case. Keep
+    // their confirmed CRM identifiers and retained originals on every checkpoint.
+    attachments = attachments.map(att => ({
+      ...att,
+      zohoAttachmentId: att.zohoAttachmentId || att.zoho_attachment_id || null,
+      zohoLeadId: att.zohoLeadId || att.zoho_lead_id || null,
+      zohoUploadStatus: att.zohoUploadStatus || att.zoho_upload_status || 'pending',
+      zohoError: Object.hasOwn(att, 'zohoError') ? att.zohoError : att.zoho_error || null,
+      storageReference: att.storageReference || att.storage_reference || null,
+      storageUrl: att.storageUrl || att.storage_url || null,
+    }));
     const hasFailed = attachments.some(a => a.zohoUploadStatus === 'failed');
     const allUploaded = attachments.length > 0 && attachments.every(a => a.zohoUploadStatus === 'uploaded');
     const attachmentStatus = hasFailed ? 'failed' : allUploaded ? 'uploaded' : 'pending';
@@ -1789,12 +1808,17 @@ class MongoMessageStore {
     );
 
     for (const att of attachments) {
-      if (att.id || att.messageId || att.whatsappMessageId) {
+      const messageId = att.messageId || att.whatsappMessageId || att.message_id;
+      const identities = [];
+      if (att.id) identities.push({ id: att.id });
+      if (messageId) identities.push({ message_id: messageId });
+      if (identities.length) {
         await this.col('lead_attachments').updateOne(
-          { $or: [{ id: att.id }, { message_id: att.messageId || att.whatsappMessageId, lead_id: leadId }] },
+          { lead_id: leadId, $or: identities },
           {
             $set: {
               zoho_attachment_id: att.zohoAttachmentId || null,
+              zoho_lead_id: att.zohoLeadId || null,
               zoho_upload_status: att.zohoUploadStatus || 'pending',
               zoho_error: att.zohoError || null,
               storage_reference: att.storageReference || null,

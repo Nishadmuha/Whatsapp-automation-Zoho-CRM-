@@ -1,6 +1,7 @@
 'use strict';
 
 const { conversationIntent } = require('../../utils/conversationIntent');
+const { mediaKind, isAttachmentOnlyMimeType } = require('../../utils/media');
 
 function formatConfirmationSummary(lead) {
   const company = lead?.company_name || lead?.company || '...';
@@ -54,6 +55,15 @@ function buildZohoLeadUrl(zohoLeadId, env = process.env) {
   return `https://${domain}/crm/tab/Leads/${zohoLeadId}`;
 }
 
+function getAttachmentUploadStatus(attachment, zohoLeadId) {
+  const status = attachment.zohoUploadStatus || attachment.zoho_upload_status || 'pending';
+  const attachmentId = attachment.zohoAttachmentId || attachment.zoho_attachment_id;
+  const attachedLeadId = attachment.zohoLeadId || attachment.zoho_lead_id;
+  if (status === 'uploaded' && attachmentId && attachmentId !== 'attached'
+      && String(attachedLeadId) === String(zohoLeadId)) return 'uploaded';
+  return status === 'failed' ? 'failed' : 'pending';
+}
+
 function formatBossFinalSuccessMessage({ contact, company, phone, email, zohoLeadId, zohoUrl, attachments = [] }) {
   const contactVal = (contact || '').trim() || (company || '').trim() || 'Customer';
   const companyVal = (company || '').trim() || (contact || '').trim() || 'Individual';
@@ -78,41 +88,77 @@ function formatBossFinalSuccessMessage({ contact, company, phone, email, zohoLea
   if (phoneVal !== 'N/A') lines.push(`📞 Phone: ${phoneVal}`);
   if (emailVal !== 'N/A') lines.push(`📧 Email: ${emailVal}`);
 
-  if (Array.isArray(attachments) && attachments.length > 0) {
-    const images = attachments.filter(a => a.type === 'image' || a.mime_type?.startsWith('image/') || a.mimeType?.startsWith('image/')).length;
-    const voice = attachments.filter(a => a.type === 'audio' || a.mime_type?.startsWith('audio/') || a.mimeType?.startsWith('audio/')).length;
-    const docs = attachments.filter(a => !['image', 'audio'].includes(a.type) && !a.mime_type?.startsWith('image/') && !a.mime_type?.startsWith('audio/') && !a.mimeType?.startsWith('image/') && !a.mimeType?.startsWith('audio/')).length;
+  const files = Array.isArray(attachments) ? attachments : [];
+  const allUploaded = files.every(a => getAttachmentUploadStatus(a, zohoLeadId) === 'uploaded');
+  let fileListStart = 0;
+  const fileLines = [];
+  if (files.length > 0) {
+    const groups = { image: [], 'voice message': [], document: [] };
+    for (const att of files) {
+      const mimeType = att.mimeType || att.mime_type || '';
+      const kind = isAttachmentOnlyMimeType(mimeType) ? 'document' : mediaKind(mimeType) || att.type;
+      const type = kind === 'image' ? 'image' : kind === 'audio' ? 'voice message' : 'document';
+      groups[type].push(att);
+    }
 
     const attachmentLines = [];
-    if (images > 0) attachmentLines.push(`${images} image${images > 1 ? 's' : ''} attached ✅`);
-    if (voice > 0) attachmentLines.push(`${voice} voice message${voice > 1 ? 's' : ''} attached ✅`);
-    if (docs > 0) attachmentLines.push(`${docs} document${docs > 1 ? 's' : ''} attached ✅`);
+    for (const [type, group] of Object.entries(groups)) {
+      if (!group.length) continue;
+      const complete = group.every(a => getAttachmentUploadStatus(a, zohoLeadId) === 'uploaded');
+      attachmentLines.push(`${group.length} ${type}${group.length > 1 ? 's' : ''} ${complete ? 'attached ✅' : 'received'}`);
+    }
 
-    lines.push('', `Attachments (${attachments.length}):`);
+    lines.push('', `Attachments (${files.length}):`);
     if (attachmentLines.length > 0) {
       lines.push(...attachmentLines);
     }
-    for (const att of attachments) {
-      const name = att.filename || att.mediaId || att.media_id || 'file';
-      const status = att.zohoUploadStatus || att.zoho_upload_status || 'pending';
+    const fileText = (value, limit) => {
+      const text = String(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim();
+      return text.length > limit ? `${Array.from(text).slice(0, limit - 1).join('')}…` : text;
+    };
+    fileListStart = lines.length;
+    for (const att of files) {
+      const name = fileText(att.filename || att.mediaFilename || att.media_filename || att.mediaId || att.media_id || 'file', 180);
+      const status = getAttachmentUploadStatus(att, zohoLeadId);
       const statusIcon = status === 'uploaded' ? '\u2705' : status === 'failed' ? '\u274c' : '\u23f3';
       const statusText = status === 'uploaded' ? 'uploaded to Zoho'
-        : status === 'failed' ? `upload failed: ${att.zohoError || att.zoho_error || 'unknown error'}`
+        : status === 'failed' ? `upload failed: ${fileText(att.zohoError || att.zoho_error || 'unknown error', 160)}`
         : 'pending upload';
-      lines.push(`  ${statusIcon} ${name} \u2014 ${statusText}`);
+      fileLines.push(`  ${statusIcon} ${name} \u2014 ${statusText}`);
     }
-    const allUploaded = attachments.every(a => (a.zohoUploadStatus || a.zoho_upload_status) === 'uploaded');
-    const anyFailed = attachments.some(a => (a.zohoUploadStatus || a.zoho_upload_status) === 'failed');
-    if (anyFailed) {
-      lines.push('', '\u26a0\ufe0f Some attachments could not be uploaded. Use "Push to Zoho" in the admin panel to retry.');
-    } else if (allUploaded) {
+    lines.push(...fileLines);
+    if (allUploaded) {
       lines.push('', '\ud83d\uddbc\ufe0f All attachments uploaded to Zoho \u2705');
+    } else {
+      const uploaded = files.filter(a => getAttachmentUploadStatus(a, zohoLeadId) === 'uploaded').length;
+      lines.push('', `⚠️ ${uploaded} of ${files.length} attachments uploaded to Zoho.`,
+        'Use "Push to Zoho" in the admin panel to retry the remaining files.');
     }
   }
 
   lines.push('', 'Zoho Sync:', 'Saved successfully ✅');
   lines.push('✅ Saved to MongoDB');
-  lines.push('✅ Synced to Zoho CRM');
+  lines.push(allUploaded ? '✅ Synced to Zoho CRM' : '✅ Lead details synced to Zoho CRM');
+  if (!allUploaded) lines.push('⚠️ Attachment sync incomplete');
+  if (lines.join('\n').length > 4096 && fileLines.length) {
+    // Keep the receipt and overall upload result deliverable for large batches.
+    // Surface failures first when the full list cannot fit in one WhatsApp text.
+    lines.splice(fileListStart, fileLines.length);
+    const available = 4096 - lines.join('\n').length - 100;
+    const ordered = allUploaded ? fileLines : [
+      ...fileLines.filter((_, i) => getAttachmentUploadStatus(files[i], zohoLeadId) !== 'uploaded'),
+      ...fileLines.filter((_, i) => getAttachmentUploadStatus(files[i], zohoLeadId) === 'uploaded'),
+    ];
+    const visible = [];
+    let used = 0;
+    for (const line of ordered) {
+      if (used + line.length + 1 > available) break;
+      visible.push(line);
+      used += line.length + 1;
+    }
+    lines.splice(fileListStart, 0, ...visible,
+      `… ${fileLines.length - visible.length} more files; see the complete list in the admin panel.`);
+  }
   return lines.join('\n');
 }
 
@@ -141,6 +187,7 @@ module.exports = {
   conversationIntent,
   formatConfirmationSummary,
   buildZohoLeadUrl,
+  getAttachmentUploadStatus,
   formatBossFinalSuccessMessage,
   formatBossZohoFailureMessage,
   formatBossZohoInputMessage,

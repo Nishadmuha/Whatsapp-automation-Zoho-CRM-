@@ -3,7 +3,7 @@ const axios = require('axios');
 const { Agent } = require('node:https');
 const { createHash } = require('node:crypto');
 const { createLogger } = require('../../utils/logger');
-const { normalizeMediaMimeType, mediaKind, mediaSizeLimit } = require('../../utils/media');
+const { normalizeMediaMimeType, mediaSizeLimit, isAttachmentOnlyMimeType, MAX_MEDIA_BYTES } = require('../../utils/media');
 const httpsAgent = new Agent({ rejectUnauthorized: true });
 const SAFE_TRANSPORT_CODES = new Set(['ECONNABORTED', 'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'ETIMEDOUT', 'ERR_NETWORK', 'ERR_CANCELED', 'ERR_BAD_RESPONSE', 'ERR_BAD_REQUEST']);
 function failure(message, code, deliveryState = 'NOT_ATTEMPTED', details = {}) {
@@ -132,7 +132,7 @@ function createWhatsAppService({ env = process.env, http = axios, logger = creat
       template: { name: templateName, language: { code: languageCode } },
     });
   }
-  async function downloadMedia(mediaId) {
+  async function downloadMedia(mediaId, { purpose = 'extraction' } = {}) {
     if (typeof mediaId !== 'string' || !/^\d{1,128}$/.test(mediaId)) {
       throw failure('A valid WhatsApp media identifier is required.', 'ERR_WHATSAPP_MEDIA');
     }
@@ -151,9 +151,9 @@ function createWhatsAppService({ env = process.env, http = axios, logger = creat
       if (metadata.status !== undefined && (metadata.status < 200 || metadata.status >= 300)) throw new Error();
       const { url, mime_type: rawMimeType, file_size: fileSize, sha256, id } = metadata.data || {};
       const mimeType = normalizeMediaMimeType(rawMimeType);
-      const kind = mediaKind(mimeType);
-      const sizeLimit = mediaSizeLimit(mimeType);
-      if (!kind || !Number.isSafeInteger(fileSize) || fileSize <= 0 || fileSize > sizeLimit
+      const sizeLimit = mediaSizeLimit(mimeType)
+        || (purpose === 'attachment' && isAttachmentOnlyMimeType(mimeType) ? MAX_MEDIA_BYTES : 0);
+      if (!sizeLimit || !Number.isSafeInteger(fileSize) || fileSize <= 0 || fileSize > sizeLimit
           || typeof url !== 'string' || url.length > 8192) throw new Error();
       if (id !== undefined && id !== mediaId) throw new Error();
       // Meta media metadata supplies a checksum. Validate it when present before

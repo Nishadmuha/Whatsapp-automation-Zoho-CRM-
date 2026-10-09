@@ -4,6 +4,12 @@ const MAX_MEDIA_BYTES = 16 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_DOCUMENT_BYTES = 32768;
 const IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+// CAD drawings can accompany a lead as original files, but are not supported
+// image/document inputs for OCR. Keep this list separate from mediaKind().
+const ATTACHMENT_ONLY_MIME_TYPES = new Set([
+  'image/vnd.dwg', 'image/x-dwg', 'application/acad', 'application/x-acad',
+  'application/autocad', 'application/x-autocad', 'application/dwg', 'application/x-dwg',
+]);
 const AUDIO_EXTENSIONS = Object.freeze({
   'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a',
   'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/webm': 'webm', 'audio/flac': 'flac',
@@ -29,6 +35,10 @@ function mediaKind(mimeType) {
   return null;
 }
 
+function isAttachmentOnlyMimeType(mimeType) {
+  return ATTACHMENT_ONLY_MIME_TYPES.has(normalizeMediaMimeType(mimeType));
+}
+
 function mediaSizeLimit(mimeType) {
   const normalized = normalizeMediaMimeType(mimeType);
   if (normalized === 'text/plain') return MAX_TEXT_DOCUMENT_BYTES;
@@ -52,5 +62,5 @@ function isUnreadableMediaText(value) {
 
 module.exports = {
   MAX_MEDIA_BYTES, MAX_IMAGE_BYTES, MAX_TEXT_DOCUMENT_BYTES, AUDIO_EXTENSIONS, DOCUMENT_EXTENSIONS,
-  normalizeMediaMimeType, mediaKind, mediaSizeLimit, isUnreadableMediaText,
+  normalizeMediaMimeType, mediaKind, mediaSizeLimit, isUnreadableMediaText, isAttachmentOnlyMimeType,
 };

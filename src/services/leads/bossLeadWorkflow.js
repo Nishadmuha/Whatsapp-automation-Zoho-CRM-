@@ -1,11 +1,12 @@
 'use strict';
 
 const { createLeadService } = require('./leadService');
-const { validateReplyOutput } = require('../ai/conversation');
+const { validateTextMessage } = require('../whatsapp/whatsappService');
 const { createReplyDispatcher } = require('../whatsapp/replyDispatcher');
 const {
   conversationIntent,
   buildZohoLeadUrl,
+  getAttachmentUploadStatus,
   formatBossFinalSuccessMessage,
   formatBossZohoFailureMessage,
   formatBossZohoInputMessage,
@@ -49,9 +50,8 @@ async function handleZohoSyncUnlocked({ leadId, store, zoho, config, logger, mes
     try { lead.attachments = await store.getLeadAttachments(leadId); }
     catch { return { success: false, error: 'Attachment metadata could not be loaded' }; }
   }
-  if (!force && lead.zoho_status === 'saved' && lead.zoho_lead_id && !(lead.attachments || []).some(att =>
-    (att.zohoUploadStatus || att.zoho_upload_status) !== 'uploaded' || !att.zohoAttachmentId || att.zohoAttachmentId === 'attached'
-      || String(att.zohoLeadId) !== String(lead.zoho_lead_id))) {
+  if (!force && lead.zoho_status === 'saved' && lead.zoho_lead_id && (lead.attachments || []).every(att =>
+    getAttachmentUploadStatus(att, lead.zoho_lead_id) === 'uploaded')) {
     logger?.info?.({ event: 'zoho_already_saved', lead_id: leadId });
     const zohoUrl = lead.zoho_url || lead.zohoUrl || buildZohoLeadUrl(lead.zoho_lead_id);
     if (messageId) {
@@ -195,8 +195,7 @@ async function handleZohoSyncUnlocked({ leadId, store, zoho, config, logger, mes
     if (attachments.length > 0 && typeof zohoClient.uploadLeadAttachment === 'function') {
       for (const att of attachments) {
         // Idempotency: skip if already uploaded to Zoho
-        if ((att.zohoUploadStatus === 'uploaded' || att.zoho_upload_status === 'uploaded') &&
-            att.zohoAttachmentId && att.zohoAttachmentId !== 'attached' && String(att.zohoLeadId) === String(zohoLeadId)) {
+        if (getAttachmentUploadStatus(att, zohoLeadId) === 'uploaded') {
           continue;
         }
 
@@ -208,37 +207,54 @@ async function handleZohoSyncUnlocked({ leadId, store, zoho, config, logger, mes
             storageRef = storageRef.storageReference || storageRef.storage_reference || null;
           }
 
+          // A stale reference or temporarily unavailable storage source must not
+          // prevent recovery from the other original-media sources.
+          const readStoredMedia = async read => {
+            try {
+              const stored = await read();
+              const bytes = Buffer.isBuffer(stored) ? stored : stored?.buffer;
+              if (Buffer.isBuffer(bytes) && bytes.length > 0) {
+                buffer = bytes;
+                if (stored?.mimeType) mimeType = stored.mimeType;
+              }
+            } catch {
+              logger?.warn?.({ event: 'zoho_attachment_storage_read_failed', lead_id: leadId });
+            }
+          };
           if (storageRef && typeof store.getMediaFile === 'function') {
-            const stored = await store.getMediaFile(storageRef);
-            buffer = Buffer.isBuffer(stored) ? stored : (stored?.buffer || null);
-            if (stored?.mimeType) mimeType = stored.mimeType;
+            await readStoredMedia(() => store.getMediaFile(storageRef));
           }
 
-          const mediaId = att.mediaId || att.whatsapp_media_id || att.whatsappMediaId;
+          const mediaId = att.mediaId || att.media_id || att.whatsapp_media_id || att.whatsappMediaId;
           if (!buffer && mediaId && typeof store.getMediaFileByMediaId === 'function') {
-            const storedByMedia = await store.getMediaFileByMediaId(mediaId);
-            buffer = Buffer.isBuffer(storedByMedia) ? storedByMedia : (storedByMedia?.buffer || null);
-            if (storedByMedia?.mimeType) mimeType = storedByMedia.mimeType;
+            await readStoredMedia(() => store.getMediaFileByMediaId(mediaId));
           }
 
           if (!buffer && mediaId && whatsapp?.downloadMedia) {
-            const downloaded = await whatsapp.downloadMedia(mediaId).catch(() => null);
-            buffer = downloaded?.buffer || null;
+            const downloaded = await whatsapp.downloadMedia(mediaId, { purpose: 'attachment' }).catch(() => null);
+            buffer = Buffer.isBuffer(downloaded?.buffer) && downloaded.buffer.length > 0 ? downloaded.buffer : null;
             if (downloaded?.mimeType) mimeType = downloaded.mimeType;
             if (buffer && typeof store.saveMediaFile === 'function') {
-              const saved = await store.saveMediaFile({
-                messageId: att.messageId || att.whatsappMessageId || att.message_id,
-                mediaId,
-                buffer,
-                mimeType,
-                filename: att.filename,
-              });
-              if (saved) {
-                const cleanRef = typeof saved === 'object' && saved.storageReference ? saved.storageReference : String(saved);
-                att.storageReference = cleanRef;
-                att.storageUrl = `/api/media/${cleanRef}`;
-                att.storage_reference = cleanRef;
-                att.storage_url = `/api/media/${cleanRef}`;
+              try {
+                const saved = await store.saveMediaFile({
+                  messageId: att.messageId || att.whatsappMessageId || att.message_id,
+                  mediaId,
+                  buffer,
+                  mimeType,
+                  filename: att.filename || att.mediaFilename || att.media_filename,
+                });
+                const cleanRef = typeof saved === 'string' ? saved : saved?.storageReference || saved?.storage_reference;
+                if (cleanRef) {
+                  att.storageReference = cleanRef;
+                  att.storageUrl = saved?.storageUrl || `/api/media/${cleanRef}`;
+                  att.storage_reference = cleanRef;
+                  att.storage_url = att.storageUrl;
+                  if (!att.filename && saved?.filename) att.filename = saved.filename;
+                }
+              } catch {
+                // The downloaded original is still usable for this upload even
+                // when the optional local recovery copy cannot be persisted.
+                logger?.warn?.({ event: 'zoho_attachment_storage_save_failed', lead_id: leadId });
               }
             }
           }
@@ -249,6 +265,8 @@ async function handleZohoSyncUnlocked({ leadId, store, zoho, config, logger, mes
               const ext = mimeType?.split('/')[1]?.replace(/^jpeg$/, 'jpg')?.replace(/^x-/, '') || 'bin';
               filename = `attachment_${mediaId || Date.now()}.${ext}`;
             }
+            att.filename = filename;
+            att.mimeType = mimeType;
 
             const uploadRes = await zohoClient.uploadLeadAttachment(zohoLeadId, {
               buffer,
@@ -281,7 +299,7 @@ async function handleZohoSyncUnlocked({ leadId, store, zoho, config, logger, mes
             event: 'zoho_attachment_upload_failed',
             lead_id: leadId,
             zoho_lead_id: zohoLeadId,
-            local_media_id: att.mediaId || att.whatsapp_media_id,
+            local_media_id: att.mediaId || att.media_id || att.whatsapp_media_id || att.whatsappMediaId,
             filename: att.filename,
             mime_type: att.mimeType,
             provider_code: providerCode,
@@ -293,17 +311,25 @@ async function handleZohoSyncUnlocked({ leadId, store, zoho, config, logger, mes
           att.zohoError = safeErr;
           att.zoho_error = safeErr;
         }
-      }
-
-      if (typeof store.updateLeadAttachments === 'function') {
-        await store.updateLeadAttachments(leadId, attachments);
+        // Persist each completed file before starting the next upload so a
+        // later interruption can reuse the confirmed provider attachment ID.
+        if (typeof store.updateLeadAttachments === 'function') {
+          await store.updateLeadAttachments(leadId, attachments);
+        }
       }
     }
 
-    if (attachments.some(att => (att.zohoUploadStatus || att.zoho_upload_status) !== 'uploaded'
-        || !att.zohoAttachmentId || att.zohoAttachmentId === 'attached' || String(att.zohoLeadId) !== String(zohoLeadId))) {
+    if (attachments.some(att => getAttachmentUploadStatus(att, zohoLeadId) !== 'uploaded')) {
       await store.updateLeadZohoStatus(leadId, { zohoStatus: 'failed', zohoLeadId, zohoUrl, errorCode: 'ATTACHMENT_UPLOAD_INCOMPLETE', errorStage: 'attachment' });
-      if (messageId) await store.updateReplyText(messageId, `Lead saved in Zoho CRM (ID: ${zohoLeadId}), but one or more attachments failed to upload. The original files are retained for retry.\n${zohoUrl}`);
+      if (messageId) await store.updateReplyText(messageId, formatBossFinalSuccessMessage({
+        contact: lead.contact_name || lead.contactName,
+        company: lead.company_name || lead.companyName,
+        phone: lead.phone,
+        email: lead.email,
+        zohoLeadId,
+        zohoUrl,
+        attachments,
+      }));
       return { success: false, zohoLeadId, zohoUrl, attachments, error: 'ATTACHMENT_UPLOAD_INCOMPLETE' };
     }
     await store.updateLeadZohoStatus(leadId, {
@@ -430,28 +456,39 @@ function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGa
           const content = await resolveLeadMessageContent({ message: item, whatsapp, ai, assertActive: assertLease, store, logger });
           const media = {
             transcription: content.transcription ?? (item.message_type === 'audio' ? content.text : null),
-            extractedText: content.extractedText ?? (item.message_type === 'audio' ? null : content.text),
+            extractedText: content.attachmentOnly ? null : content.extractedText ?? (item.message_type === 'audio' ? null : content.text),
             storageReference: content.storageReference ?? item.storage_reference ?? null,
             storageUrl: content.storageUrl ?? item.storage_url ?? null,
           };
           if (!(await store.checkpointLeadMedia(item.message_id || item.whatsapp_message_id, item.lease_token, media))) {
             throw failure('LEASE_LOST');
           }
-          return { text: content.text };
+          return content;
         }));
         const chunks = [];
+        let retainedAttachment = null;
+        let hasTextMessage = false;
         for (let index = 0; index < settled.length; index += 1) {
           const outcome = settled[index];
-          if (outcome.status === 'fulfilled' && outcome.value.text?.trim()) chunks.push(outcome.value.text.trim());
-          else {
+          if (outcome.status === 'fulfilled') {
+            if (outcome.value.attachmentOnly) retainedAttachment = outcome.value;
+            if (outcome.value.text?.trim()) {
+              chunks.push(outcome.value.text.trim());
+              if (batchItems[index].message_type === 'text') hasTextMessage = true;
+            } else if (!outcome.value.attachmentOnly && batchItems[index].message_type !== 'text') {
+              failedMessageIds.push(batchItems[index].message_id || batchItems[index].whatsapp_message_id);
+            }
+          } else {
+            if (outcome.reason?.code === 'LEASE_LOST') throw outcome.reason;
             const failedItem = batchItems[index];
             failedMessageIds.push(failedItem.message_id || failedItem.whatsapp_message_id);
             if (failedItem.message_text?.trim()) chunks.push(failedItem.message_text.trim());
           }
         }
         job = chunks.length
-          ? { ...job, message_type: 'text', message_text: chunks.join('\n') }
-          : { ...job, batch_unreadable: true };
+          ? { ...job, message_type: 'text', message_text: chunks.join('\n'), batch_media_only: !hasTextMessage }
+          : retainedAttachment ? { ...job, batch_attachment_content: { ...retainedAttachment, text: '' } }
+            : { ...job, batch_unreadable: true };
       }
 
       const defersUntilZohoFinalization = job.message_type === 'text'
@@ -530,7 +567,11 @@ function createBossLeadWorkflow({ store, ai, whatsapp, config, logger, triggerGa
     shouldDeferReply: messageId => pendingZohoReplies.has(messageId),
     canSendReply(reply) {
       if (!active() || !authorized(reply)) return false;
-      try { return validateReplyOutput(reply.text) === reply.text; } catch { return false; }
+      // Structured CRM receipts include filenames and upload results. They use
+      // WhatsApp's message limit, rather than the shorter customer AI reply cap.
+      if (typeof reply.text !== 'string' || reply.text.trim() !== reply.text
+          || /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(reply.text)) return false;
+      try { validateTextMessage(reply.sender_phone, reply.text); return true; } catch { return false; }
     },
   });
   return {
